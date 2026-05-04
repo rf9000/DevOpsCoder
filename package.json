@@ -1,0 +1,22 @@
+{
+  "name": "devops-coder",
+  "version": "0.1.0",
+  "type": "module",
+  "module": "src/cli/index.ts",
+  "scripts": {
+    "start": "bun run src/cli/index.ts watch",
+    "once": "bun run src/cli/index.ts run-once",
+    "test": "bun test --preload ./tests/setup.ts tests/**/*.test.ts",
+    "test:unit": "bun test --preload ./tests/setup.ts tests/config/ tests/state/ tests/pipeline/ tests/utils/",
+    "test:integration": "bun test --preload ./tests/setup.ts tests/integration/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}
