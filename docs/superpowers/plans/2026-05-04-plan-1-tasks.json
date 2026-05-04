@@ -1,0 +1,386 @@
+{
+  "$schema_version": "1.0",
+  "plan_file": "docs/superpowers/plans/2026-05-04-plan-1-skeleton-and-stage-orchestrator.md",
+  "repo_root": "C:/GeneralDev/DevOpsPullers/DevOpsCoder",
+  "shell": "powershell",
+  "agent_protocol": {
+    "subagent_brief": "Each task object describes one self-contained unit of work. Open the plan_file at the heading named in 'plan_section_heading' and follow every step in that section literally — file contents, exact commands, and commit message are all spelled out there. Use the file contents shown in the plan verbatim. Do not deviate unless you hit a typing or runtime error that must be fixed; if you do, document the deviation in your completion report.",
+    "tdd_pattern": "Tasks that include test files follow strict TDD: (1) write the failing test, (2) run the test to verify it fails with the expected message, (3) write the minimal implementation, (4) run the test to verify it passes, (5) commit. Do not write the implementation before seeing the test fail.",
+    "completion_criteria": "A task is complete only when every entry in 'verification_commands' exits 0 with the expected output AND the commit described in 'commit' has been created. Report the actual test counts and command outputs in your completion message.",
+    "do_not": [
+      "Do not skip the 'verify it fails' step — it confirms the test is exercising new code, not passing accidentally.",
+      "Do not amend or rewrite earlier commits.",
+      "Do not run --no-verify or skip hooks.",
+      "Do not add features beyond what the task requires."
+    ]
+  },
+  "tasks": [
+    {
+      "id": "task-01-skeleton",
+      "name": "Initialize project skeleton",
+      "depends_on": [],
+      "plan_section_heading": "## Task 1: Initialize project skeleton",
+      "summary": "Bootstrap the empty repo: create package.json, tsconfig.json, .gitignore, .dockerignore, .env.example, tests/setup.ts. Run bun install and verify the typecheck passes on the empty project.",
+      "creates": [
+        { "path": "package.json", "purpose": "Bun manifest with scripts and zod + claude-agent-sdk deps" },
+        { "path": "tsconfig.json", "purpose": "Bun-native strict TypeScript config" },
+        { "path": ".gitignore", "purpose": "Exclude node_modules, .state, .env, Claude settings" },
+        { "path": ".dockerignore", "purpose": "Minimal Docker build exclude list" },
+        { "path": ".env.example", "purpose": "Public env template" },
+        { "path": "tests/setup.ts", "purpose": "Test preload — clears CLAUDECODE env var" }
+      ],
+      "modifies": [],
+      "verification_commands": [
+        { "cmd": "bun install", "expect": "Creates bun.lock and node_modules with no errors" },
+        { "cmd": "bun run typecheck", "expect": "PASS, exit 0 (no source files to check yet)" }
+      ],
+      "commit": {
+        "stage": ["package.json", "tsconfig.json", ".gitignore", ".dockerignore", ".env.example", "tests/setup.ts", "bun.lock"],
+        "message": "chore: initialize DevopsCoder project skeleton"
+      }
+    },
+    {
+      "id": "task-02-types",
+      "name": "Add core shared types",
+      "depends_on": ["task-01-skeleton"],
+      "plan_section_heading": "## Task 2: Add core shared types",
+      "summary": "Create src/types/index.ts with the AppConfig, PipelineState, StageHistoryEntry, StageOutcome, and PipelineTerminalError types used everywhere downstream.",
+      "creates": [
+        { "path": "src/types/index.ts", "purpose": "Shared interfaces — AppConfig (17 fields) and PipelineState bag with currentStage/history/attempts/outputs" }
+      ],
+      "modifies": [],
+      "verification_commands": [
+        { "cmd": "bun run typecheck", "expect": "PASS, exit 0" }
+      ],
+      "commit": {
+        "stage": ["src/types/index.ts"],
+        "message": "feat(types): add AppConfig and PipelineState core types"
+      }
+    },
+    {
+      "id": "task-03-logger",
+      "name": "Logger utility",
+      "depends_on": ["task-01-skeleton"],
+      "plan_section_heading": "## Task 3: Logger utility",
+      "summary": "Implement createLogger(prefix?) returning { info, error } with timestamped output, mirroring the sibling agents' logging style.",
+      "creates": [
+        { "path": "src/utils/logger.ts", "purpose": "Timestamped console logger with optional prefix; exports Logger interface" },
+        { "path": "tests/utils/logger.test.ts", "purpose": "Logger spec — 4 tests covering format, prefix, error with/without Error" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 4,
+      "verification_commands": [
+        { "cmd": "bun test tests/utils/logger.test.ts", "expect": "PASS, 4 tests" }
+      ],
+      "commit": {
+        "stage": ["src/utils/logger.ts", "tests/utils/logger.test.ts"],
+        "message": "feat(utils): add createLogger with timestamp + optional prefix"
+      }
+    },
+    {
+      "id": "task-04-slug",
+      "name": "Slug utility",
+      "depends_on": ["task-01-skeleton"],
+      "plan_section_heading": "## Task 4: Slug utility",
+      "summary": "Implement slugify(input, maxLen=40) for branch names like agent/wi-{id}-{slug}. Lowercase, replace non-alnum with hyphens, trim, truncate, fall back to 'wi'.",
+      "creates": [
+        { "path": "src/utils/slug.ts", "purpose": "Pure slugify helper" },
+        { "path": "tests/utils/slug.test.ts", "purpose": "Slugify spec — 6 tests covering normalisation, truncation, fallback, unicode" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 6,
+      "verification_commands": [
+        { "cmd": "bun test tests/utils/slug.test.ts", "expect": "PASS, 6 tests" }
+      ],
+      "commit": {
+        "stage": ["src/utils/slug.ts", "tests/utils/slug.test.ts"],
+        "message": "feat(utils): add slugify for branch-safe slugs"
+      }
+    },
+    {
+      "id": "task-05-config",
+      "name": "Zod env config loader",
+      "depends_on": ["task-02-types"],
+      "plan_section_heading": "## Task 5: Zod env config",
+      "summary": "Implement loadConfig(env?) — Zod-validated env schema producing an AppConfig. Required vars throw descriptive errors; optional vars have defaults; ASSIGNED_TO_FILTER is parsed as a comma-separated trim-and-filter list.",
+      "creates": [
+        { "path": "src/config/index.ts", "purpose": "Zod schema + loadConfig() factory" },
+        { "path": "tests/config/config.test.ts", "purpose": "Config spec — 8 tests covering valid env, defaults, missing-required errors, numeric coercion, list parsing, tag overrides" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 8,
+      "verification_commands": [
+        { "cmd": "bun test tests/config/config.test.ts", "expect": "PASS, 8 tests" }
+      ],
+      "commit": {
+        "stage": ["src/config/index.ts", "tests/config/config.test.ts"],
+        "message": "feat(config): add Zod-validated env config loader"
+      }
+    },
+    {
+      "id": "task-06-state-store",
+      "name": "Per-WI pipeline state store",
+      "depends_on": ["task-02-types"],
+      "plan_section_heading": "## Task 6: Per-WI pipeline state store",
+      "summary": "Implement PipelineStateStore — one JSON file per work item under STATE_DIR. load/save/delete/listAll/listResumable. Crash-recovery scan filters out completed/terminal-failed/cancelled states. Graceful recovery from corrupt JSON or missing workItemId.",
+      "creates": [
+        { "path": "src/state/state-store.ts", "purpose": "PipelineStateStore class" },
+        { "path": "tests/state/state-store.test.ts", "purpose": "State-store spec — 11 tests covering roundtrip, updatedAt refresh, missing/corrupt files, listAll, listResumable filtering, delete idempotency, nested-dir creation" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 11,
+      "verification_commands": [
+        { "cmd": "bun test tests/state/state-store.test.ts", "expect": "PASS, 11 tests" }
+      ],
+      "commit": {
+        "stage": ["src/state/state-store.ts", "tests/state/state-store.test.ts"],
+        "message": "feat(state): add per-WI PipelineStateStore"
+      }
+    },
+    {
+      "id": "task-07-stage",
+      "name": "Stage interface, PipelineContext, PipelinePauseError",
+      "depends_on": ["task-02-types", "task-03-logger"],
+      "plan_section_heading": "## Task 7: Stage interface, PipelineContext, PipelinePauseError",
+      "summary": "Define the stage protocol: Stage interface (name, canRun, execute), PipelineContext (config, logger, abortFlag, now), AbortFlag, and the PipelinePauseError sentinel used by checkpoint to halt-and-wait without becoming a terminal error.",
+      "creates": [
+        { "path": "src/pipeline/stage.ts", "purpose": "Stage protocol + PipelinePauseError sentinel — pure types and one error class, no runtime logic to test directly" }
+      ],
+      "modifies": [],
+      "tdd": false,
+      "verification_commands": [
+        { "cmd": "bun run typecheck", "expect": "PASS, exit 0" }
+      ],
+      "commit": {
+        "stage": ["src/pipeline/stage.ts"],
+        "message": "feat(pipeline): add Stage interface, PipelineContext, PipelinePauseError"
+      }
+    },
+    {
+      "id": "task-08-orchestrator",
+      "name": "Pipeline orchestrator (runPipeline + createInitialState)",
+      "depends_on": ["task-06-state-store", "task-07-stage"],
+      "plan_section_heading": "## Task 8: Pipeline orchestrator (`runPipeline` + `createInitialState`)",
+      "summary": "Implement runPipeline() — iterate stages, call canRun then execute, append history, increment attempts, persist after every transition. Catch PipelinePauseError as a graceful 'pause' outcome. Other errors become terminalError + rethrow. Honour abortFlag. Throw StageNotFoundError on unknown currentStage. Resume from state.currentStage when set.",
+      "creates": [
+        { "path": "src/pipeline/orchestrator.ts", "purpose": "runPipeline, createInitialState, StageNotFoundError" },
+        { "path": "tests/pipeline/orchestrator.test.ts", "purpose": "Orchestrator spec — 9 tests (1 createInitialState + 8 runPipeline scenarios: ordered execution, persistence after each stage, skip via canRun=false, terminal error path, pause path, abort, unknown-stage error, resume from currentStage)" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 9,
+      "verification_commands": [
+        { "cmd": "bun test tests/pipeline/orchestrator.test.ts", "expect": "PASS, 9 tests" }
+      ],
+      "commit": {
+        "stage": ["src/pipeline/orchestrator.ts", "tests/pipeline/orchestrator.test.ts"],
+        "message": "feat(pipeline): add runPipeline orchestrator with persistence + pause"
+      }
+    },
+    {
+      "id": "task-09-agent-stage",
+      "name": "agentStage factory + AgentRunner interface",
+      "depends_on": ["task-07-stage"],
+      "plan_section_heading": "## Task 9: agentStage factory + AgentRunner interface",
+      "summary": "Implement agentStage<T>(cfg, runner) that turns a Claude SDK call into a Stage. AgentRunner is the injectable boundary: run<T>({ prompt, schema, tools?, model? }) -> Promise<T>. Stage builds the prompt, calls runner.run, applies the typed output to PipelineState via cfg.applyOutput. Optional canRun, defaults to always-true.",
+      "creates": [
+        { "path": "src/pipeline/agent-stage.ts", "purpose": "agentStage factory, AgentRunner interface, AgentRunArgs, AgentStageConfig" },
+        { "path": "tests/pipeline/agent-stage.test.ts", "purpose": "agentStage spec — 4 tests: forwards prompt/schema/tools/model to runner, canRun honoured/defaulted, exposes name, propagates runner errors" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 4,
+      "verification_commands": [
+        { "cmd": "bun test tests/pipeline/agent-stage.test.ts", "expect": "PASS, 4 tests" }
+      ],
+      "commit": {
+        "stage": ["src/pipeline/agent-stage.ts", "tests/pipeline/agent-stage.test.ts"],
+        "message": "feat(pipeline): add agentStage factory + AgentRunner interface"
+      }
+    },
+    {
+      "id": "task-10-claude-runner",
+      "name": "Production AgentRunner (Claude SDK wrapper)",
+      "depends_on": ["task-09-agent-stage", "task-03-logger"],
+      "plan_section_heading": "## Task 10: Production AgentRunner (Claude SDK wrapper)",
+      "summary": "Implement createClaudeAgentRunner({ config, logger }) returning an AgentRunner that calls query() from @anthropic-ai/claude-agent-sdk with permissionMode: 'bypassPermissions', logs cost/tokens on each result message, then runs extractJson + JSON.parse + schema.safeParse. Throws AgentOutputParseError carrying the raw text on parse/validation failure. Pure helper extractJson is unit-tested; the SDK call itself is not (matches DevOpsPullTemplate's testing convention for src/services/ai-generator.ts).",
+      "creates": [
+        { "path": "src/services/claude-agent-runner.ts", "purpose": "Production AgentRunner: createClaudeAgentRunner, extractJson, AgentOutputParseError, STRUCTURED_OUTPUT_INSTRUCTION" },
+        { "path": "tests/services/claude-agent-runner.test.ts", "purpose": "extractJson spec — 5 tests: bare JSON passthrough, ```json fences, bare ``` fences, JSON-in-prose extraction, no-JSON fallback" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 5,
+      "verification_commands": [
+        { "cmd": "bun test tests/services/claude-agent-runner.test.ts", "expect": "PASS, 5 tests" },
+        { "cmd": "bun run typecheck", "expect": "PASS — confirms AgentRunArgs<T> from task-09 lines up with the runner's signature" }
+      ],
+      "commit": {
+        "stage": ["src/services/claude-agent-runner.ts", "tests/services/claude-agent-runner.test.ts"],
+        "message": "feat(services): add Claude SDK-backed AgentRunner with JSON + Zod validation"
+      }
+    },
+    {
+      "id": "task-11-revision-loop",
+      "name": "revisionLoop factory",
+      "depends_on": ["task-07-stage"],
+      "plan_section_heading": "## Task 11: revisionLoop factory",
+      "summary": "Implement revisionLoop({ name, producer, reviewer, maxAttempts, isApproved, onExhausted? }) — a composite Stage. Internally loops producer.execute then reviewer.execute up to maxAttempts. Exits on first isApproved(state) == true. On exhaustion calls onExhausted (if provided) and returns. Honours abortFlag between attempts.",
+      "creates": [
+        { "path": "src/pipeline/revision-loop.ts", "purpose": "revisionLoop factory + RevisionLoopConfig" },
+        { "path": "tests/pipeline/revision-loop.test.ts", "purpose": "revisionLoop spec — 6 tests: approve-first-pass, loops until approve, onExhausted-called-when-exhausted, returns-latest-state-without-onExhausted, abort breaks loop, exposes name" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 6,
+      "verification_commands": [
+        { "cmd": "bun test tests/pipeline/revision-loop.test.ts", "expect": "PASS, 6 tests" }
+      ],
+      "commit": {
+        "stage": ["src/pipeline/revision-loop.ts", "tests/pipeline/revision-loop.test.ts"],
+        "message": "feat(pipeline): add revisionLoop factory"
+      }
+    },
+    {
+      "id": "task-12-checkpoint",
+      "name": "checkpoint factory",
+      "depends_on": ["task-07-stage"],
+      "plan_section_heading": "## Task 12: checkpoint factory",
+      "summary": "Implement checkpoint({ name, detect, rerunCommand?, timeoutHours? }) — a Stage whose execute calls detect(state, ctx). If detect returns true, pass through. If false, set state.currentStage = cfg.name and throw PipelinePauseError so the orchestrator persists and exits cleanly.",
+      "creates": [
+        { "path": "src/pipeline/checkpoint.ts", "purpose": "checkpoint factory + CheckpointConfig" },
+        { "path": "tests/pipeline/checkpoint.test.ts", "purpose": "checkpoint spec — 4 tests: pass-through on true, throws PipelinePauseError + pins currentStage on false, exposes name and default canRun, forwards state and context to detect" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 4,
+      "verification_commands": [
+        { "cmd": "bun test tests/pipeline/checkpoint.test.ts", "expect": "PASS, 4 tests" }
+      ],
+      "commit": {
+        "stage": ["src/pipeline/checkpoint.ts", "tests/pipeline/checkpoint.test.ts"],
+        "message": "feat(pipeline): add checkpoint factory with PipelinePauseError"
+      }
+    },
+    {
+      "id": "task-13-e2e",
+      "name": "End-to-end mock pipeline integration test",
+      "depends_on": [
+        "task-08-orchestrator",
+        "task-09-agent-stage",
+        "task-11-revision-loop",
+        "task-12-checkpoint",
+        "task-06-state-store"
+      ],
+      "plan_section_heading": "## Task 13: End-to-end mock pipeline integration test",
+      "summary": "Cross-cutting integration test composing agentStage + revisionLoop + checkpoint + runPipeline + PipelineStateStore on mock AgentRunners. Verifies (1) analyzer→coder→revisionLoop(coder, reviewer-approve)→finalizer happy path with persisted completedAt, and (2) checkpoint pauses pipeline; reload from disk and resume after detect returns true completes it. No source changes — test file only.",
+      "creates": [
+        { "path": "tests/integration/orchestrator-e2e.test.ts", "purpose": "End-to-end pipeline test using mock runners — 2 tests" }
+      ],
+      "modifies": [],
+      "tdd": false,
+      "expected_test_count": 2,
+      "verification_commands": [
+        { "cmd": "bun test tests/integration/orchestrator-e2e.test.ts", "expect": "PASS, 2 tests" },
+        { "cmd": "bun test", "expect": "PASS — full suite, 59 tests across 10 files (logger 4, slug 6, config 8, state-store 11, orchestrator 9, agent-stage 4, claude-agent-runner 5, revision-loop 6, checkpoint 4, e2e 2)" },
+        { "cmd": "bun run typecheck", "expect": "PASS, no diagnostics" }
+      ],
+      "commit": {
+        "stage": ["tests/integration/orchestrator-e2e.test.ts"],
+        "message": "test(integration): add end-to-end mock-stage pipeline test"
+      }
+    },
+    {
+      "id": "task-14-cli",
+      "name": "CLI scaffolding (placeholder commands)",
+      "depends_on": ["task-01-skeleton"],
+      "plan_section_heading": "## Task 14: CLI scaffolding (placeholder commands)",
+      "summary": "Stub CLI in src/cli/index.ts. Wires only 'help' and 'version'. 'watch' and 'run-once' print a 'not yet implemented' placeholder and exit 0 — full commands land in later plans alongside the watcher and ADO client. The Dockerfile in task-15 invokes 'bun run start' so this must exist.",
+      "creates": [
+        { "path": "src/cli/index.ts", "purpose": "switch-based CLI dispatcher; help/version wired, watch/run-once placeholder, unknown commands exit 1" }
+      ],
+      "modifies": [],
+      "tdd": false,
+      "verification_commands": [
+        { "cmd": "bun run start", "expect": "Prints \"[devops-coder] command 'watch' is not yet implemented (milestone 1/2 skeleton).\" and exits 0" },
+        { "cmd": "bun run src/cli/index.ts version", "expect": "Prints '0.1.0' and exits 0" },
+        { "cmd": "bun run typecheck", "expect": "PASS" }
+      ],
+      "commit": {
+        "stage": ["src/cli/index.ts"],
+        "message": "feat(cli): add help/version scaffolding for milestone-1 skeleton"
+      }
+    },
+    {
+      "id": "task-15-docker",
+      "name": "Dockerfile + entrypoint.sh",
+      "depends_on": ["task-14-cli"],
+      "plan_section_heading": "## Task 15: Dockerfile + entrypoint.sh",
+      "summary": "Create Dockerfile (oven/bun:1 base, non-root claude user, Claude Code CLI install, volumes for /app/.state and /home/claude/.claude) and entrypoint.sh (root-bootstrap: chown volumes, validate TARGET_REPO_PATH and WORKTREE_BASE, generate /app/repo-paths.json from /repos/* mounts, drop to claude user via su, exec bun run start). Mirrors DevOpsInvestigateWorkItems exactly except for the added WORKTREE_BASE validation.",
+      "creates": [
+        { "path": "Dockerfile", "purpose": "Container image definition" },
+        { "path": "entrypoint.sh", "purpose": "Root-bootstrap script that fixes volume permissions, validates mount points, generates repo-paths.json, and drops to the claude user" }
+      ],
+      "modifies": [],
+      "tdd": false,
+      "verification_commands": [
+        { "cmd": "docker build -t devops-coder:dev .", "expect": "Image builds end-to-end and is tagged devops-coder:dev. If Docker is not available locally, skip and note that the build is deferred to CI in the commit message — but do not skip writing the Dockerfile and entrypoint.sh." }
+      ],
+      "commit": {
+        "stage": ["Dockerfile", "entrypoint.sh"],
+        "message": "feat(docker): add Dockerfile + entrypoint with volume permission fixup"
+      }
+    },
+    {
+      "id": "task-16-docs-and-final-verification",
+      "name": "Repository docs + final verification",
+      "depends_on": [
+        "task-13-e2e",
+        "task-15-docker",
+        "task-04-slug",
+        "task-05-config",
+        "task-10-claude-runner"
+      ],
+      "plan_section_heading": "## Task 16: Repository docs + final verification",
+      "summary": "Replace the 1-line README stub, write CLAUDE.md and PATTERNS.md describing the codebase. Run final verification: bun install + bun run typecheck + bun test must all exit 0 with 59 tests across 10 files. Commit docs. Confirm working tree is clean. This is the gate that marks the plan complete.",
+      "creates": [
+        { "path": "CLAUDE.md", "purpose": "Repo orientation for Claude Code: stack, patterns, commands, file layout, out-of-scope items, sibling references" },
+        { "path": "PATTERNS.md", "purpose": "Quick-reference of architectural patterns with file pointers" }
+      ],
+      "modifies": [
+        { "path": "README.md", "purpose": "Replace 1-line stub with operational docs: tech stack, commands, layout, local setup, Docker" }
+      ],
+      "tdd": false,
+      "expected_test_count": 59,
+      "verification_commands": [
+        { "cmd": "bun install", "expect": "exit 0, no changes to bun.lock" },
+        { "cmd": "bun run typecheck", "expect": "PASS, no diagnostics" },
+        { "cmd": "bun test", "expect": "PASS — 59 tests across 10 files: tests/utils/logger.test.ts (4), tests/utils/slug.test.ts (6), tests/config/config.test.ts (8), tests/state/state-store.test.ts (11), tests/pipeline/orchestrator.test.ts (9), tests/pipeline/agent-stage.test.ts (4), tests/services/claude-agent-runner.test.ts (5), tests/pipeline/revision-loop.test.ts (6), tests/pipeline/checkpoint.test.ts (4), tests/integration/orchestrator-e2e.test.ts (2)" },
+        { "cmd": "git status", "expect": "After commit: 'nothing to commit, working tree clean'" }
+      ],
+      "commit": {
+        "stage": ["README.md", "CLAUDE.md", "PATTERNS.md"],
+        "message": "docs: add README, CLAUDE.md, PATTERNS.md for milestone-1/2 skeleton"
+      },
+      "plan_completion_checklist": [
+        "package.json, tsconfig.json, .gitignore, .dockerignore, .env.example in repo root",
+        "Dockerfile and entrypoint.sh in repo root, build verified (or noted as deferred to CI)",
+        "README.md, CLAUDE.md, PATTERNS.md in repo root",
+        "Full src/ tree (cli/, config/, pipeline/, services/, state/, types/, utils/)",
+        "Full tests/ tree mirroring src/, plus tests/integration/ and tests/setup.ts",
+        "bun test green — 59 tests passing",
+        "bun run typecheck green",
+        "Stage interface with canRun / execute semantics",
+        "runPipeline orchestrator with persistence, pause, abort, and resume",
+        "agentStage, revisionLoop, checkpoint factories",
+        "Production createClaudeAgentRunner wrapping query() from @anthropic-ai/claude-agent-sdk with JSON extraction + Zod validation",
+        "Per-WI PipelineStateStore with load / save / delete / listAll / listResumable",
+        "An end-to-end integration test exercising the whole stack on mock stages"
+      ]
+    }
+  ]
+}
