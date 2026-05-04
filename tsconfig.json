@@ -13,7 +13,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noEmit": true,
-    "types": ["node"],
+    "types": ["bun"],
     "paths": {
       "@/*": ["./src/*"]
     }
