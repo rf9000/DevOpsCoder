@@ -71,7 +71,7 @@ describe('checkpoint', () => {
   });
 
   it('passes the state and context to the detect function', async () => {
-    const detect = mock(async () => true);
+    const detect = mock(async (_s: PipelineState, _ctx: PipelineContext) => true);
     const stage = checkpoint({ name: 'cp', detect });
     const ctx = mockContext();
     const state = mockState();
