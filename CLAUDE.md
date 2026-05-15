@@ -28,8 +28,11 @@ The repo is at the **milestone-3 stage** (Plan 2 done): orchestrator + ADO REST 
 
 - `bun test` — run all tests
 - `bun run typecheck` — TypeScript type checking
-- `bun run start` — start the watcher (placeholder)
-- `bun run once` — single poll cycle (placeholder)
+- `bun run start` — start the long-running watcher
+- `bun run once` — single poll cycle, prints cycle stats as JSON
+- `bun run src/cli/index.ts run-wi <id>` — process one work item by ID
+- `bun run src/cli/index.ts reset-state <id>` — delete `.state/{id}.json`
+- `bun run src/cli/index.ts debug-tags` — list WI IDs tagged with `TRIGGER_TAG`
 
 ## File Layout
 

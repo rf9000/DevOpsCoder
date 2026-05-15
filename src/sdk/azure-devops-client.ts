@@ -91,6 +91,25 @@ export function createAdoClient(
     throw lastErr!;
   }
 
+  async function fetchWorkItem(workItemId: number): Promise<WorkItem> {
+    return adoFetchWithRetry<WorkItem>(
+      `/_apis/wit/workitems/${workItemId}?api-version=7.1&fields=System.Title,System.State,System.Tags,System.AssignedTo`,
+    );
+  }
+
+  async function patchTags(workItemId: number, tags: string[]): Promise<void> {
+    await adoFetchWithRetry(
+      `/_apis/wit/workitems/${workItemId}?api-version=7.1`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json-patch+json' },
+        body: JSON.stringify([
+          { op: 'add', path: '/fields/System.Tags', value: joinTags(tags) },
+        ]),
+      },
+    );
+  }
+
   return {
     async queryWorkItemsByTag(tag: string): Promise<number[]> {
       const tagLit = `'${escapeWiql(tag)}'`;
@@ -112,45 +131,23 @@ export function createAdoClient(
       return result.workItems.map((w) => w.id);
     },
 
-    async getWorkItem(workItemId: number): Promise<WorkItem> {
-      return adoFetchWithRetry<WorkItem>(
-        `/_apis/wit/workitems/${workItemId}?api-version=7.1&fields=System.Title,System.State,System.Tags,System.AssignedTo`,
-      );
-    },
+    getWorkItem: fetchWorkItem,
 
     async addTagToWorkItem(workItemId: number, tag: string): Promise<void> {
-      const wi = await this.getWorkItem(workItemId);
+      const wi = await fetchWorkItem(workItemId);
       const tags = splitTags(wi.fields['System.Tags']);
       if (hasTagCi(tags, tag)) return;
       tags.push(tag);
-      await adoFetchWithRetry(
-        `/_apis/wit/workitems/${workItemId}?api-version=7.1`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json-patch+json' },
-          body: JSON.stringify([
-            { op: 'add', path: '/fields/System.Tags', value: joinTags(tags) },
-          ]),
-        },
-      );
+      await patchTags(workItemId, tags);
     },
 
     async removeTagFromWorkItem(workItemId: number, tag: string): Promise<void> {
-      const wi = await this.getWorkItem(workItemId);
+      const wi = await fetchWorkItem(workItemId);
       const tags = splitTags(wi.fields['System.Tags']);
       if (!hasTagCi(tags, tag)) return;
       const n = tag.toLowerCase();
       const updated = tags.filter((t) => t.toLowerCase() !== n);
-      await adoFetchWithRetry(
-        `/_apis/wit/workitems/${workItemId}?api-version=7.1`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json-patch+json' },
-          body: JSON.stringify([
-            { op: 'add', path: '/fields/System.Tags', value: joinTags(updated) },
-          ]),
-        },
-      );
+      await patchTags(workItemId, updated);
     },
 
     async addWorkItemComment(workItemId: number, html: string): Promise<void> {
