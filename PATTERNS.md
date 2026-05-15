@@ -65,3 +65,33 @@ A `Stage` whose `detect()` returns whether a human-action gate has cleared. If n
 ## Test fixtures
 
 **Convention:** small factory functions (`makeContext`, `makeState`, `mockState`) per test file; `bun:test`'s `mock()` for stub functions; `mkdtempSync(join(tmpdir(), 'prefix-'))` for filesystem fixtures. No global mocking, no module mocking.
+
+## ADO REST client
+
+**File:** `src/sdk/azure-devops-client.ts`
+
+`createAdoClient(config, fetchImpl?, retryDelaysMs?)` returns an `AdoClient` interface (queryWorkItemsByTag, getWorkItem, addTagToWorkItem, removeTagFromWorkItem, addWorkItemComment). `fetchImpl` defaults to `globalThis.fetch.bind(globalThis)` so unit tests pass a mock without monkey-patching globals. Auth: `Basic <base64(":" + pat)>` per request. Retry: 5xx retries up to `retryDelaysMs.length + 1` attempts; 4xx is fatal. Tag I/O round-trips `System.Tags` (semicolon-separated string) — fetch, split, filter, PATCH back, case-insensitive matching, no-op when nothing changes.
+
+## Concurrency pool
+
+**File:** `src/utils/pool.ts`
+
+`runPool(items, n, worker)` spawns up to `n` workers that drain a shared queue. Worker errors are caught and returned in `result.errors` rather than aborting the pool. Used by the watcher to dispatch processor calls under `config.concurrency`.
+
+## Watcher loop
+
+**File:** `src/services/watcher.ts`
+
+`runPollCycle(deps)` is one cycle; `startWatcher(deps)` is the long-running form. Both share an injected `AbortFlag`. `startWatcher` registers SIGINT/SIGTERM to flip the flag and uses `sleepInterruptible` to wake on shutdown rather than wait the full poll interval. Each cycle queries ADO for `triggerTag` WIs, unions with `store.listResumable()`, dedups, dispatches the union through the processor. A pipeline started in cycle N continues in cycle N+1 even if the human removed the tag in between.
+
+## Per-WI processor
+
+**File:** `src/services/processor.ts`
+
+`createProcessor(deps)` returns `{ processWorkItem(id) }`. For each WI: load-or-create state → buildPipeline → runPipeline → dispatch outcome. Completion removes the trigger tag; terminal error adds the blocked tag; pause is a no-op (the checkpoint stage handles any comment). `config.dryRun` suppresses ADO writes but still runs the pipeline and persists state.
+
+## Pipeline builder
+
+**File:** `src/services/pipeline-builder.ts`
+
+`buildPipeline(deps)` returns the `Stage[]` for one WI. Empty in Plan 2 (so the orchestrator immediately marks `completedAt`); Plans 3-5 replace the body with the real chain. The factory is injected into processor and watcher so the wiring is locked in.

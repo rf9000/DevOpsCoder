@@ -6,7 +6,7 @@ Guidance for Claude Code working in this repository.
 
 DevopsCoder is the implement-tagged work-item pipeline for our Azure DevOps automation suite. It is the first agent that writes to the target repo (branches, commits, push, draft PR). It deploys as a Docker container alongside the existing 4 read-only agents.
 
-The repo is currently at the **milestone-1/2 skeleton** stage: project bootstrap + generic stage-based pipeline orchestrator. Real stages, ADO client, worktree manager, and watcher loop land in subsequent plans (see `docs/superpowers/plans/`).
+The repo is at the **milestone-3 stage** (Plan 2 done): orchestrator + ADO REST client + polling watcher are wired and run end-to-end on real work items. The pipeline itself is still empty — real stages (analyzer, coder, test-author, reviewer, draft-PR-creator) and the worktree manager land in Plans 3-5 (see `docs/superpowers/plans/`).
 
 ## Architecture
 
@@ -36,10 +36,11 @@ The repo is currently at the **milestone-1/2 skeleton** stage: project bootstrap
 - `src/cli/` — CLI entry point
 - `src/config/` — Zod env validation
 - `src/pipeline/` — Stage interface + orchestrator + factories
-- `src/services/` — Claude SDK wrapper (`claude-agent-runner.ts`); future ADO client wrappers and watcher land here too
+- `src/sdk/` — Azure DevOps REST client (PAT auth, retries, WIQL, tag/comment ops)
+- `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder
 - `src/state/` — `PipelineStateStore`
 - `src/types/` — shared interfaces
-- `src/utils/` — logger, slugify
+- `src/utils/` — logger, slugify, runPool
 - `tests/` — mirrors `src/` layout; `tests/integration/` for cross-cutting tests
 
 ## Out of scope (do not introduce)

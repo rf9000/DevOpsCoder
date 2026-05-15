@@ -2,7 +2,7 @@
 
 The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo. DevopsCoder picks up work items tagged `agent implement`, runs an analyzer/coder/test-author/reviewer pipeline against a per-WI git worktree, and opens a draft PR.
 
-This repo currently contains the **milestone-1/2 skeleton** — project bootstrap and a generic stage-based pipeline orchestrator. Real stages (analyzer, coder, test-author, reviewer, draft-pr-creator), the ADO REST client, the worktree manager, and the watcher loop land in subsequent plans under `docs/superpowers/plans/`.
+The repo is at the **milestone-3 stage** (Plan 2 done): the orchestrator, the Azure DevOps REST client, and the polling watcher are all wired. `bun run start` connects to ADO, finds work items tagged `agent implement`, runs each through the pipeline (currently empty), removes the trigger tag on completion, and persists per-WI state under `.state/`. Real stages (analyzer, coder, test-author, reviewer, draft-pr-creator) and the worktree manager land in Plans 3-5 under `docs/superpowers/plans/`.
 
 ## Tech stack
 
@@ -19,8 +19,11 @@ This repo currently contains the **milestone-1/2 skeleton** — project bootstra
 | `bun install` | Install dependencies |
 | `bun test` | Run the full test suite |
 | `bun run typecheck` | TypeScript type checking |
-| `bun run start` | Start the watcher (placeholder until the watcher lands) |
-| `bun run once` | Single poll cycle (placeholder) |
+| `bun run start` | Start the long-running watcher; polls every POLL_INTERVAL_MINUTES |
+| `bun run once` | Run a single poll cycle and exit with the cycle stats as JSON |
+| `bun run src/cli/index.ts run-wi <id>` | Process a single work item by ID |
+| `bun run src/cli/index.ts reset-state <id>` | Delete `.state/{id}.json` |
+| `bun run src/cli/index.ts debug-tags` | List work item IDs tagged TRIGGER_TAG |
 
 ## Layout
 
