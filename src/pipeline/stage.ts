@@ -24,3 +24,16 @@ export class PipelinePauseError extends Error {
     super(`Pipeline paused: ${reason}`);
   }
 }
+
+export interface RejectionPayload {
+  reasons: string[];
+  summary: string;
+  questions?: string[];
+}
+
+export class PipelineRejectError extends Error {
+  override readonly name = 'PipelineRejectError';
+  constructor(public readonly payload: RejectionPayload) {
+    super(`Pipeline rejected: ${payload.summary}`);
+  }
+}

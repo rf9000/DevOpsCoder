@@ -8,7 +8,7 @@ import {
   StageNotFoundError,
 } from '../../src/pipeline/orchestrator.ts';
 import type { Stage, PipelineContext } from '../../src/pipeline/stage.ts';
-import { PipelinePauseError } from '../../src/pipeline/stage.ts';
+import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
 
@@ -42,6 +42,19 @@ function makeStage(
   canRun: (s: PipelineState) => boolean = () => true,
 ): Stage {
   return { name, canRun, execute: exec };
+}
+
+type MockStore = PipelineStateStore & {
+  save: ReturnType<typeof mock<(s: PipelineState) => void>>;
+  load: ReturnType<typeof mock<(id: number) => PipelineState | undefined>>;
+};
+
+function makeMockStore(): MockStore {
+  const obj = {
+    save: mock((_s: PipelineState) => {}),
+    load: mock((_id: number) => undefined as PipelineState | undefined),
+  };
+  return obj as unknown as MockStore;
 }
 
 describe('createInitialState', () => {
@@ -214,5 +227,131 @@ describe('runPipeline', () => {
     state.currentStage = 'b';
     await runPipeline({ stages, state, context: ctx, store });
     expect(calls).toEqual(['b', 'c']);
+  });
+
+  it('catches PipelineRejectError, writes state.rejection, and returns cleanly', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['description is too vague', 'no acceptance criteria'],
+          summary: 'WI is not ready to implement',
+        });
+      },
+    };
+    const state = createInitialState(101, 'fix-login');
+    const store = makeMockStore();
+    const ctx = makeContext();
+    const result = await runPipeline({
+      stages: [rejectStage],
+      state,
+      context: ctx,
+      store,
+    });
+    expect(result.rejection).toBeDefined();
+    expect(result.rejection?.reasons).toEqual([
+      'description is too vague',
+      'no acceptance criteria',
+    ]);
+    expect(result.rejection?.summary).toBe('WI is not ready to implement');
+    expect(result.rejection?.stage).toBe('analyzer');
+    expect(result.rejection?.at).toBeTruthy();
+    expect(result.completedAt).toBeUndefined();
+    expect(result.terminalError).toBeUndefined();
+  });
+
+  it('records a reject history entry with the summary as message', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['x'],
+          summary: 'not ready',
+        });
+      },
+    };
+    const state = createInitialState(101, 'wi');
+    const store = makeMockStore();
+    const result = await runPipeline({
+      stages: [rejectStage],
+      state,
+      context: makeContext(),
+      store,
+    });
+    const last = result.history[result.history.length - 1];
+    expect(last?.outcome).toBe('reject');
+    expect(last?.stage).toBe('analyzer');
+    expect(last?.message).toBe('not ready');
+  });
+
+  it('persists state via the store before returning from the reject branch', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({ reasons: [], summary: 'no' });
+      },
+    };
+    const state = createInitialState(101, 'wi');
+    const store = makeMockStore();
+    await runPipeline({
+      stages: [rejectStage],
+      state,
+      context: makeContext(),
+      store,
+    });
+    expect(store.save).toHaveBeenCalled();
+    const savedState = store.save.mock.calls[store.save.mock.calls.length - 1]?.[0] as PipelineState;
+    expect(savedState.rejection?.summary).toBe('no');
+  });
+
+  it('forwards optional questions from the reject payload to state.rejection', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['unclear'],
+          summary: 's',
+          questions: ['What is the expected output format?', 'Which AL extension?'],
+        });
+      },
+    };
+    const state = createInitialState(101, 'wi');
+    const store = makeMockStore();
+    const result = await runPipeline({
+      stages: [rejectStage],
+      state,
+      context: makeContext(),
+      store,
+    });
+    expect(result.rejection?.questions).toEqual([
+      'What is the expected output format?',
+      'Which AL extension?',
+    ]);
+  });
+
+  it('a regular thrown Error is still routed to the terminal-error path (regression)', async () => {
+    const boomStage: Stage = {
+      name: 'boom',
+      canRun: () => true,
+      execute: async () => {
+        throw new Error('exploded');
+      },
+    };
+    const state = createInitialState(101, 'wi');
+    const store = makeMockStore();
+    await expect(
+      runPipeline({
+        stages: [boomStage],
+        state,
+        context: makeContext(),
+        store,
+      }),
+    ).rejects.toThrow('exploded');
+    expect(state.terminalError?.stage).toBe('boom');
+    expect(state.rejection).toBeUndefined();
   });
 });

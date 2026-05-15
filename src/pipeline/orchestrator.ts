@@ -1,5 +1,5 @@
 import type { Stage, PipelineContext } from './stage.ts';
-import { PipelinePauseError } from './stage.ts';
+import { PipelinePauseError, PipelineRejectError } from './stage.ts';
 import type { PipelineState, StageHistoryEntry } from '../types/index.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
 
@@ -94,6 +94,24 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
           endedAt,
           outcome: 'pause',
           message: err.reason,
+        });
+        store.save(state);
+        return state;
+      }
+      if (err instanceof PipelineRejectError) {
+        state.rejection = {
+          reasons: err.payload.reasons,
+          summary: err.payload.summary,
+          questions: err.payload.questions,
+          stage: stage.name,
+          at: endedAt,
+        };
+        appendHistory(state, {
+          stage: stage.name,
+          startedAt,
+          endedAt,
+          outcome: 'reject',
+          message: err.payload.summary,
         });
         store.save(state);
         return state;

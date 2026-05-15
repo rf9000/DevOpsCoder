@@ -18,7 +18,7 @@ export interface AppConfig {
   dryRun: boolean;
 }
 
-export type StageOutcome = 'success' | 'failure' | 'skip' | 'pause';
+export type StageOutcome = 'success' | 'failure' | 'skip' | 'pause' | 'reject';
 
 export interface StageHistoryEntry {
   stage: string;
@@ -34,6 +34,14 @@ export interface PipelineTerminalError {
   at: string;
 }
 
+export interface PipelineRejection {
+  reasons: string[];
+  summary: string;
+  questions?: string[];
+  stage: string;
+  at: string;
+}
+
 export interface PipelineState {
   workItemId: number;
   slug: string;
@@ -42,6 +50,8 @@ export interface PipelineState {
   completedAt?: string;
   cancelled?: boolean;
   terminalError?: PipelineTerminalError;
+  rejection?: PipelineRejection;
+  rejectCount?: number;
   currentStage: string | null;
   history: StageHistoryEntry[];
   attempts: Record<string, number>;
