@@ -1,0 +1,35 @@
+{
+  "$schema_version": "1.0",
+  "plan_file": "docs/superpowers/plans/2026-05-15-plan-3-analyzer-stage.md",
+  "repo_root": "C:/GeneralDev/DevOpsPullers/DevOpsCoder",
+  "shell": "powershell",
+  "agent_protocol": {
+    "subagent_brief": "Plan 3 introduces the analyzer stage (a readiness gate). The plan file is a design brief, not verbatim code. The controller (driver) curates the full verbatim test+source code for each task in the implementer subagent's prompt. Each task is TDD: write failing test, verify failure, write minimal implementation, verify pass, commit. Do not deviate unless you hit a typing or runtime error that must be fixed; if you do, document the deviation in your completion report.",
+    "tdd_pattern": "Tasks that include test files follow strict TDD: (1) write the failing test, (2) run the test to verify it fails with the expected message, (3) write the minimal implementation, (4) run the test to verify it passes, (5) commit. Do not write the implementation before seeing the test fail.",
+    "completion_criteria": "A task is complete only when every entry in 'verification_commands' exits 0 with the expected output AND the commit described in 'commit' has been created. Report the actual test counts and command outputs in your completion message.",
+    "do_not": [
+      "Do not skip the 'verify it fails' step.",
+      "Do not amend or rewrite earlier commits.",
+      "Do not run --no-verify or skip hooks.",
+      "Do not add features beyond what the task requires.",
+      "Do not introduce real network calls in tests. Always pass a mock fetchImpl / mock AgentRunner.",
+      "Do not reach for `agentStage` factory for the analyzer — it's a hand-rolled Stage by design (see plan decisions)."
+    ]
+  },
+  "tasks": [
+    { "id": "task-01-orchestrator-reject", "name": "Orchestrator reject flow", "depends_on": [], "summary": "Add PipelineRejectError, extend StageOutcome with 'reject', extend PipelineState with rejection + rejectCount, runPipeline catches and persists.", "tdd": true, "expected_test_count": 5 },
+    { "id": "task-02-runner-options", "name": "claude-agent-runner option pass-through", "depends_on": ["task-01-orchestrator-reject"], "summary": "Extend AgentRunArgs with cwd, disallowedTools, maxTurns, canUseTool, systemPromptAppend, settingSources. Switch to claude_code preset with combined append. Extract buildQueryOptions helper.", "tdd": true, "expected_test_count": 6 },
+    { "id": "task-03-ado-extensions", "name": "ADO client full WI fetch + comments + tag verb check", "depends_on": ["task-01-orchestrator-reject"], "summary": "getWorkItem uses $expand=all. New getWorkItemComments. Test that tag-removal PATCH verb actually removes (fix from 'add' to 'replace' if sibling's warning applies).", "tdd": true, "expected_test_count": 6 },
+    { "id": "task-04-skill-loader", "name": "Skill loader", "depends_on": [], "summary": "Port discoverTargetRepoSkills + extractFrontmatterDescription from sibling.", "tdd": true, "expected_test_count": 6 },
+    { "id": "task-05-html-utils", "name": "HTML helpers", "depends_on": [], "summary": "Port stripHtmlToText + extractImageUrls from sibling.", "tdd": true, "expected_test_count": 5 },
+    { "id": "task-06-wi-context", "name": "WI-context fetcher", "depends_on": ["task-03-ado-extensions", "task-05-html-utils"], "summary": "fetchWiContext(ado, id) — combines full WI + comments + HTML strip + image URL extraction.", "tdd": true, "expected_test_count": 4 },
+    { "id": "task-07-analyzer-prompt", "name": "Analyzer prompt template", "depends_on": [], "summary": "Create src/prompts/analyzer.md — system prompt for the analyzer.", "tdd": false },
+    { "id": "task-08-analyzer-stage", "name": "Analyzer stage", "depends_on": ["task-01-orchestrator-reject", "task-02-runner-options", "task-06-wi-context", "task-07-analyzer-prompt"], "summary": "Hand-rolled Stage (not via agentStage). Calls runner.run(); on proceed updates state.outputs.analyzer; on reject throws PipelineRejectError.", "tdd": true, "expected_test_count": 7 },
+    { "id": "task-09-pipeline-builder", "name": "Pipeline builder wiring", "depends_on": ["task-04-skill-loader", "task-08-analyzer-stage"], "summary": "buildPipeline returns [analyzer]; discover skills; instantiate runner; pass deps.", "tdd": true, "expected_test_count": 2 },
+    { "id": "task-10-state-store-filter", "name": "State-store rejection filter", "depends_on": ["task-01-orchestrator-reject"], "summary": "listResumable excludes states where state.rejection !== undefined.", "tdd": true, "expected_test_count": 1 },
+    { "id": "task-11-processor-dispatch", "name": "Processor verdict dispatch + idempotent recovery", "depends_on": ["task-01-orchestrator-reject", "task-03-ado-extensions", "task-08-analyzer-stage", "task-10-state-store-filter"], "summary": "Branch on state.rejection. Escalation at MAX. Persist rejectCount before writes. Idempotent recovery at entry. Render comment via marked. New ProcessOutcome 'rejected'.", "tdd": true, "expected_test_count": 6 },
+    { "id": "task-12-watcher-counter", "name": "Watcher outcome counter", "depends_on": ["task-11-processor-dispatch"], "summary": "CycleStats.rejected + switch branch.", "tdd": true, "expected_test_count": 1 },
+    { "id": "task-13-e2e", "name": "End-to-end integration test", "depends_on": ["task-11-processor-dispatch", "task-12-watcher-counter"], "summary": "Reject → re-tag → reject → blocked across cycles. Plus full-suite verification (~140 tests across ~22 files).", "tdd": false, "expected_test_count": 3 },
+    { "id": "task-14-docs", "name": "Documentation + final verification", "depends_on": ["task-13-e2e"], "summary": "Update README/CLAUDE.md/PATTERNS.md. Final gate: bun install / typecheck / full suite green / working tree clean." }
+  ]
+}
