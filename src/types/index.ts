@@ -47,3 +47,46 @@ export interface PipelineState {
   attempts: Record<string, number>;
   outputs: Record<string, unknown>;
 }
+
+export interface WorkItemReference {
+  id: number;
+  url?: string;
+}
+
+export interface WiqlQueryResponse {
+  workItems: WorkItemReference[];
+}
+
+export interface WorkItemFields {
+  'System.Title'?: string;
+  'System.State'?: string;
+  'System.Tags'?: string;
+  'System.AssignedTo'?: { displayName?: string; uniqueName?: string } | string;
+}
+
+export interface WorkItem {
+  id: number;
+  rev?: number;
+  fields: WorkItemFields;
+  url?: string;
+}
+
+export interface CommentResponse {
+  id?: number;
+  text?: string;
+  createdDate?: string;
+}
+
+export type ProcessOutcome =
+  | { kind: 'completed'; workItemId: number }
+  | { kind: 'paused'; workItemId: number; stage: string }
+  | { kind: 'failed'; workItemId: number; error: PipelineTerminalError }
+  | { kind: 'skipped'; workItemId: number; reason: string };
+
+export interface CycleStats {
+  considered: number;
+  completed: number;
+  paused: number;
+  failed: number;
+  skipped: number;
+}
