@@ -1,0 +1,228 @@
+{
+  "$schema_version": "1.0",
+  "plan_file": "docs/superpowers/plans/2026-05-15-plan-2-ado-client-and-watcher.md",
+  "repo_root": "C:/GeneralDev/DevOpsPullers/DevOpsCoder",
+  "shell": "powershell",
+  "agent_protocol": {
+    "subagent_brief": "Each task object describes one self-contained unit of work. Open the plan_file at the heading named in 'plan_section_heading' and follow every step in that section literally — file contents, exact commands, and commit message are all spelled out there. Use the file contents shown in the plan verbatim. Do not deviate unless you hit a typing or runtime error that must be fixed; if you do, document the deviation in your completion report.",
+    "tdd_pattern": "Tasks that include test files follow strict TDD: (1) write the failing test, (2) run the test to verify it fails with the expected message, (3) write the minimal implementation, (4) run the test to verify it passes, (5) commit. Do not write the implementation before seeing the test fail.",
+    "completion_criteria": "A task is complete only when every entry in 'verification_commands' exits 0 with the expected output AND the commit described in 'commit' has been created. Report the actual test counts and command outputs in your completion message.",
+    "do_not": [
+      "Do not skip the 'verify it fails' step — it confirms the test is exercising new code, not passing accidentally.",
+      "Do not amend or rewrite earlier commits.",
+      "Do not run --no-verify or skip hooks.",
+      "Do not add features beyond what the task requires.",
+      "Do not introduce real network calls in tests. Always pass a mock fetchImpl to createAdoClient."
+    ]
+  },
+  "tasks": [
+    {
+      "id": "task-01-types",
+      "name": "Extend shared types",
+      "depends_on": [],
+      "plan_section_heading": "## Task 1: Extend shared types",
+      "summary": "Append WorkItemReference, WiqlQueryResponse, WorkItemFields, WorkItem, CommentResponse, ProcessOutcome (4-variant discriminated union), and CycleStats to src/types/index.ts. No tests — typecheck only.",
+      "creates": [],
+      "modifies": [
+        { "path": "src/types/index.ts", "purpose": "Add ADO response shapes + ProcessOutcome + CycleStats" }
+      ],
+      "tdd": false,
+      "verification_commands": [
+        { "cmd": "bun run typecheck", "expect": "PASS, exit 0" }
+      ],
+      "commit": {
+        "stage": ["src/types/index.ts"],
+        "message": "feat(types): add ADO response + ProcessOutcome + CycleStats types"
+      }
+    },
+    {
+      "id": "task-02-ado-client",
+      "name": "Azure DevOps REST client",
+      "depends_on": ["task-01-types"],
+      "plan_section_heading": "## Task 2: ADO REST client",
+      "summary": "Create src/sdk/azure-devops-client.ts exposing createAdoClient(config, fetchImpl?, retryDelaysMs?) returning an AdoClient interface (queryWorkItemsByTag, getWorkItem, addTagToWorkItem, removeTagFromWorkItem, addWorkItemComment) plus AzureDevOpsError class. PAT Basic auth, retry 5xx with configurable delays, WIQL escape single quotes, tag CSV split/join with case-insensitive contains. Tests inject a mock fetchImpl — no globalThis.fetch monkey-patching.",
+      "creates": [
+        { "path": "src/sdk/azure-devops-client.ts", "purpose": "AdoClient interface + createAdoClient factory + AzureDevOpsError" },
+        { "path": "tests/sdk/azure-devops-client.test.ts", "purpose": "14 tests covering query (4) / getWorkItem (2) / removeTag (2) / addTag (2) / addComment (1) / retry+error (3)" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 14,
+      "verification_commands": [
+        { "cmd": "bun test tests/sdk/azure-devops-client.test.ts", "expect": "PASS, 14 tests" },
+        { "cmd": "bun run typecheck", "expect": "PASS" }
+      ],
+      "commit": {
+        "stage": ["src/sdk/azure-devops-client.ts", "tests/sdk/azure-devops-client.test.ts"],
+        "message": "feat(sdk): add Azure DevOps REST client with retry and tag ops"
+      }
+    },
+    {
+      "id": "task-03-pool",
+      "name": "Concurrency pool helper",
+      "depends_on": ["task-01-types"],
+      "plan_section_heading": "## Task 3: Concurrency pool helper",
+      "summary": "Implement runPool(items, n, worker) in src/utils/pool.ts: spawn min(n, items.length) workers that drain a shared queue; worker errors are caught and returned in result.errors rather than aborting the pool.",
+      "creates": [
+        { "path": "src/utils/pool.ts", "purpose": "runPool, PoolResult, PoolError" },
+        { "path": "tests/utils/pool.test.ts", "purpose": "4 tests: processes each item once, respects concurrency cap, isolates errors, handles empty input" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 4,
+      "verification_commands": [
+        { "cmd": "bun test tests/utils/pool.test.ts", "expect": "PASS, 4 tests" }
+      ],
+      "commit": {
+        "stage": ["src/utils/pool.ts", "tests/utils/pool.test.ts"],
+        "message": "feat(utils): add bounded-parallel async runPool helper"
+      }
+    },
+    {
+      "id": "task-04-pipeline-builder",
+      "name": "Pipeline builder factory (empty in Plan 2)",
+      "depends_on": ["task-02-ado-client"],
+      "plan_section_heading": "## Task 4: Pipeline builder factory",
+      "summary": "Create src/services/pipeline-builder.ts exporting PipelineBuilderDeps and buildPipeline(deps) returning Stage[]. In Plan 2 the body returns []. Locks the wiring for processor + watcher; Plans 3-5 replace the body with real stages.",
+      "creates": [
+        { "path": "src/services/pipeline-builder.ts", "purpose": "buildPipeline factory; empty array for Plan 2" },
+        { "path": "tests/services/pipeline-builder.test.ts", "purpose": "1 test: returns []" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 1,
+      "verification_commands": [
+        { "cmd": "bun test tests/services/pipeline-builder.test.ts", "expect": "PASS, 1 test" },
+        { "cmd": "bun run typecheck", "expect": "PASS" }
+      ],
+      "commit": {
+        "stage": ["src/services/pipeline-builder.ts", "tests/services/pipeline-builder.test.ts"],
+        "message": "feat(services): add buildPipeline factory (empty for Plan 2)"
+      }
+    },
+    {
+      "id": "task-05-processor",
+      "name": "Per-WI processor",
+      "depends_on": ["task-02-ado-client", "task-04-pipeline-builder"],
+      "plan_section_heading": "## Task 5: Per-WI processor",
+      "summary": "Implement createProcessor(deps) → { processWorkItem(id): ProcessOutcome }. Fetch WI (skip 404 / closed-state), load-or-create state, build pipeline, runPipeline, dispatch outcome: completed → removeTagFromWorkItem(triggerTag); paused → no ADO write; failed → addTagToWorkItem(blockedTag). config.dryRun suppresses all ADO writes (but pipeline still runs and state persists).",
+      "creates": [
+        { "path": "src/services/processor.ts", "purpose": "createProcessor + Processor + ProcessorDeps" },
+        { "path": "tests/services/processor.test.ts", "purpose": "6 tests: empty-pipeline completion, 404 skip, closed-state skip, pause path, failure + blocked tag, dry-run suppression" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 6,
+      "verification_commands": [
+        { "cmd": "bun test tests/services/processor.test.ts", "expect": "PASS, 6 tests" },
+        { "cmd": "bun run typecheck", "expect": "PASS" }
+      ],
+      "commit": {
+        "stage": ["src/services/processor.ts", "tests/services/processor.test.ts"],
+        "message": "feat(services): add per-WI processor with outcome dispatch"
+      }
+    },
+    {
+      "id": "task-06-watcher",
+      "name": "Polling watcher loop",
+      "depends_on": ["task-03-pool", "task-05-processor"],
+      "plan_section_heading": "## Task 6: Polling watcher loop",
+      "summary": "Implement watcher.ts with createAbortFlag(), runPollCycle(deps) → CycleStats (queries triggerTag, unions with store.listResumable(), dedups, dispatches through runPool, aggregates outcomes; processor exceptions count as failed without aborting cycle; abortFlag halts new dispatches), and startWatcher(deps) (long-running; SIGINT/SIGTERM → abortFlag; sleepInterruptible between cycles).",
+      "creates": [
+        { "path": "src/services/watcher.ts", "purpose": "runPollCycle + startWatcher + createAbortFlag + sleepInterruptible" },
+        { "path": "tests/services/watcher.test.ts", "purpose": "7 tests: outcome aggregation, triggerTag forwarded, resumable union dedup, concurrency cap, processor-throws isolation, no-candidates short-circuit, abortFlag mid-cycle" }
+      ],
+      "modifies": [],
+      "tdd": true,
+      "expected_test_count": 7,
+      "verification_commands": [
+        { "cmd": "bun test tests/services/watcher.test.ts", "expect": "PASS, 7 tests" },
+        { "cmd": "bun run typecheck", "expect": "PASS" }
+      ],
+      "commit": {
+        "stage": ["src/services/watcher.ts", "tests/services/watcher.test.ts"],
+        "message": "feat(services): add polling watcher with concurrency and graceful shutdown"
+      }
+    },
+    {
+      "id": "task-07-cli",
+      "name": "Wire up real CLI commands",
+      "depends_on": ["task-06-watcher"],
+      "plan_section_heading": "## Task 7: Wire up real CLI commands",
+      "summary": "Replace src/cli/index.ts placeholders. New subcommands: watch (startWatcher), run-once (runPollCycle, print stats JSON), run-wi <id> (processor.processWorkItem, print outcome JSON), reset-state <id> (store.delete), debug-tags (queryWorkItemsByTag). --dry-run flag flips config.dryRun=true after loadConfig. help/version still work without env vars.",
+      "creates": [],
+      "modifies": [
+        { "path": "src/cli/index.ts", "purpose": "Wire watch/run-once/run-wi/reset-state/debug-tags with --dry-run support" }
+      ],
+      "tdd": false,
+      "verification_commands": [
+        { "cmd": "bun run typecheck", "expect": "PASS" },
+        { "cmd": "bun run src/cli/index.ts help", "expect": "Prints help block, exit 0, no env vars needed" },
+        { "cmd": "bun run src/cli/index.ts version", "expect": "Prints '0.1.0', exit 0" },
+        { "cmd": "bun run src/cli/index.ts garbage", "expect": "Prints 'Unknown command: garbage' + help, exit code 1" }
+      ],
+      "commit": {
+        "stage": ["src/cli/index.ts"],
+        "message": "feat(cli): wire watch, run-once, run-wi, reset-state, debug-tags"
+      }
+    },
+    {
+      "id": "task-08-e2e",
+      "name": "End-to-end integration test",
+      "depends_on": ["task-06-watcher", "task-05-processor", "task-04-pipeline-builder"],
+      "plan_section_heading": "## Task 8: End-to-end integration test",
+      "summary": "Cross-cutting test wiring real runPollCycle + real PipelineStateStore + real createProcessor + real buildPipeline (empty) against a mock AdoClient. 3 scenarios: happy path (2 WIs complete, tag removed), resumable carries over (state exists, tag query empty), dry-run (state completes but no ADO writes). No source changes.",
+      "creates": [
+        { "path": "tests/integration/watcher-e2e.test.ts", "purpose": "3 end-to-end tests" }
+      ],
+      "modifies": [],
+      "tdd": false,
+      "expected_test_count": 3,
+      "verification_commands": [
+        { "cmd": "bun test tests/integration/watcher-e2e.test.ts", "expect": "PASS, 3 tests" },
+        { "cmd": "bun test", "expect": "PASS — full suite, 94 tests across 16 files. If your local count differs, fix the README/PATTERNS doc in task-09 to match the actual numbers before committing." },
+        { "cmd": "bun run typecheck", "expect": "PASS" }
+      ],
+      "commit": {
+        "stage": ["tests/integration/watcher-e2e.test.ts"],
+        "message": "test(integration): add end-to-end watcher + empty-pipeline test"
+      }
+    },
+    {
+      "id": "task-09-docs-and-final-verification",
+      "name": "Documentation + final verification",
+      "depends_on": ["task-08-e2e", "task-07-cli"],
+      "plan_section_heading": "## Task 9: Documentation + final verification",
+      "summary": "Update README.md (replace 'placeholder' wording, add new CLI commands, bump milestone language), CLAUDE.md (add src/sdk/ to file layout, trim out-of-scope list to remove items now implemented), and PATTERNS.md (add ADO client, concurrency pool, watcher loop pattern sections). Final verification gate: bun install / typecheck / full test suite all green, working tree clean after commit.",
+      "creates": [],
+      "modifies": [
+        { "path": "README.md", "purpose": "Replace placeholder wording; document new CLI commands; update milestone status" },
+        { "path": "CLAUDE.md", "purpose": "Add src/sdk/ to layout; trim out-of-scope list" },
+        { "path": "PATTERNS.md", "purpose": "Add ADO client, concurrency pool, watcher loop pattern sections" }
+      ],
+      "tdd": false,
+      "verification_commands": [
+        { "cmd": "bun install", "expect": "exit 0, no changes to bun.lock" },
+        { "cmd": "bun run typecheck", "expect": "PASS, no diagnostics" },
+        { "cmd": "bun test", "expect": "PASS — 94 tests across 16 files (logger 4, slug 6, pool 4, config 8, state-store 11, orchestrator 9, agent-stage 4, revision-loop 6, checkpoint 4, claude-agent-runner 5, pipeline-builder 1, processor 6, watcher 7, azure-devops-client 14, orchestrator-e2e 2, watcher-e2e 3)" },
+        { "cmd": "bun run src/cli/index.ts help", "expect": "prints help block, exit 0" },
+        { "cmd": "git status", "expect": "After commit: 'nothing to commit, working tree clean'" }
+      ],
+      "commit": {
+        "stage": ["README.md", "CLAUDE.md", "PATTERNS.md"],
+        "message": "docs: update README / CLAUDE.md / PATTERNS.md for Plan 2"
+      },
+      "plan_completion_checklist": [
+        "src/sdk/azure-devops-client.ts with createAdoClient and AzureDevOpsError",
+        "src/utils/pool.ts with runPool",
+        "src/services/pipeline-builder.ts returning Stage[] (empty in this plan)",
+        "src/services/processor.ts with createProcessor and the four ProcessOutcome shapes",
+        "src/services/watcher.ts with runPollCycle, startWatcher, createAbortFlag",
+        "src/cli/index.ts with real watch, run-once, run-wi, reset-state, debug-tags, --dry-run",
+        "Test suite green: 94 tests across 16 files",
+        "bun run typecheck green",
+        "README / CLAUDE.md / PATTERNS.md updated; working tree clean"
+      ]
+    }
+  ]
+}
