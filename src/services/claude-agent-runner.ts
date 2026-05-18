@@ -3,7 +3,7 @@ import type { AgentRunner, AgentRunArgs } from '../pipeline/agent-stage.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AppConfig } from '../types/index.ts';
 
-const STRUCTURED_OUTPUT_INSTRUCTION =
+export const STRUCTURED_OUTPUT_INSTRUCTION =
   'Respond with ONLY a single valid JSON object that satisfies the schema described in the prompt. ' +
   'No prose, no markdown fences, no commentary. Output the JSON object and nothing else.';
 
@@ -37,20 +37,46 @@ export interface ClaudeAgentRunnerDeps {
   logger: Logger;
 }
 
+/**
+ * Build the options object passed to the Claude Agent SDK's `query()`.
+ * Pure helper — testable in isolation, no SDK call.
+ */
+export function buildQueryOptions<T>(
+  args: AgentRunArgs<T>,
+  deps: ClaudeAgentRunnerDeps,
+): Record<string, unknown> {
+  const baseAppend = STRUCTURED_OUTPUT_INSTRUCTION;
+  const fullAppend = args.systemPromptAppend
+    ? `${baseAppend}\n\n${args.systemPromptAppend}`
+    : baseAppend;
+
+  const opts: Record<string, unknown> = {
+    model: args.model ?? deps.config.claudeModel,
+    allowedTools: args.tools ?? [],
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: fullAppend },
+  };
+
+  if (args.disallowedTools !== undefined) opts.disallowedTools = args.disallowedTools;
+  if (args.maxTurns !== undefined) opts.maxTurns = args.maxTurns;
+  if (args.cwd !== undefined) opts.cwd = args.cwd;
+  if (args.canUseTool !== undefined) opts.canUseTool = args.canUseTool;
+  if (args.settingSources !== undefined) opts.settingSources = args.settingSources;
+
+  return opts;
+}
+
 export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunner {
   return {
     async run<T>(args: AgentRunArgs<T>): Promise<T> {
       let result: string | undefined;
 
+      const options = buildQueryOptions(args, deps);
+
       for await (const message of query({
         prompt: args.prompt,
-        options: {
-          model: args.model ?? deps.config.claudeModel,
-          allowedTools: args.tools ?? [],
-          permissionMode: 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-          systemPrompt: STRUCTURED_OUTPUT_INSTRUCTION,
-        },
+        options: options as Parameters<typeof query>[0]['options'],
       })) {
         if (message.type === 'result') {
           deps.logger.info(

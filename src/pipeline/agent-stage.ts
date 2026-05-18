@@ -2,11 +2,24 @@ import type { z } from 'zod';
 import type { Stage, PipelineContext } from './stage.ts';
 import type { PipelineState } from '../types/index.ts';
 
+export type CanUseToolFn = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<{ behavior: 'allow' } | { behavior: 'deny'; message: string }>;
+
+export type SettingSource = 'user' | 'project' | 'local';
+
 export interface AgentRunArgs<T> {
   prompt: string;
   schema: z.ZodSchema<T>;
   tools?: string[];
+  disallowedTools?: string[];
   model?: string;
+  maxTurns?: number;
+  cwd?: string;
+  systemPromptAppend?: string;
+  settingSources?: SettingSource[];
+  canUseTool?: CanUseToolFn;
 }
 
 export interface AgentRunner {
@@ -18,7 +31,13 @@ export interface AgentStageConfig<T> {
   buildPrompt: (state: PipelineState, ctx: PipelineContext) => string;
   schema: z.ZodSchema<T>;
   tools?: string[];
+  disallowedTools?: string[];
   model?: string;
+  maxTurns?: number;
+  cwd?: string;
+  systemPromptAppend?: string;
+  settingSources?: SettingSource[];
+  canUseTool?: CanUseToolFn;
   applyOutput: (state: PipelineState, output: T) => PipelineState;
   canRun?: (state: PipelineState) => boolean;
 }
@@ -36,7 +55,13 @@ export function agentStage<T>(
         prompt,
         schema: cfg.schema,
         tools: cfg.tools,
+        disallowedTools: cfg.disallowedTools,
         model: cfg.model,
+        maxTurns: cfg.maxTurns,
+        cwd: cfg.cwd,
+        systemPromptAppend: cfg.systemPromptAppend,
+        settingSources: cfg.settingSources,
+        canUseTool: cfg.canUseTool,
       });
       return cfg.applyOutput(state, output);
     },
