@@ -246,6 +246,128 @@ describe('createAdoClient', () => {
     });
   });
 
+  describe('createPullRequest', () => {
+    it('POSTs to the right URL with isDraft: true and returns the PR', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(201, {
+          pullRequestId: 42,
+          url: 'https://dev.azure.com/my-org/my-project/_apis/git/repositories/test-repo/pullrequests/42',
+          sourceRefName: 'refs/heads/agent/wi-101-fix-login',
+          targetRefName: 'refs/heads/main',
+        }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      const pr = await client.createPullRequest({
+        repositoryName: 'test-repo',
+        sourceRefName: 'refs/heads/agent/wi-101-fix-login',
+        targetRefName: 'refs/heads/main',
+        title: 'Fix login',
+        description: 'Fixes the login bug',
+        isDraft: true,
+      });
+      expect(pr.id).toBe(42);
+      expect(pr.url).toBe('https://dev.azure.com/my-org/my-project/_apis/git/repositories/test-repo/pullrequests/42');
+      expect(pr.sourceRefName).toBe('refs/heads/agent/wi-101-fix-login');
+      expect(pr.targetRefName).toBe('refs/heads/main');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe(
+        'https://dev.azure.com/my-org/my-project/_apis/git/repositories/test-repo/pullrequests?api-version=7.1',
+      );
+      expect(calls[0]!.init?.method).toBe('POST');
+      const body = JSON.parse(calls[0]!.init?.body as string) as {
+        sourceRefName: string;
+        targetRefName: string;
+        title: string;
+        description: string;
+        isDraft: boolean;
+      };
+      expect(body.sourceRefName).toBe('refs/heads/agent/wi-101-fix-login');
+      expect(body.targetRefName).toBe('refs/heads/main');
+      expect(body.title).toBe('Fix login');
+      expect(body.description).toBe('Fixes the login bug');
+      expect(body.isDraft).toBe(true);
+    });
+
+    it('URL-encodes project and repository name', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(201, {
+          pullRequestId: 7,
+          url: 'https://dev.azure.com/my-org/my%20project/_apis/git/repositories/my%20repo/pullrequests/7',
+          sourceRefName: 'refs/heads/agent/wi-1',
+          targetRefName: 'refs/heads/main',
+        }),
+      ]);
+      const client = createAdoClient(makeConfig({ project: 'my project' }), fetchImpl);
+      await client.createPullRequest({
+        repositoryName: 'my repo',
+        sourceRefName: 'refs/heads/agent/wi-1',
+        targetRefName: 'refs/heads/main',
+        title: 'Test',
+        description: 'desc',
+        isDraft: false,
+      });
+      expect(calls[0]!.url).toContain('my%20project');
+      expect(calls[0]!.url).toContain('my%20repo');
+    });
+
+    it('sends body fields as provided (isDraft: false forwarded faithfully)', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(201, {
+          pullRequestId: 55,
+          url: 'https://dev.azure.com/my-org/my-project/_apis/git/repositories/test-repo/pullrequests/55',
+          sourceRefName: 'refs/heads/agent/wi-200',
+          targetRefName: 'refs/heads/develop',
+        }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      await client.createPullRequest({
+        repositoryName: 'test-repo',
+        sourceRefName: 'refs/heads/agent/wi-200',
+        targetRefName: 'refs/heads/develop',
+        title: 'My PR',
+        description: 'Details here',
+        isDraft: false,
+      });
+      const body = JSON.parse(calls[0]!.init?.body as string) as {
+        sourceRefName: string;
+        targetRefName: string;
+        title: string;
+        description: string;
+        isDraft: boolean;
+      };
+      expect(body).toEqual({
+        sourceRefName: 'refs/heads/agent/wi-200',
+        targetRefName: 'refs/heads/develop',
+        title: 'My PR',
+        description: 'Details here',
+        isDraft: false,
+      });
+    });
+
+    it('throws AzureDevOpsError on 4xx', async () => {
+      const fetchImpl = setupFetch([
+        new Response('Validation Failed', { status: 422 }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      let caught: unknown;
+      try {
+        await client.createPullRequest({
+          repositoryName: 'test-repo',
+          sourceRefName: 'refs/heads/agent/wi-999',
+          targetRefName: 'refs/heads/main',
+          title: 'Bad PR',
+          description: '',
+          isDraft: true,
+        });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(AzureDevOpsError);
+      expect((caught as AzureDevOpsError).statusCode).toBe(422);
+      expect((caught as AzureDevOpsError).message).toContain('Validation Failed');
+    });
+  });
+
   describe('error + retry behaviour', () => {
     it('throws AzureDevOpsError with statusCode on 4xx', async () => {
       const fetchImpl = setupFetch([

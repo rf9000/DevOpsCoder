@@ -53,6 +53,7 @@ function makeAdo(): AdoClient {
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},
+    createPullRequest: async () => ({ id: 0, url: '', sourceRefName: '', targetRefName: '' }),
   };
 }
 

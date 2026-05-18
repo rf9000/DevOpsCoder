@@ -1,5 +1,7 @@
 import type {
   AppConfig,
+  CreatePullRequestArgs,
+  PullRequest,
   WiqlQueryResponse,
   WorkItem,
   WorkItemComment,
@@ -22,6 +24,7 @@ export interface AdoClient {
   addTagToWorkItem(workItemId: number, tag: string): Promise<void>;
   removeTagFromWorkItem(workItemId: number, tag: string): Promise<void>;
   addWorkItemComment(workItemId: number, html: string): Promise<void>;
+  createPullRequest(opts: CreatePullRequestArgs): Promise<PullRequest>;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000];
@@ -164,6 +167,33 @@ export function createAdoClient(
         `/${encodeURIComponent(config.project)}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.3`,
         { method: 'POST', body: JSON.stringify({ text: html }) },
       );
+    },
+
+    async createPullRequest(opts: CreatePullRequestArgs): Promise<PullRequest> {
+      const response = await adoFetchWithRetry<{
+        pullRequestId: number;
+        url: string;
+        sourceRefName: string;
+        targetRefName: string;
+      }>(
+        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(opts.repositoryName)}/pullrequests?api-version=7.1`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceRefName: opts.sourceRefName,
+            targetRefName: opts.targetRefName,
+            title: opts.title,
+            description: opts.description,
+            isDraft: opts.isDraft,
+          }),
+        },
+      );
+      return {
+        id: response.pullRequestId,
+        url: response.url,
+        sourceRefName: response.sourceRefName,
+        targetRefName: response.targetRefName,
+      };
     },
   };
 }
