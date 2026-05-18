@@ -93,9 +93,11 @@ function makeConfig(targetRepoPath: string, worktreeBase: string): AppConfig {
 describe('createWorktreeManager', () => {
   let sandbox: Awaited<ReturnType<typeof setupTestRepo>>;
 
+  // setupTestRepo runs ~9 sequential `git` subprocess calls (~9s on Windows).
+  // Bun's default hook timeout is 5s — bump to 30s for these tests.
   beforeEach(async () => {
     sandbox = await setupTestRepo();
-  });
+  }, 30000);
 
   afterEach(() => {
     sandbox.cleanup();
