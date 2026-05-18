@@ -85,4 +85,87 @@ describe('createBashAllowlist', () => {
     const result = await filter('Bash', { command: 'cd /some/path' });
     expect(result.behavior).toBe('deny');
   });
+
+  describe('shell composition (security-critical: anti-bypass)', () => {
+    // The `^`-anchored allowlist scans only the start of the command string.
+    // Without these guards, `git status && git push` would be allowed because
+    // it starts with `git status`. Each test exercises one composition vector.
+
+    const filter = createBashAllowlist({
+      allow: [/^git status\b/, /^git add\b/, /^echo\b/, /^cat\b/, /^ls\b/],
+      deny: [/^git push\b/, /^rm\b/],
+    });
+
+    it('denies `&&` composition (the classic bypass)', async () => {
+      const result = await filter('Bash', {
+        command: 'git status && git push origin main',
+      });
+      expect(result.behavior).toBe('deny');
+      if (result.behavior === 'deny') {
+        expect(result.message).toContain('shell composition');
+      }
+    });
+
+    it('denies `||` composition', async () => {
+      const result = await filter('Bash', {
+        command: 'git add x || rm -rf /',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('denies `;` composition', async () => {
+      const result = await filter('Bash', {
+        command: 'echo hi; rm -rf /',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('denies pipe composition', async () => {
+      const result = await filter('Bash', {
+        command: 'cat foo.txt | head',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('denies command substitution `$(...)`', async () => {
+      const result = await filter('Bash', {
+        command: 'echo $(git rev-parse HEAD)',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('denies backtick command substitution', async () => {
+      const result = await filter('Bash', {
+        command: 'echo `whoami`',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+
+    it('denies output redirection (> / >>)', async () => {
+      expect((await filter('Bash', { command: 'cat foo > out.txt' })).behavior).toBe('deny');
+      expect((await filter('Bash', { command: 'cat foo >> out.txt' })).behavior).toBe('deny');
+    });
+
+    it('denies input redirection (< / <<)', async () => {
+      expect((await filter('Bash', { command: 'cat < foo.txt' })).behavior).toBe('deny');
+    });
+
+    it('still allows simple commands without composition', async () => {
+      expect((await filter('Bash', { command: 'git status' })).behavior).toBe('allow');
+      expect((await filter('Bash', { command: 'ls' })).behavior).toBe('allow');
+    });
+
+    it('accepts the false-positive on quoted shell metacharacters (e.g. commit messages)', async () => {
+      // This is the known trade-off: a commit message containing `&&` is rejected.
+      // The model can rephrase without those characters. Document the behavior.
+      const filter2 = createBashAllowlist({
+        allow: [/^git commit\b/],
+        deny: [],
+      });
+      const result = await filter2('Bash', {
+        command: 'git commit -m "feat: foo && bar"',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+  });
 });

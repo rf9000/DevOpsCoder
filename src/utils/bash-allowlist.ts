@@ -14,13 +14,28 @@ export interface BashAllowlistConfig {
 }
 
 /**
+ * Tokens that compose, substitute, or redirect shell commands. Any of these in the
+ * raw command string would let a model bypass the allowlist — e.g. `git status && git push`
+ * starts with an allowed prefix but smuggles in a denied verb. We deny outright when any
+ * of these appear, accepting the (rare) false positive on quoted occurrences of these
+ * characters in commit messages etc. — the model can phrase its commands without them.
+ *
+ * Tokens covered: `&&`, `||`, `;`, `|`, `$(`, backtick, `>`, `>>`, `<`, `<<`.
+ */
+const SHELL_COMPOSITION_RE = /(?:&&|\|\||;|\||`|\$\(|>|<)/;
+
+/**
  * Build a `CanUseToolFn` that enforces a strict allowlist + denylist on Bash tool calls.
  *
  * Semantics:
  * - Non-Bash tool calls (`Read`, `Edit`, etc.) are unconditionally allowed by this filter.
  *   Compose with other filters (e.g. `createPathEscapeFilter`) to constrain non-Bash tools.
- * - For Bash: if any `deny` pattern matches → deny. Else if any `allow` pattern matches → allow.
- *   Else → deny (allowlist semantics — anything not explicitly allowed is rejected).
+ * - Bash commands containing shell composition (`&&`, `||`, `;`, `|`, `$()`, backticks,
+ *   `>`, `<`) are denied outright. They would otherwise let a model bypass the allowlist
+ *   by smuggling a denied verb after an allowed prefix.
+ * - For simple (non-composed) Bash: if any `deny` pattern matches → deny. Else if any
+ *   `allow` pattern matches → allow. Else → deny (allowlist semantics — anything not
+ *   explicitly allowed is rejected).
  * - A Bash call without a `command` field is denied (defensive — unknown shape).
  */
 export function createBashAllowlist(cfg: BashAllowlistConfig): CanUseToolFn {
@@ -30,6 +45,13 @@ export function createBashAllowlist(cfg: BashAllowlistConfig): CanUseToolFn {
     const command = typeof input.command === 'string' ? input.command : '';
     if (command.length === 0) {
       return { behavior: 'deny', message: 'Bash call has no command' };
+    }
+
+    if (SHELL_COMPOSITION_RE.test(command)) {
+      return {
+        behavior: 'deny',
+        message: `Bash command uses shell composition (&&, ||, ;, |, backticks, $(), >, <) — denied to prevent allowlist bypass: ${command}`,
+      };
     }
 
     for (const denyRe of cfg.deny) {
