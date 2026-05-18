@@ -101,7 +101,7 @@ A `Stage` whose `detect()` returns whether a human-action gate has cleared. If n
 
 **File:** `src/services/pipeline-builder.ts`
 
-`buildPipeline(deps)` returns the `Stage[]` for one WI. Plan 3 returns `[analyzer]`; Plans 4-5 will append `[..., worktreeSetup, coder, revisionLoop(coder, reviewer), testAuthor, draftPrCreator, worktreeTeardown]`. Production calls use defaults (real `createClaudeAgentRunner`, real `discoverTargetRepoSkills`, `readFileSync('src/prompts/analyzer.md')`); tests override `runner` / `discoveredSkills` / `analyzerPromptTemplate` so they don't hit Claude or the filesystem.
+`buildPipeline(deps)` returns the `Stage[]` for one WI. Plan 4: `[analyzer, worktreeSetup, revisionLoop(coder, reviewer), testAuthor]`. Plan 5 will append `draftPrCreator` + `worktreeTeardown` and replace the reviewer body in-place (file name and factory name stay stable). Production callers use defaults (real `createClaudeAgentRunner`, real `createWorktreeManager`, real `discoverTargetRepoSkills`, `readFileSync` on the three prompt files); tests override `runner` / `worktreeManager` / `discoveredSkills` / `analyzerPromptTemplate` / `coderPromptTemplate` / `testAuthorPromptTemplate` / `getCurrentHeadSha` / `resetWorktree` so they don't hit Claude, git, or the filesystem.
 
 ## Analyzer stage (readiness gate)
 
@@ -126,3 +126,45 @@ Verbatim port from the sibling `DevOpsInvestigateWorkItems` repo. `discoverTarge
 **File:** `src/utils/html.ts`
 
 Verbatim port (with one bug fix). `stripHtmlToText` removes `<img>` tags entirely (images surfaced separately), converts block elements to newlines, `<li>` to bullet lines, decodes entities, collapses runs of blank lines. `extractImageUrls(html, limit=5)` parses `<img>` tags and filters to URLs matching `_apis/wit/attachments/` — the ADO attachment pattern.
+
+## Worktree manager
+
+**File:** `src/services/worktree-manager.ts`
+
+`createWorktreeManager({ config })` returns `{ ensureWorktree, removeWorktree }`. First non-Claude-SDK shell-out in the codebase — wraps `Bun.spawn('git', [...])`. `ensureWorktree({ workItemId, slug, persistedWorktree? })` is state-driven idempotent: if `persistedWorktree` validates on disk + git registry + branch name, reuse as-is; otherwise prune stale registry, rm orphan dir, and recreate via `git worktree add ${path} -b ${branch} origin/main`. Branch name is locked at first creation (persisted in `state.outputs.worktree.branch` over recomputed slug) so a renamed WI title doesn't spawn a second branch. `removeWorktree` is best-effort: `git worktree remove --force` + `git branch -D` + fallback `rmSync` if the path is still on disk. Thrown `WorktreeError` carries `{ command, exitCode, stdout, stderr }`.
+
+## Worktree-setup stage
+
+**File:** `src/pipeline/stages/worktree-setup.ts`
+
+Thin Stage wrapping `worktreeManager.ensureWorktree`. On entry, reads `state.outputs.worktree` (if present from a prior cycle) and passes it as `persistedWorktree` so the manager can reuse-on-validate. Stores the result back in `state.outputs.worktree = { path, branch, baseSha }`. `baseSha` (the SHA of `origin/main` at creation time) is the per-attempt baseline that the coder/test-author reset to on thrown errors.
+
+## Coder stage
+
+**File:** `src/pipeline/stages/coder.ts`
+
+Hand-rolled Stage (intentionally NOT via `agentStage` factory) because of retry-on-transient + baseline-reset semantics. Reads `state.outputs.analyzer` / `.wiContext` / `.worktree` (throws if any missing). Records the current HEAD SHA via `Bun.spawn('git', ['rev-parse', 'HEAD'])` at the top of `execute` as the per-attempt baseline. Calls the runner with `cwd: worktree.path`, `tools: [Read, Grep, Glob, Bash, Skill, Edit, Write]`, `disallowedTools: [NotebookEdit]`, `maxTurns: config.coderMaxTurns`, `systemPromptAppend: <coder.md>`, `canUseTool: composeCanUseTool([bashAllowlist, pathEscapeFilter])`. The bash allowlist permits `git commit`, `git add <specific-path>`, `git status`, `bun run typecheck/build/lint` and similar; denies `git push`, `git checkout`, `git reset`, `git rebase`, `git merge`, `git stash drop`, `git clean -f`, `git commit --amend`, `rm`, `cd`, `bun add`, `npm install`. The path-escape filter rejects `Edit`/`Write` calls outside the worktree. On `AgentOutputParseError`: reset worktree (`git reset --hard ${baselineSha}` + `git clean -fd`) + retry up to `MAX_TRANSIENT_RETRIES` (=2). On any other throw: reset + re-throw immediately (no retry). Output schema: `{ summary, filesChanged: string[], commits: string[] }`. Stored in `state.outputs.coder`.
+
+## Test-author stage
+
+**File:** `src/pipeline/stages/test-author.ts`
+
+Same shape as the coder stage. Differences: reads `state.outputs.coder` in addition (for context on what to test); output schema uses `testFilesChanged` instead of `filesChanged`; Bash allowlist adds test-runner commands (`bun test`, `npm test`, `npx vitest`, `jest`, `pytest`, `go test`); `maxTurns: config.testAuthorMaxTurns`. Stored in `state.outputs.testAuthor`.
+
+## Reviewer stage (Plan 4 stub)
+
+**File:** `src/pipeline/stages/reviewer.ts`
+
+Plan 4 stub. Synchronously sets `state.outputs.reviewer = { approved: true, feedback: [] }`. No Claude call, no tokens. The file name (`reviewer.ts`) and factory name (`createReviewerStage`) are STABLE across Plan 4 → Plan 5; Plan 5 will replace only the body of `execute` with the real parallel-fanout reviewer. `pipeline-builder` wiring does not change between plans. `revisionLoop`'s `isApproved` predicate reads `state.outputs.reviewer.approved` — in Plan 4 the loop runs exactly one iteration since the stub always approves.
+
+## Bash allowlist (canUseTool)
+
+**File:** `src/utils/bash-allowlist.ts`
+
+`createBashAllowlist({ allow: RegExp[], deny: RegExp[] })` returns a `CanUseToolFn`. Non-Bash tool calls are unconditionally allowed (compose with `createPathEscapeFilter` for `Edit`/`Write`). For Bash: deny matches first (deny takes precedence), then allow. Anything not matching an allow pattern is denied (strict allowlist semantics). Used by the coder + test-author stages with role-specific patterns; Plan 5's reviewer may use it too.
+
+## Path-escape filter (canUseTool)
+
+**File:** `src/utils/path-escape-filter.ts`
+
+`createPathEscapeFilter(cwd)` returns a `CanUseToolFn` that rejects `Edit`/`Write`/`NotebookEdit` calls whose `file_path` resolves outside `cwd`. Belt-and-suspenders against a runaway agent writing to the host's DevopsCoder source or system files (the SDK's `cwd` alone doesn't enforce this — `permissionMode: 'bypassPermissions'` is set in the runner). Compose with `createBashAllowlist` via the local `composeCanUseTool` helper in the coder/test-author stages.

@@ -6,7 +6,7 @@ Guidance for Claude Code working in this repository.
 
 DevopsCoder is the implement-tagged work-item pipeline for our Azure DevOps automation suite. It is the first agent that writes to the target repo (branches, commits, push, draft PR). It deploys as a Docker container alongside the existing 4 read-only agents.
 
-The repo is at the **milestone-4 stage** (Plan 3 done): orchestrator + ADO REST client + polling watcher + analyzer stage (readiness gate). The watcher picks up WIs tagged `agent implement`, the analyzer verdicts `proceed | reject` based on the full WI (title, description, AC, comments, images, target-repo skill catalog), and the processor dispatches reject/blocked side-effects (markdown comment via `marked`, tag swap, cumulative `state.rejectCount` with hard-lockout at `MAX_REJECT_CYCLES`). Coder / test-author / reviewer / draft-PR-creator and the worktree manager land in Plans 4-5 (see `docs/superpowers/plans/`).
+The repo is at the **milestone-5 stage** (Plan 4 done): full write-side pipeline. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree via `worktree-manager` (state-driven idempotent reuse off fresh `origin/main`), then runs `revisionLoop(coder, reviewer-stub)` — the coder uses Claude with `Edit`/`Write`/`Bash` against the worktree, guarded by a strict Bash allowlist + path-escape filter, with retry-on-transient and per-attempt baseline reset on error. The reviewer is a Plan 4 stub that always approves (Plan 5 will replace the body in-place — file name and factory name are stable). Test-author follows the same pattern with a test-runner allowlist. Both stages emit structured Zod-validated JSON. The pipeline still does not push or open a PR — Plan 5 adds the real reviewer, draft-PR creator, and worktree teardown.
 
 ## Architecture
 
@@ -37,16 +37,16 @@ The repo is at the **milestone-4 stage** (Plan 3 done): orchestrator + ADO REST 
 
 ## File Layout
 
-- `src/cli/` — CLI entry point
-- `src/config/` — Zod env validation
+- `src/cli/` — CLI entry point (+ `--keep-worktree` flag for `reset-state`)
+- `src/config/` — Zod env validation (incl. `coderMaxTurns`, `testAuthorMaxTurns`)
 - `src/pipeline/` — Stage interface + orchestrator + factories
-- `src/pipeline/stages/` — concrete stages (analyzer in Plan 3; coder/reviewer/etc. in Plans 4-5)
-- `src/prompts/` — Claude system-prompt templates (analyzer.md)
+- `src/pipeline/stages/` — analyzer, worktree-setup, coder, reviewer (stub), test-author
+- `src/prompts/` — Claude system-prompt templates (analyzer.md, coder.md, test-author.md)
 - `src/sdk/` — Azure DevOps REST client (PAT auth, retries, WIQL, tag/comment ops)
-- `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder, wi-context fetcher, skill-loader
+- `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder, wi-context fetcher, skill-loader, worktree-manager
 - `src/state/` — `PipelineStateStore`
 - `src/types/` — shared interfaces
-- `src/utils/` — logger, slugify, runPool, html helpers
+- `src/utils/` — logger, slugify, runPool, html helpers, bash-allowlist, path-escape-filter
 - `tests/` — mirrors `src/` layout; `tests/integration/` for cross-cutting tests
 
 ## Out of scope (do not introduce)
