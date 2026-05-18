@@ -237,4 +237,19 @@ describe('createAnalyzerStage', () => {
       'runner exploded',
     );
   });
+
+  it('persists wiContext to state.outputs.wiContext on proceed (so coder can read it)', async () => {
+    const runner = makeRunner({ verdict: 'proceed', summary: 's', reasons: [] });
+    const wiContext = makeWiContext();
+    const stage = createAnalyzerStage({
+      config: baseConfig,
+      ado: makeMockAdo(),
+      runner,
+      discoveredSkills: [],
+      promptTemplate: 'x',
+      fetchWiContext: async () => wiContext,
+    });
+    const result = await stage.execute(makeState(), makeCtx());
+    expect(result.outputs.wiContext).toEqual(wiContext);
+  });
 });

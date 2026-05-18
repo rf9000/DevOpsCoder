@@ -115,6 +115,8 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
         canUseTool: deps.canUseTool,
       });
 
+      state.outputs.wiContext = wiCtx;
+
       if (output.verdict === 'reject') {
         throw new PipelineRejectError({
           reasons: output.reasons,
