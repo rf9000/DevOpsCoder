@@ -21,6 +21,7 @@ function tmpStateDir(): string {
 function makeContext(): PipelineContext {
   const config: AppConfig = {
     org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+    repositoryName: 'test-repo',
     targetRepoPath: '/r', worktreeBase: '/w',
     triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,

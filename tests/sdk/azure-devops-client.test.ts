@@ -11,6 +11,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     orgUrl: 'https://dev.azure.com/my-org',
     project: 'my-project',
     pat: 'test-pat',
+    repositoryName: 'test-repo',
     targetRepoPath: '/repos/x',
     worktreeBase: '/repos/.worktrees',
     triggerTag: 'agent implement',

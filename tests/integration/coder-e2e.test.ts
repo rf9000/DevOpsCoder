@@ -23,6 +23,7 @@ const baseConfig: AppConfig = {
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
+  repositoryName: 'test-repo',
   targetRepoPath: '/repos/target',
   worktreeBase: '/repos/.worktrees',
   triggerTag: 'agent implement',

@@ -72,6 +72,7 @@ function makeConfig(targetRepoPath: string, worktreeBase: string): AppConfig {
     orgUrl: 'https://x',
     project: 'p',
     pat: 'pat',
+    repositoryName: 'test-repo',
     targetRepoPath,
     worktreeBase,
     triggerTag: 'agent implement',

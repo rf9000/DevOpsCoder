@@ -18,6 +18,7 @@ const config: AppConfig = {
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
+  repositoryName: 'test-repo',
   targetRepoPath: '/r',
   worktreeBase: '/w',
   triggerTag: 'agent implement',

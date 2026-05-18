@@ -9,6 +9,7 @@ const FIXED_NOW = new Date('2026-05-04T12:00:00.000Z');
 function mockContext(): PipelineContext {
   const config: AppConfig = {
     org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+    repositoryName: 'test-repo',
     targetRepoPath: '/r', worktreeBase: '/w',
     triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,

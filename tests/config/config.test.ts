@@ -5,6 +5,7 @@ const validEnv: Record<string, string> = {
   AZURE_DEVOPS_PAT: 'test-pat',
   AZURE_DEVOPS_ORG: 'my-org',
   AZURE_DEVOPS_PROJECT: 'my-project',
+  ADO_REPOSITORY_NAME: 'test-repo',
   TARGET_REPO_PATH: '/repos/continia-banking',
   WORKTREE_BASE: '/repos/.worktrees',
 };
@@ -101,5 +102,17 @@ describe('loadConfig', () => {
     });
     expect(config.coderMaxTurns).toBe(120);
     expect(config.testAuthorMaxTurns).toBe(40);
+  });
+
+  it('throws a descriptive error when ADO_REPOSITORY_NAME is missing', () => {
+    const env = { ...validEnv };
+    delete env.ADO_REPOSITORY_NAME;
+    expect(() => loadConfig(env)).toThrow(/ADO_REPOSITORY_NAME/);
+    expect(() => loadConfig(env)).toThrow(/Invalid configuration/);
+  });
+
+  it('loadConfig maps ADO_REPOSITORY_NAME to repositoryName', () => {
+    const config = loadConfig({ ...validEnv, ADO_REPOSITORY_NAME: 'test-repo' });
+    expect(config.repositoryName).toBe('test-repo');
   });
 });
