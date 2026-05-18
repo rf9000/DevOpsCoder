@@ -6,7 +6,7 @@ import { join } from 'path';
 import { createProcessor } from '../../src/services/processor.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
-import { PipelinePauseError } from '../../src/pipeline/stage.ts';
+import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, WorkItem } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
@@ -190,5 +190,215 @@ describe('createProcessor', () => {
     expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
     expect(store.load(101)?.completedAt).toBeTruthy();
+  });
+
+  it('reject path: increments rejectCount, posts a markdown comment, removes triggerTag, adds needInputTag', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['no AC', 'vague description'],
+          summary: 'WI is not ready',
+        });
+      },
+    };
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome).toEqual({
+      kind: 'rejected',
+      workItemId: 101,
+      severity: 'reject',
+      rejectCount: 1,
+    });
+    const saved = store.load(101)!;
+    expect(saved.rejectCount).toBe(1);
+    expect(saved.rejection?.summary).toBe('WI is not ready');
+    expect(ado.addWorkItemComment).toHaveBeenCalled();
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'need-input');
+  });
+
+  it('reject path: escalates to blocked severity when rejectCount reaches maxRejectCycles', async () => {
+    store.save({
+      workItemId: 101,
+      slug: 'wi',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: 'analyzer',
+      history: [],
+      attempts: {},
+      outputs: {},
+      rejectCount: 2,
+    });
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['still vague'],
+          summary: 'still not ready',
+        });
+      },
+    };
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig, // maxRejectCycles defaults to 3
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.severity).toBe('blocked');
+      expect(outcome.rejectCount).toBe(3);
+    }
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalledWith(101, 'need-input');
+  });
+
+  it('clears stale state.rejection at entry so the pipeline re-runs on re-tag', async () => {
+    store.save({
+      workItemId: 101,
+      slug: 'wi',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: 'analyzer',
+      history: [],
+      attempts: {},
+      outputs: {},
+      rejectCount: 1,
+      rejection: {
+        reasons: ['stale'],
+        summary: 'stale',
+        stage: 'analyzer',
+        at: '2026-01-01T00:00:00Z',
+      },
+    });
+    const stageRunCount = { n: 0 };
+    const proceedStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async (state) => {
+        stageRunCount.n++;
+        state.outputs.analyzer = { verdict: 'proceed', summary: 'ok', reasons: [] };
+        return state;
+      },
+    };
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [proceedStage],
+      abortFlag: { aborted: false },
+    });
+    const outcome = await proc.processWorkItem(101);
+    expect(stageRunCount.n).toBe(1); // pipeline DID run again
+    expect(outcome.kind).toBe('completed');
+    const saved = store.load(101)!;
+    expect(saved.rejection).toBeUndefined();
+  });
+
+  it('resets rejectCount to 0 on completion (analyzer accepted a previously-rejected WI)', async () => {
+    store.save({
+      workItemId: 101,
+      slug: 'wi',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      attempts: {},
+      outputs: {},
+      rejectCount: 2,
+    });
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [], // empty pipeline → immediate completion
+      abortFlag: { aborted: false },
+    });
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('completed');
+    const saved = store.load(101)!;
+    expect(saved.rejectCount).toBe(0);
+    expect(saved.completedAt).toBeTruthy();
+  });
+
+  it('reject path with dryRun=true: persists state but suppresses ADO writes', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['vague'],
+          summary: 'not ready',
+        });
+      },
+    };
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: { ...baseConfig, dryRun: true },
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('rejected');
+    expect(store.load(101)?.rejectCount).toBe(1);
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('reject comment markdown includes summary, reasons, and the re-tag instruction', async () => {
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({
+          reasons: ['no AC', 'no design'],
+          summary: 'WI lacks acceptance criteria',
+          questions: ['What is the expected UI?'],
+        });
+      },
+    };
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+    await proc.processWorkItem(101);
+    expect(postedHtml).toContain('WI lacks acceptance criteria');
+    expect(postedHtml).toContain('no AC');
+    expect(postedHtml).toContain('no design');
+    expect(postedHtml).toContain('What is the expected UI?');
+    expect(postedHtml).toContain('agent implement');
   });
 });

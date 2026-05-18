@@ -102,7 +102,13 @@ export type ProcessOutcome =
   | { kind: 'completed'; workItemId: number }
   | { kind: 'paused'; workItemId: number; stage: string }
   | { kind: 'failed'; workItemId: number; error: PipelineTerminalError }
-  | { kind: 'skipped'; workItemId: number; reason: string };
+  | { kind: 'skipped'; workItemId: number; reason: string }
+  | {
+      kind: 'rejected';
+      workItemId: number;
+      severity: 'reject' | 'blocked';
+      rejectCount: number;
+    };
 
 export interface CycleStats {
   considered: number;
