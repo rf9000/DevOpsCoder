@@ -111,7 +111,7 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env)).toThrow(/Invalid configuration/);
   });
 
-  it('loadConfig maps ADO_REPOSITORY_NAME to repositoryName', () => {
+  it('maps ADO_REPOSITORY_NAME to repositoryName', () => {
     const config = loadConfig({ ...validEnv, ADO_REPOSITORY_NAME: 'test-repo' });
     expect(config.repositoryName).toBe('test-repo');
   });

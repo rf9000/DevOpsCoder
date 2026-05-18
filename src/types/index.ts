@@ -3,7 +3,6 @@ export interface AppConfig {
   orgUrl: string;
   project: string;
   pat: string;
-  /** The ADO Git repo name; used by draft-PR creation since `targetRepoPath` is a local checkout path, not an ADO identifier. */
   repositoryName: string;
   targetRepoPath: string;
   worktreeBase: string;
