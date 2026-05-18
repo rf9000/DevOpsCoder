@@ -4,11 +4,14 @@ import { createAdoClient } from '../sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../state/state-store.ts';
 import { buildPipeline } from '../services/pipeline-builder.ts';
 import { createProcessor } from '../services/processor.ts';
+import { createWorktreeManager } from '../services/worktree-manager.ts';
 import {
   createAbortFlag,
   runPollCycle,
   startWatcher,
 } from '../services/watcher.ts';
+import type { WorktreeContext } from '../types/index.ts';
+import { slugify } from '../utils/slug.ts';
 
 const VERSION = '0.1.0';
 
@@ -19,13 +22,15 @@ Usage:
   bun run start                       Start the watcher (long-running)
   bun run once                        Run a single poll cycle and exit
   bun run src/cli/index.ts run-wi <id>      Process one work item by ID
-  bun run src/cli/index.ts reset-state <id> Delete state for one work item
+  bun run src/cli/index.ts reset-state <id> Delete state + remove worktree + delete branch
   bun run src/cli/index.ts debug-tags       List WIs tagged with TRIGGER_TAG
   bun run src/cli/index.ts version
   bun run src/cli/index.ts help
 
 Flags:
   --dry-run         Suppress ADO writes (tags, comments). Pipeline still runs.
+  --keep-worktree   (reset-state only) Delete the state file but leave the
+                    worktree and branch on disk for inspection.
 `);
 }
 
@@ -108,7 +113,33 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      const { store } = buildDeps();
+      const keepWorktree = process.argv.includes('--keep-worktree');
+      const { config, store, logger } = buildDeps();
+
+      if (!keepWorktree) {
+        // Try to recover the persisted worktree info (so we use the LOCKED branch
+        // name + path, not a freshly-recomputed slug). Fall back to slugifying
+        // a placeholder title — worktree-manager's removeWorktree is best-effort.
+        const existing = store.load(id);
+        const persistedWorktree = existing?.outputs.worktree as
+          | WorktreeContext
+          | undefined;
+        const slug = existing?.slug ?? slugify(`wi-${id}`);
+        const worktreeManager = createWorktreeManager({ config });
+        try {
+          await worktreeManager.removeWorktree({
+            workItemId: id,
+            slug,
+            persistedWorktree,
+          });
+          logger.info(`worktree for WI ${id} removed`);
+        } catch (err) {
+          logger.error(`worktree removal for WI ${id} failed`, err);
+        }
+      } else {
+        logger.info(`--keep-worktree: leaving worktree and branch in place`);
+      }
+
       store.delete(id);
       console.log(`state for WI ${id} deleted`);
       return;
