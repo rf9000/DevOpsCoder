@@ -86,4 +86,20 @@ describe('loadConfig', () => {
     expect(config.blockedTag).toBe('stuck');
     expect(config.needInputTag).toBe('help');
   });
+
+  it('coderMaxTurns and testAuthorMaxTurns default when env vars are absent', () => {
+    const config = loadConfig(validEnv);
+    expect(config.coderMaxTurns).toBe(80);
+    expect(config.testAuthorMaxTurns).toBe(50);
+  });
+
+  it('coderMaxTurns and testAuthorMaxTurns coerce from string env vars', () => {
+    const config = loadConfig({
+      ...validEnv,
+      CODER_MAX_TURNS: '120',
+      TEST_AUTHOR_MAX_TURNS: '40',
+    });
+    expect(config.coderMaxTurns).toBe(120);
+    expect(config.testAuthorMaxTurns).toBe(40);
+  });
 });

@@ -13,6 +13,7 @@ function mockContext(): PipelineContext {
     targetRepoPath: '/r', worktreeBase: '/w',
     triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
+    coderMaxTurns: 80, testAuthorMaxTurns: 50,
     claudeModel: 'claude-opus-4-7', stateDir: '.state', assignedToFilter: [], dryRun: false,
   };
   return {

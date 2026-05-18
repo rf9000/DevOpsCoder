@@ -12,6 +12,8 @@ export interface AppConfig {
   concurrency: number;
   maxRevisions: number;
   maxRejectCycles: number;
+  coderMaxTurns: number;
+  testAuthorMaxTurns: number;
   claudeModel: string;
   stateDir: string;
   assignedToFilter: string[];
@@ -127,4 +129,38 @@ export interface CycleStats {
   failed: number;
   skipped: number;
   rejected: number;
+}
+
+export interface WorktreeContext {
+  /** Absolute path to the worktree directory. */
+  path: string;
+  /** Branch name (e.g. `agent/wi-101-fix-login`). Locked at first creation. */
+  branch: string;
+  /** SHA of `origin/main` at worktree creation time. Used by the coder for per-attempt baseline reset. */
+  baseSha: string;
+}
+
+export interface CoderOutput {
+  /** 1-3 sentences describing what the coder did. */
+  summary: string;
+  /** Paths (relative to worktree root) of files the coder created or modified. */
+  filesChanged: string[];
+  /** Commit SHAs the coder created in this attempt. */
+  commits: string[];
+}
+
+export interface TestAuthorOutput {
+  /** 1-3 sentences describing what tests were added or updated. */
+  summary: string;
+  /** Paths (relative to worktree root) of test files the test-author created or modified. */
+  testFilesChanged: string[];
+  /** Commit SHAs the test-author created. */
+  commits: string[];
+}
+
+export interface ReviewerOutput {
+  /** Whether the work is approved. Plan 4 stub always emits `true`. */
+  approved: boolean;
+  /** Per-reviewer findings. Plan 4 stub emits `[]`. Plan 5 fills this in. */
+  feedback: unknown[];
 }
