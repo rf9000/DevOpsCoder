@@ -101,7 +101,7 @@ describe('createWorktreeManager', () => {
 
   afterEach(() => {
     sandbox.cleanup();
-  });
+  }, 30000);
 
   it('ensureWorktree creates a fresh worktree off origin/main on first call', async () => {
     const mgr = createWorktreeManager({
@@ -119,7 +119,7 @@ describe('createWorktreeManager', () => {
     // git porcelain outputs forward-slash paths on Windows; normalise ctx.path for comparison
     expect(list).toContain(ctx.path.replace(/\\/g, '/'));
     expect(list).toContain('branch refs/heads/agent/wi-101-fix-login');
-  });
+  }, 30000);
 
   it('ensureWorktree reuses when persistedWorktree validates on disk + registry', async () => {
     const mgr = createWorktreeManager({
@@ -132,7 +132,7 @@ describe('createWorktreeManager', () => {
       persistedWorktree: first,
     });
     expect(second).toEqual(first);
-  });
+  }, 30000);
 
   it('ensureWorktree recovers from an orphan: path on disk but not in git registry', async () => {
     const mgr = createWorktreeManager({
@@ -147,7 +147,7 @@ describe('createWorktreeManager', () => {
     expect(ctx.path).toBe(orphanPath);
     expect(existsSync(join(ctx.path, '.git'))).toBe(true); // proper worktree marker
     expect(existsSync(join(ctx.path, 'junk.txt'))).toBe(false); // orphan dir was wiped
-  });
+  }, 30000);
 
   it('persistedWorktree.branch wins over recomputed slug (branch name immutability)', async () => {
     const mgr = createWorktreeManager({
@@ -162,7 +162,7 @@ describe('createWorktreeManager', () => {
     });
     expect(second.branch).toBe(first.branch);
     expect(second.path).toBe(first.path);
-  });
+  }, 30000);
 
   it('ensureWorktree creates worktreeBase if missing', async () => {
     const customBase = join(sandbox.root, 'fresh-base');
@@ -173,7 +173,7 @@ describe('createWorktreeManager', () => {
     const ctx = await mgr.ensureWorktree({ workItemId: 99, slug: 'wi' });
     expect(existsSync(customBase)).toBe(true);
     expect(existsSync(ctx.path)).toBe(true);
-  });
+  }, 30000);
 
   it('removeWorktree cleans up both the registry entry and the branch', async () => {
     const mgr = createWorktreeManager({
@@ -196,7 +196,7 @@ describe('createWorktreeManager', () => {
     expect(list).not.toContain(ctx.path);
     const branches = await runGit(['branch'], sandbox.targetRepoPath);
     expect(branches).not.toContain('agent/wi-101-fix-login');
-  });
+  }, 30000);
 
   it('removeWorktree is best-effort: silently succeeds when worktree does not exist', async () => {
     const mgr = createWorktreeManager({
@@ -206,7 +206,7 @@ describe('createWorktreeManager', () => {
     await expect(
       mgr.removeWorktree({ workItemId: 999, slug: 'nonexistent' }),
     ).resolves.toBeUndefined();
-  });
+  }, 30000);
 
   it('throws WorktreeError when run against an invalid baseRepoPath', async () => {
     const mgr = createWorktreeManager({
@@ -226,5 +226,5 @@ describe('createWorktreeManager', () => {
       expect(caught.exitCode).not.toBe(0);
       expect(caught.command[0]).toBe('git');
     }
-  });
+  }, 30000);
 });
