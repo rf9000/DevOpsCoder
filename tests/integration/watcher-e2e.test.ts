@@ -10,6 +10,8 @@ import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig } from '../../src/types/index.ts';
+import type { AgentRunArgs, AgentRunner } from '../../src/pipeline/agent-stage.ts';
+import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
 
 const baseConfig: AppConfig = {
   org: 'o',
@@ -30,6 +32,25 @@ const baseConfig: AppConfig = {
   assignedToFilter: [],
   dryRun: false,
 };
+
+function makeRecordingRunner(): AgentRunner {
+  return {
+    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+      void args;
+      return { verdict: 'proceed', summary: 'ok', reasons: [] } as unknown as T;
+    },
+  };
+}
+
+/** Wraps buildPipeline with test-safe overrides so no real SDK binary is invoked. */
+function buildPipelineForTest(deps: PipelineBuilderDeps) {
+  return buildPipeline({
+    ...deps,
+    runner: makeRecordingRunner(),
+    discoveredSkills: [],
+    analyzerPromptTemplate: 'test-prompt',
+  });
+}
 
 function makeAdo(taggedIds: number[]): AdoClient {
   return {
@@ -72,7 +93,7 @@ describe('watcher end-to-end (empty pipeline)', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline,
+      buildPipeline: buildPipelineForTest,
       abortFlag,
     });
 
@@ -115,7 +136,7 @@ describe('watcher end-to-end (empty pipeline)', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline,
+      buildPipeline: buildPipelineForTest,
       abortFlag,
     });
 
@@ -142,7 +163,7 @@ describe('watcher end-to-end (empty pipeline)', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline,
+      buildPipeline: buildPipelineForTest,
       abortFlag,
     });
 
