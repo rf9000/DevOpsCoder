@@ -103,6 +103,24 @@ describe('PipelineStateStore', () => {
     expect(ids).toEqual([101, 105]);
   });
 
+  it('listResumable excludes states with state.rejection set (analyzer-rejected WIs wait for human re-tag)', () => {
+    const dir = makeTmpDir();
+    const store = new PipelineStateStore(dir);
+    store.save(makeState(201)); // fresh
+    store.save(makeState(202, {
+      rejection: {
+        reasons: ['vague'],
+        summary: 'not ready',
+        stage: 'analyzer',
+        at: '2026-01-01T00:01:00Z',
+      },
+    }));
+
+    const resumable = store.listResumable();
+    const ids = resumable.map((s) => s.workItemId).sort();
+    expect(ids).toEqual([201]);
+  });
+
   it('delete removes the on-disk file', () => {
     const dir = makeTmpDir();
     const store = new PipelineStateStore(dir);

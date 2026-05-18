@@ -66,7 +66,7 @@ export class PipelineStateStore {
 
   listResumable(): PipelineState[] {
     return this.listAll().filter(
-      (s) => !s.completedAt && !s.terminalError && !s.cancelled,
+      (s) => !s.completedAt && !s.terminalError && !s.cancelled && !s.rejection,
     );
   }
 }
