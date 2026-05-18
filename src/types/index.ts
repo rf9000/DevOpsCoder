@@ -72,6 +72,10 @@ export interface WorkItemFields {
   'System.State'?: string;
   'System.Tags'?: string;
   'System.AssignedTo'?: { displayName?: string; uniqueName?: string } | string;
+  'System.Description'?: string;
+  'System.WorkItemType'?: string;
+  'Microsoft.VSTS.TCM.ReproSteps'?: string;
+  'Microsoft.VSTS.Common.AcceptanceCriteria'?: string;
 }
 
 export interface WorkItem {
@@ -85,6 +89,13 @@ export interface CommentResponse {
   id?: number;
   text?: string;
   createdDate?: string;
+}
+
+export interface WorkItemComment {
+  id?: number;
+  text?: string;
+  createdDate?: string;
+  createdBy?: { displayName?: string; uniqueName?: string };
 }
 
 export type ProcessOutcome =

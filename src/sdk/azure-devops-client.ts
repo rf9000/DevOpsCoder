@@ -2,6 +2,7 @@ import type {
   AppConfig,
   WiqlQueryResponse,
   WorkItem,
+  WorkItemComment,
 } from '../types/index.ts';
 
 export class AzureDevOpsError extends Error {
@@ -17,6 +18,7 @@ export class AzureDevOpsError extends Error {
 export interface AdoClient {
   queryWorkItemsByTag(tag: string): Promise<number[]>;
   getWorkItem(workItemId: number): Promise<WorkItem>;
+  getWorkItemComments(workItemId: number): Promise<WorkItemComment[]>;
   addTagToWorkItem(workItemId: number, tag: string): Promise<void>;
   removeTagFromWorkItem(workItemId: number, tag: string): Promise<void>;
   addWorkItemComment(workItemId: number, html: string): Promise<void>;
@@ -93,7 +95,7 @@ export function createAdoClient(
 
   async function fetchWorkItem(workItemId: number): Promise<WorkItem> {
     return adoFetchWithRetry<WorkItem>(
-      `/_apis/wit/workitems/${workItemId}?api-version=7.1&fields=System.Title,System.State,System.Tags,System.AssignedTo`,
+      `/_apis/wit/workitems/${workItemId}?api-version=7.1&$expand=all`,
     );
   }
 
@@ -104,7 +106,7 @@ export function createAdoClient(
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json-patch+json' },
         body: JSON.stringify([
-          { op: 'add', path: '/fields/System.Tags', value: joinTags(tags) },
+          { op: 'replace', path: '/fields/System.Tags', value: joinTags(tags) },
         ]),
       },
     );
@@ -132,6 +134,13 @@ export function createAdoClient(
     },
 
     getWorkItem: fetchWorkItem,
+
+    async getWorkItemComments(workItemId: number): Promise<WorkItemComment[]> {
+      const response = await adoFetchWithRetry<{ comments?: WorkItemComment[] }>(
+        `/${encodeURIComponent(config.project)}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.3`,
+      );
+      return response.comments ?? [];
+    },
 
     async addTagToWorkItem(workItemId: number, tag: string): Promise<void> {
       const wi = await fetchWorkItem(workItemId);

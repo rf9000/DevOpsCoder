@@ -44,6 +44,7 @@ function makeAdo(overrides: Partial<AdoClient> = {}): AdoClient {
         },
       }) satisfies WorkItem,
     ),
+    getWorkItemComments: mock(async () => []),
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),

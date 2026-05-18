@@ -118,7 +118,7 @@ describe('createAdoClient', () => {
       expect(wi.id).toBe(101);
       expect(wi.fields['System.Title']).toBe('Fix login');
       expect(calls[0]!.url).toBe(
-        'https://dev.azure.com/my-org/_apis/wit/workitems/101?api-version=7.1&fields=System.Title,System.State,System.Tags,System.AssignedTo',
+        'https://dev.azure.com/my-org/_apis/wit/workitems/101?api-version=7.1&$expand=all',
       );
       expect(calls[0]!.init?.method ?? 'GET').toBe('GET');
     });
@@ -155,7 +155,7 @@ describe('createAdoClient', () => {
         value: string;
       }[];
       expect(patch).toHaveLength(1);
-      expect(patch[0]!.op).toBe('add');
+      expect(patch[0]!.op).toBe('replace');
       expect(patch[0]!.path).toBe('/fields/System.Tags');
       expect(patch[0]!.value).toBe('bug; urgent');
     });
@@ -178,7 +178,8 @@ describe('createAdoClient', () => {
       ]);
       const client = createAdoClient(makeConfig(), fetchImpl);
       await client.addTagToWorkItem(101, 'agent-blocked');
-      const patch = JSON.parse(calls[1]!.init?.body as string) as { value: string }[];
+      const patch = JSON.parse(calls[1]!.init?.body as string) as { op: string; value: string }[];
+      expect(patch[0]!.op).toBe('replace');
       expect(patch[0]!.value).toBe('bug; agent-blocked');
     });
 
@@ -205,6 +206,40 @@ describe('createAdoClient', () => {
       expect(calls[0]!.init?.method).toBe('POST');
       const body = JSON.parse(calls[0]!.init?.body as string) as { text: string };
       expect(body.text).toBe('<p>hi</p>');
+    });
+  });
+
+  describe('getWorkItemComments', () => {
+    it('GETs the comments endpoint and returns the comments array', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(200, {
+          totalCount: 2,
+          count: 2,
+          comments: [
+            { id: 1, text: '<p>first</p>', createdDate: '2026-01-01T00:00:00Z' },
+            { id: 2, text: '<p>second</p>', createdDate: '2026-01-02T00:00:00Z' },
+          ],
+        }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      const comments = await client.getWorkItemComments(101);
+      expect(comments).toHaveLength(2);
+      expect(comments[0]?.text).toBe('<p>first</p>');
+      expect(comments[1]?.id).toBe(2);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe(
+        'https://dev.azure.com/my-org/my-project/_apis/wit/workItems/101/comments?api-version=7.1-preview.3',
+      );
+      expect(calls[0]!.init?.method ?? 'GET').toBe('GET');
+    });
+
+    it('returns an empty array when the response has no comments field', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(200, { totalCount: 0, count: 0 }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      const comments = await client.getWorkItemComments(101);
+      expect(comments).toEqual([]);
     });
   });
 

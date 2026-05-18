@@ -27,6 +27,7 @@ const config = {
 const ado: AdoClient = {
   queryWorkItemsByTag: async () => [],
   getWorkItem: async () => ({ id: 0, fields: {} }),
+  getWorkItemComments: async () => [],
   addTagToWorkItem: async () => {},
   removeTagFromWorkItem: async () => {},
   addWorkItemComment: async () => {},

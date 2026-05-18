@@ -42,6 +42,7 @@ function makeAdo(taggedIds: number[]): AdoClient {
         'System.Tags': 'agent implement',
       },
     })),
+    getWorkItemComments: mock(async () => []),
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),
