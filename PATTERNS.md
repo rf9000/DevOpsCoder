@@ -88,10 +88,41 @@ A `Stage` whose `detect()` returns whether a human-action gate has cleared. If n
 
 **File:** `src/services/processor.ts`
 
-`createProcessor(deps)` returns `{ processWorkItem(id) }`. For each WI: load-or-create state → buildPipeline → runPipeline → dispatch outcome. Completion removes the trigger tag; terminal error adds the blocked tag; pause is a no-op (the checkpoint stage handles any comment). `config.dryRun` suppresses ADO writes but still runs the pipeline and persists state.
+`createProcessor(deps)` returns `{ processWorkItem(id) }`. For each WI: load-or-create state → clear any stale `state.rejection` (re-entry after a previous reject cycle) → run pipeline → dispatch outcome:
+
+- `state.rejection` set (analyzer threw `PipelineRejectError`) → increment cumulative `state.rejectCount`. Severity is `'blocked'` if `newCount >= config.maxRejectCycles` else `'reject'`. State saved BEFORE writes. Render markdown via `marked`, post as HTML. Remove `triggerTag`. Add `needInputTag` or `blockedTag` per severity. Return `'rejected'` outcome carrying severity + rejectCount.
+- `state.completedAt` set → reset `rejectCount` to 0 if it was non-zero (analyzer accepted a previously-rejected WI). Remove `triggerTag`. Return `'completed'`.
+- Pause → return `'paused'` (no ADO write).
+- Terminal error → add `blockedTag`. Return `'failed'`.
+
+`config.dryRun` suppresses all ADO writes on every path; state is still persisted. ADO ops in the reject dispatch are wrapped in `safeAdoOp` so one failure doesn't mask the others.
 
 ## Pipeline builder
 
 **File:** `src/services/pipeline-builder.ts`
 
-`buildPipeline(deps)` returns the `Stage[]` for one WI. Empty in Plan 2 (so the orchestrator immediately marks `completedAt`); Plans 3-5 replace the body with the real chain. The factory is injected into processor and watcher so the wiring is locked in.
+`buildPipeline(deps)` returns the `Stage[]` for one WI. Plan 3 returns `[analyzer]`; Plans 4-5 will append `[..., worktreeSetup, coder, revisionLoop(coder, reviewer), testAuthor, draftPrCreator, worktreeTeardown]`. Production calls use defaults (real `createClaudeAgentRunner`, real `discoverTargetRepoSkills`, `readFileSync('src/prompts/analyzer.md')`); tests override `runner` / `discoveredSkills` / `analyzerPromptTemplate` so they don't hit Claude or the filesystem.
+
+## Analyzer stage (readiness gate)
+
+**File:** `src/pipeline/stages/analyzer.ts`
+
+Hand-rolled Stage (intentionally NOT via `agentStage` factory) because of its branching flow. Fetches WI context via `fetchWiContext`, builds a markdown user prompt with the description / AC / repro / comments / images / skills sections, calls the runner with `cwd: targetRepoPath`, `tools: [Read, Grep, Glob, Bash, Skill]`, `disallowedTools: [Edit, Write, NotebookEdit]`, `settingSources: ['project']`, `maxTurns: 20`, `systemPromptAppend: <analyzer.md>`. The Zod schema is `{ verdict: 'proceed' | 'reject', summary, reasons[], questions? }`. On `proceed` the output goes into `state.outputs.analyzer`; on `reject` the stage throws `PipelineRejectError`, which the orchestrator catches to populate `state.rejection`. Blocked escalation is the processor's concern, not the analyzer's.
+
+## WI-context fetcher
+
+**File:** `src/services/wi-context.ts`
+
+`fetchWiContext(ado, workItemId)` does the rich-text plumbing: parallel `getWorkItem` + `getWorkItemComments`, strips HTML from description / repro / acceptance criteria / each comment via `stripHtmlToText`, extracts ADO attachment image URLs (across all three rich-text fields) via `extractImageUrls`, returns a `WorkItemContext` with clean plain-text fields and an `images[]` array. Missing fields fall back to empty strings; missing title falls back to `wi-{id}`. Used inline by the analyzer Stage at the top of `execute`.
+
+## Skill loader
+
+**File:** `src/services/skill-loader.ts`
+
+Verbatim port from the sibling `DevOpsInvestigateWorkItems` repo. `discoverTargetRepoSkills(targetRepoPath)` scans `.claude/skills/` and returns `{ name, description, skillDir }[]`, extracting the `description` from each `SKILL.md`'s YAML frontmatter. Returns `[]` if `.claude/skills` doesn't exist (target repos without skills are perfectly valid). Skills are surfaced to the analyzer as an "Available Invocable Skills" bullet list in the user prompt — the analyzer's `Skill` tool can then invoke them.
+
+## HTML helpers
+
+**File:** `src/utils/html.ts`
+
+Verbatim port (with one bug fix). `stripHtmlToText` removes `<img>` tags entirely (images surfaced separately), converts block elements to newlines, `<li>` to bullet lines, decodes entities, collapses runs of blank lines. `extractImageUrls(html, limit=5)` parses `<img>` tags and filters to URLs matching `_apis/wit/attachments/` — the ADO attachment pattern.

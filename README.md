@@ -2,7 +2,7 @@
 
 The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo. DevopsCoder picks up work items tagged `agent implement`, runs an analyzer/coder/test-author/reviewer pipeline against a per-WI git worktree, and opens a draft PR.
 
-The repo is at the **milestone-3 stage** (Plan 2 done): the orchestrator, the Azure DevOps REST client, and the polling watcher are all wired. `bun run start` connects to ADO, finds work items tagged `agent implement`, runs each through the pipeline (currently empty), removes the trigger tag on completion, and persists per-WI state under `.state/`. Real stages (analyzer, coder, test-author, reviewer, draft-pr-creator) and the worktree manager land in Plans 3-5 under `docs/superpowers/plans/`.
+The repo is at the **milestone-4 stage** (Plan 3 done): orchestrator + ADO REST client + polling watcher + the first real stage, the **analyzer** (a readiness gate). `bun run start` polls ADO for work items tagged `agent implement`, fetches the full WI (description, acceptance criteria, comment history, attached image URLs) and the target repo's `.claude/skills/` catalog, then asks Claude to verdict `proceed` or `reject`. On reject, DevopsCoder posts a markdown "what's missing" comment, removes the trigger tag, and adds `need-input`; after `MAX_REJECT_CYCLES` (default 3) cumulative rejects the WI is hard-blocked (`agent-blocked` tag) and only recoverable via `reset-state`. On proceed, the pipeline currently pauses (no more stages until Plan 4). Worktree manager + coder + test-author + reviewer + draft-PR-creator land in Plans 4-5 under `docs/superpowers/plans/`.
 
 ## Tech stack
 
@@ -29,18 +29,23 @@ The repo is at the **milestone-3 stage** (Plan 2 done): the orchestrator, the Az
 
 ```
 src/
-  cli/        — CLI entry point
-  config/     — Zod env schema + loader
-  pipeline/   — Stage interface, orchestrator, agentStage / revisionLoop / checkpoint factories
-  services/   — Claude SDK wrapper (claude-agent-runner.ts) — production AgentRunner impl
-  state/      — Per-work-item PipelineStateStore
-  types/      — Shared types (AppConfig, PipelineState, ...)
-  utils/      — Logger, slugify
-tests/
-  config/, pipeline/, services/, state/, utils/  — unit tests
-  integration/                                   — end-to-end mock-stage pipeline test
+  cli/             — CLI entry point
+  config/          — Zod env schema + loader
+  pipeline/
+    stage.ts       — Stage interface, PipelinePauseError, PipelineRejectError
+    orchestrator.ts — runPipeline with pause + reject + terminal-error branches
+    stages/        — concrete stages (analyzer; coder/reviewer/etc. in Plans 4-5)
+    agent-stage.ts, revision-loop.ts, checkpoint.ts — factories
+  prompts/         — Claude system-prompt templates (analyzer.md)
+  sdk/             — Azure DevOps REST client
+  services/        — Claude SDK wrapper, watcher, processor, pipeline-builder,
+                     wi-context fetcher, skill-loader
+  state/           — Per-work-item PipelineStateStore
+  types/           — Shared types
+  utils/           — Logger, slugify, runPool, html helpers
+tests/             — mirrors src/ layout; integration/ for cross-cutting tests
 docs/
-  superpowers/plans/                             — implementation plans
+  superpowers/plans/ — implementation plans (Plan 1 done, Plan 2 done, Plan 3 done)
 ```
 
 ## Local setup

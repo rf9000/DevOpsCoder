@@ -6,16 +6,17 @@ Guidance for Claude Code working in this repository.
 
 DevopsCoder is the implement-tagged work-item pipeline for our Azure DevOps automation suite. It is the first agent that writes to the target repo (branches, commits, push, draft PR). It deploys as a Docker container alongside the existing 4 read-only agents.
 
-The repo is at the **milestone-3 stage** (Plan 2 done): orchestrator + ADO REST client + polling watcher are wired and run end-to-end on real work items. The pipeline itself is still empty — real stages (analyzer, coder, test-author, reviewer, draft-PR-creator) and the worktree manager land in Plans 3-5 (see `docs/superpowers/plans/`).
+The repo is at the **milestone-4 stage** (Plan 3 done): orchestrator + ADO REST client + polling watcher + analyzer stage (readiness gate). The watcher picks up WIs tagged `agent implement`, the analyzer verdicts `proceed | reject` based on the full WI (title, description, AC, comments, images, target-repo skill catalog), and the processor dispatches reject/blocked side-effects (markdown comment via `marked`, tag swap, cumulative `state.rejectCount` with hard-lockout at `MAX_REJECT_CYCLES`). Coder / test-author / reviewer / draft-PR-creator and the worktree manager land in Plans 4-5 (see `docs/superpowers/plans/`).
 
 ## Architecture
 
 - **Runtime:** Bun (TypeScript)
 - **Validation:** Zod for env config and agent output schemas
-- **AI:** `@anthropic-ai/claude-agent-sdk` — `query()` is wrapped in an injectable `AgentRunner` interface (`src/pipeline/agent-stage.ts`). The production runner (`src/services/claude-agent-runner.ts`) instructs the model to return JSON only, extracts the JSON from the streamed `result` message, and validates it against the per-stage Zod schema before handing it to the stage's `applyOutput`. Mirrors `src/services/ai-generator.ts` from `DevOpsPullTemplate`.
+- **AI:** `@anthropic-ai/claude-agent-sdk` — `query()` is wrapped in an injectable `AgentRunner` interface (`src/pipeline/agent-stage.ts`). The production runner (`src/services/claude-agent-runner.ts`) uses the `claude_code` system prompt preset with a JSON-only structured-output instruction appended, then validates the result against the per-stage Zod schema. Supports `cwd`, `disallowedTools`, `maxTurns`, `canUseTool`, `settingSources`, `systemPromptAppend` for per-stage tuning.
+- **Markdown:** `marked` for rendering reject-comment markdown into HTML for ADO comment posts.
 - **Testing:** `bun:test`
 - **State:** per-work-item JSON files under `.state/{workItemId}.json`
-- **Pipeline:** stage-based orchestrator. Each stage is a `Stage` (`name`, `canRun`, `execute`). Three factories compose pipelines: `agentStage`, `revisionLoop`, `checkpoint`.
+- **Pipeline:** stage-based orchestrator. Each stage is a `Stage` (`name`, `canRun`, `execute`). Stages signal flow via three error sentinels: `PipelinePauseError` (halt and wait), `PipelineRejectError` (analyzer says WI isn't ready — populates `state.rejection`), or a regular `Error` (terminal failure). Factories: `agentStage`, `revisionLoop`, `checkpoint` — but stages with branching flow (like `analyzer`) are hand-rolled.
 
 ## Key patterns
 
@@ -39,11 +40,13 @@ The repo is at the **milestone-3 stage** (Plan 2 done): orchestrator + ADO REST 
 - `src/cli/` — CLI entry point
 - `src/config/` — Zod env validation
 - `src/pipeline/` — Stage interface + orchestrator + factories
+- `src/pipeline/stages/` — concrete stages (analyzer in Plan 3; coder/reviewer/etc. in Plans 4-5)
+- `src/prompts/` — Claude system-prompt templates (analyzer.md)
 - `src/sdk/` — Azure DevOps REST client (PAT auth, retries, WIQL, tag/comment ops)
-- `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder
+- `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder, wi-context fetcher, skill-loader
 - `src/state/` — `PipelineStateStore`
 - `src/types/` — shared interfaces
-- `src/utils/` — logger, slugify, runPool
+- `src/utils/` — logger, slugify, runPool, html helpers
 - `tests/` — mirrors `src/` layout; `tests/integration/` for cross-cutting tests
 
 ## Out of scope (do not introduce)
