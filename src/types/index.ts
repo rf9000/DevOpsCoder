@@ -116,4 +116,5 @@ export interface CycleStats {
   paused: number;
   failed: number;
   skipped: number;
+  rejected: number;
 }

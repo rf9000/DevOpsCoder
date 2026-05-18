@@ -20,7 +20,7 @@ export function createAbortFlag(): AbortFlag {
 }
 
 function emptyStats(): CycleStats {
-  return { considered: 0, completed: 0, paused: 0, failed: 0, skipped: 0 };
+  return { considered: 0, completed: 0, paused: 0, failed: 0, skipped: 0, rejected: 0 };
 }
 
 export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
@@ -59,6 +59,12 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
         case 'skipped':
           stats.skipped++;
           logger.info(`WI ${id}: skipped (${outcome.reason})`);
+          break;
+        case 'rejected':
+          stats.rejected++;
+          logger.info(
+            `WI ${id}: rejected (${outcome.severity}, count=${outcome.rejectCount})`,
+          );
           break;
       }
     } catch (err) {
@@ -99,7 +105,7 @@ export async function startWatcher(deps: WatcherDeps): Promise<void> {
     try {
       const stats = await runPollCycle(deps);
       logger.info(
-        `cycle done: considered=${stats.considered} completed=${stats.completed} paused=${stats.paused} failed=${stats.failed} skipped=${stats.skipped}`,
+        `cycle done: considered=${stats.considered} completed=${stats.completed} paused=${stats.paused} rejected=${stats.rejected} failed=${stats.failed} skipped=${stats.skipped}`,
       );
     } catch (err) {
       logger.error('poll cycle threw, continuing', err);

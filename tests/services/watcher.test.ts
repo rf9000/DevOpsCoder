@@ -90,6 +90,7 @@ describe('runPollCycle', () => {
       paused: 1,
       failed: 1,
       skipped: 1,
+      rejected: 0,
     });
   });
 
@@ -195,6 +196,7 @@ describe('runPollCycle', () => {
       paused: 0,
       failed: 0,
       skipped: 0,
+      rejected: 0,
     });
     expect(proc.processWorkItem).not.toHaveBeenCalled();
   });
@@ -224,5 +226,35 @@ describe('runPollCycle', () => {
     const dispatched =
       stats.completed + stats.paused + stats.failed + stats.skipped;
     expect(dispatched).toBeLessThan(stats.considered);
+  });
+
+  it('counts rejected outcomes into stats.rejected with severity in the log', async () => {
+    const ado = makeAdo([301, 302]);
+    const proc = makeProcessor(async (id) => {
+      if (id === 301)
+        return {
+          kind: 'rejected',
+          workItemId: id,
+          severity: 'reject',
+          rejectCount: 1,
+        };
+      return {
+        kind: 'rejected',
+        workItemId: id,
+        severity: 'blocked',
+        rejectCount: 3,
+      };
+    });
+    const stats = await runPollCycle({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      processor: proc,
+      abortFlag: createAbortFlag(),
+    });
+    expect(stats.considered).toBe(2);
+    expect(stats.rejected).toBe(2);
+    expect(stats.completed).toBe(0);
   });
 });

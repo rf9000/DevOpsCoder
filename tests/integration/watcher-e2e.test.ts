@@ -112,6 +112,7 @@ describe('watcher end-to-end (empty pipeline)', () => {
       paused: 0,
       failed: 0,
       skipped: 0,
+      rejected: 0,
     });
     expect(store.load(201)?.completedAt).toBeTruthy();
     expect(store.load(202)?.completedAt).toBeTruthy();
