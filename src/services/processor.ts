@@ -101,25 +101,38 @@ export function createProcessor(deps: ProcessorDeps): Processor {
 
   async function dispatchRejection(
     state: PipelineState,
+    isRecovery: boolean,
   ): Promise<ProcessOutcome> {
     const rejection = state.rejection!;
-    const newCount = (state.rejectCount ?? 0) + 1;
+
+    if (!isRecovery) {
+      // Fresh dispatch: increment cumulative reject count BEFORE writes so that
+      // a mid-write crash leaves the count already bumped and the recovery
+      // branch can resume on the next cycle.
+      state.rejectCount = (state.rejectCount ?? 0) + 1;
+      store.save(state);
+    }
+
+    const newCount = state.rejectCount ?? 1;
     const severity: 'reject' | 'blocked' =
       newCount >= config.maxRejectCycles ? 'blocked' : 'reject';
-    state.rejectCount = newCount;
-    store.save(state);
 
     if (!config.dryRun) {
-      const markdown = renderRejectMarkdown(
-        rejection,
-        severity,
-        config,
-        state.workItemId,
-      );
-      const html = await marked(markdown);
-      await safeAdoOp(logger, state.workItemId, 'addWorkItemComment', () =>
-        ado.addWorkItemComment(state.workItemId, html),
-      );
+      // Comment is posted ONCE on the fresh-dispatch path. Recovery skips it
+      // to avoid duplicates (we assume the previous cycle may have already
+      // posted it; tags are idempotent so retrying them is safe).
+      if (!isRecovery) {
+        const markdown = renderRejectMarkdown(
+          rejection,
+          severity,
+          config,
+          state.workItemId,
+        );
+        const html = await marked(markdown);
+        await safeAdoOp(logger, state.workItemId, 'addWorkItemComment', () =>
+          ado.addWorkItemComment(state.workItemId, html),
+        );
+      }
       await safeAdoOp(
         logger,
         state.workItemId,
@@ -135,6 +148,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
         () => ado.addTagToWorkItem(state.workItemId, tagToAdd),
       );
     }
+
+    // Mark dispatch as complete so the next entry knows to treat any
+    // subsequent re-tag as a fresh attempt (clear rejection + run pipeline)
+    // rather than a recovery.
+    state.rejection!.dispatched = true;
+    store.save(state);
 
     return {
       kind: 'rejected',
@@ -169,9 +188,18 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       const state =
         store.load(workItemId) ?? createInitialState(workItemId, slugify(title));
 
-      // Clear stale rejection from a previous cycle so the pipeline re-runs fresh.
-      // (rejectCount is preserved — it's cumulative across cycles.)
-      if (state.rejection) {
+      // Crash-recovery branch: the previous cycle set state.rejection but didn't
+      // finish dispatching the side-effects (e.g., process killed between
+      // comment-post and tag-swap). Retry only the tag ops; skip the comment to
+      // avoid duplicates. Don't re-run the pipeline.
+      if (state.rejection && !state.rejection.dispatched) {
+        return await dispatchRejection(state, true);
+      }
+
+      // Stale-rejection branch: previous cycle fully dispatched a reject, then
+      // the human re-added the trigger tag. Clear the rejection (preserve
+      // rejectCount — it's cumulative) and run the pipeline fresh.
+      if (state.rejection && state.rejection.dispatched) {
         state.rejection = undefined;
       }
 
@@ -190,7 +218,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
 
         // Reject path: check rejection BEFORE completedAt
         if (final.rejection) {
-          return await dispatchRejection(final);
+          return await dispatchRejection(final, false);
         }
 
         // Completed path: reset rejectCount if it was non-zero (analyzer finally accepted)

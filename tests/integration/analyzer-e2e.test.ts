@@ -214,6 +214,7 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
         summary: 'previous reject',
         stage: 'analyzer',
         at: '2026-01-02T00:00:00Z',
+        dispatched: true,
       },
     });
 

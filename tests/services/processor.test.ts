@@ -284,6 +284,7 @@ describe('createProcessor', () => {
         summary: 'stale',
         stage: 'analyzer',
         at: '2026-01-01T00:00:00Z',
+        dispatched: true,
       },
     });
     const stageRunCount = { n: 0 };
@@ -400,5 +401,62 @@ describe('createProcessor', () => {
     expect(postedHtml).toContain('no design');
     expect(postedHtml).toContain('What is the expected UI?');
     expect(postedHtml).toContain('agent implement');
+  });
+
+  it('crash-recovery: state.rejection set without dispatched flag → retry tag ops, no new comment, no pipeline run', async () => {
+    // Pre-seed the state as if a previous cycle crashed AFTER the rejectCount
+    // was incremented and saved, but BEFORE the comment-post and tag-swap
+    // finished (or after the comment but before the tags).
+    store.save({
+      workItemId: 101,
+      slug: 'wi',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: 'analyzer',
+      history: [],
+      attempts: {},
+      outputs: {},
+      rejectCount: 1,
+      rejection: {
+        reasons: ['vague'],
+        summary: 'WI is not ready',
+        stage: 'analyzer',
+        at: '2026-01-01T00:00:00Z',
+        // dispatched intentionally OMITTED — signals a crashed dispatch
+      },
+    });
+    const stageRunCount = { n: 0 };
+    const tripwireStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        stageRunCount.n++;
+        throw new Error('pipeline must not run during crash recovery');
+      },
+    };
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [tripwireStage],
+      abortFlag: { aborted: false },
+    });
+    const outcome = await proc.processWorkItem(101);
+    expect(stageRunCount.n).toBe(0); // pipeline did NOT run
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.rejectCount).toBe(1); // unchanged (not incremented again)
+      expect(outcome.severity).toBe('reject');
+    }
+    // Comment NOT posted (recovery skips the comment to avoid duplicates)
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    // Tag ops DID retry (they're idempotent)
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'need-input');
+    // Dispatched flag set at the end so subsequent re-tag triggers a fresh attempt
+    const saved = store.load(101)!;
+    expect(saved.rejection?.dispatched).toBe(true);
   });
 });

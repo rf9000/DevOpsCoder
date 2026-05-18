@@ -40,6 +40,16 @@ export interface PipelineRejection {
   questions?: string[];
   stage: string;
   at: string;
+  /**
+   * Processor-managed: set to true after the processor has fully dispatched
+   * the reject side-effects (comment posted, tags swapped). On next entry,
+   * `dispatched: true` means the previous cycle finished cleanly and the
+   * human has re-added the trigger tag — clear rejection and re-run pipeline.
+   * `dispatched` undefined/false means the previous dispatch was interrupted
+   * (crash) — re-run only the tag ops (skip the comment to avoid duplicates).
+   * The orchestrator never writes this field.
+   */
+  dispatched?: boolean;
 }
 
 export interface PipelineState {
