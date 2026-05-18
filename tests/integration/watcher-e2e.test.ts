@@ -36,10 +36,15 @@ const baseConfig: AppConfig = {
 };
 
 function makeRecordingRunner(): AgentRunner {
+  let callIndex = 0;
   return {
     async run<T>(args: AgentRunArgs<T>): Promise<T> {
       void args;
-      return { verdict: 'proceed', summary: 'ok', reasons: [] } as unknown as T;
+      const i = callIndex++;
+      // call 0 = analyzer, call 1 = coder, call 2 = test-author
+      if (i === 0) return { verdict: 'proceed', summary: 'ok', reasons: [] } as unknown as T;
+      if (i === 1) return { summary: 'ok', filesChanged: [], commits: [] } as unknown as T;
+      return { summary: 'ok', testFilesChanged: [], commits: [] } as unknown as T;
     },
   };
 }
@@ -49,8 +54,16 @@ function buildPipelineForTest(deps: PipelineBuilderDeps) {
   return buildPipeline({
     ...deps,
     runner: makeRecordingRunner(),
+    worktreeManager: {
+      ensureWorktree: async () => ({ path: '/tmp/wt', branch: 'agent/test', baseSha: 'sha' }),
+      removeWorktree: async () => {},
+    },
     discoveredSkills: [],
     analyzerPromptTemplate: 'test-prompt',
+    coderPromptTemplate: 'test-coder-prompt',
+    testAuthorPromptTemplate: 'test-test-author-prompt',
+    getCurrentHeadSha: async () => 'deadbeef',
+    resetWorktree: async () => {},
   });
 }
 

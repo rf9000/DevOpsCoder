@@ -84,8 +84,16 @@ function makeBuildPipeline(runner: AgentRunner) {
     buildPipeline({
       ...deps,
       runner,
+      worktreeManager: {
+        ensureWorktree: async () => ({ path: '/tmp/wt', branch: 'agent/test', baseSha: 'sha' }),
+        removeWorktree: async () => {},
+      },
       discoveredSkills: [],
       analyzerPromptTemplate: 'analyzer prompt body for test',
+      coderPromptTemplate: 'coder prompt body for test',
+      testAuthorPromptTemplate: 'test-author prompt body for test',
+      getCurrentHeadSha: async () => 'deadbeef',
+      resetWorktree: async () => {},
     });
 }
 
@@ -221,11 +229,11 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     });
 
     const ado = makeAdo([303]);
-    const runner = makeRunner(async () => ({
-      verdict: 'proceed',
-      summary: 'Now it makes sense',
-      reasons: [],
-    }));
+    const runner = makeRunner(async (call) => {
+      if (call === 0) return { verdict: 'proceed', summary: 'Now it makes sense', reasons: [] };
+      if (call === 1) return { summary: 'coded', filesChanged: [], commits: [] };
+      return { summary: 'tested', testFilesChanged: [], commits: [] };
+    });
     const abortFlag = createAbortFlag();
     const processor = createProcessor({
       config,
@@ -258,7 +266,7 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
     expect(ado.addWorkItemComment).not.toHaveBeenCalled();
 
-    // The runner WAS called (pipeline re-ran)
-    expect(runner.calls).toHaveLength(1);
+    // The runner WAS called for all 3 agent stages (analyzer + coder + test-author)
+    expect(runner.calls).toHaveLength(3);
   });
 });
