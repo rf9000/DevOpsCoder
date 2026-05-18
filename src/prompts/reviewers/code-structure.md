@@ -9,7 +9,7 @@ Code structure and design quality: SOLID principle violations, access control mi
 ### Detection targets
 
 #### Control flow and readability
-- Code wrapped in `if Condition then begin ... end` instead of using an early `if not Condition then exit` — **critical**
+- Code wrapped in `if Condition then begin ... end` instead of using an early `if not Condition then exit` — **major**
   - Exception: `FindSet` + `repeat..until` is logically paired — do NOT flag these
 - `else` branch after `exit`, `Error()`, `break`, `skip`, or `quit` — the else is unreachable dead code — **minor**
 - `begin..end` wrapping a single statement (AA0005) — **minor**

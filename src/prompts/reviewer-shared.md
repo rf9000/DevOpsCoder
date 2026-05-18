@@ -18,7 +18,7 @@ Five levels, all lowercase. Your severity choice determines whether the revision
 - `minor` — style or clarity nudge with real impact. NOT a loop exit barrier.
 - `nit` — small polish, formatting, naming preference. NOT a loop exit barrier.
 
-The coder's output is considered approved when `approved === true`, which holds if and only if there are zero `blocking` findings AND zero `critical` findings across all axes combined. Choose severity deliberately — over-flagging as `critical` blocks the pipeline unnecessarily.
+The pipeline marks the review approved when there are zero `blocking` and zero `critical` findings; any finding at those severities causes the revision loop to iterate. Choose severity deliberately — over-flagging as `critical` blocks the pipeline unnecessarily.
 
 ## How to find the code under review
 

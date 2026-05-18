@@ -23,7 +23,6 @@ Naming conventions, label suffix rules, enum safety, page style expressions, and
 - Label for a standalone caption or heading not suffixed `Lbl` — **minor**
 - Label for plain text content not suffixed `Txt` — **minor**
 - Token constant (non-translatable string) not suffixed `Tok` — **minor**
-- `StrSubstNo` called with an inline string literal instead of a label variable — **critical**
 - Parameterized label missing a `Comment` describing what each placeholder represents — **minor**
 
 #### Casing and naming conventions
@@ -51,6 +50,8 @@ Naming conventions, label suffix rules, enum safety, page style expressions, and
 ### Out of scope for this axis
 
 Correctness (TryFunction, Record.Get, CalcFields), performance (SetLoadFields, loops), code structure (SOLID, access modifiers, parameter passing), security (credential storage, permissions), and integration (event parameters, API schema). Other axes cover those.
+
+`StrSubstNo` with an inline string — flagged by the safety-correctness axis.
 
 ### Strategy
 

@@ -22,7 +22,7 @@ Integration quality: event publisher/subscriber contracts, API page design, HTTP
 - Breaking change on an existing API page: field removed, type changed, or `EntitySetName` changed without a version bump — **critical**
 
 #### HTTP client usage
-- Direct `HttpClient` usage instead of routing through the project's `IHttpFactory` interface — **critical**
+- Direct `HttpClient` usage not routed through the project's HTTP factory abstraction. Check the target repo's `.claude/rules/coding-rules/al-integration-patterns.md` (or similar) for the project's preferred factory interface name. If no such rule file exists, flag at `minor` rather than `critical` and note in the description that the project's HTTP convention couldn't be determined. — **critical**
 - HTTP response body processed without first checking `IsSuccessStatusCode` — **critical**
 - Authentication token or credential logged in HTTP request/response log entries — **critical**
   - Note: the security axis also covers this; flag here for integration context regardless

@@ -10,7 +10,7 @@ Performance: patterns that cause unnecessary database round-trips, lock contenti
 
 #### SetLoadFields and field loading
 - `Record.Get()`, `Record.Find()`, `Record.FindFirst()`, or `Record.FindSet()` without a preceding `SetLoadFields` — **critical**
-  - Exception: single-record setup/config tables with few fields
+  - Exception: skip flagging on tables that look like setup/config tables (name ends in `Setup` or `Configuration`, or has 10 or fewer non-system fields). When in doubt, flag at `minor` rather than `critical`.
   - Additional check: verify only the fields loaded via `SetLoadFields` are accessed after the read
 
 #### DeleteAll / ModifyAll guards
