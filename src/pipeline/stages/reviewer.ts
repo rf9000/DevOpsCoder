@@ -23,7 +23,7 @@ export function createReviewerStage(_deps: ReviewerStageDeps): Stage {
     name: 'reviewer',
     canRun: () => true,
     async execute(state, _ctx) {
-      const output: ReviewerOutput = { approved: true, feedback: [] };
+      const output: ReviewerOutput = { approved: true, findings: [], attempts: 0 };
       state.outputs.reviewer = output;
       return state;
     },

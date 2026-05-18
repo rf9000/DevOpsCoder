@@ -54,9 +54,9 @@ describe('createReviewerStage (Plan 4 stub)', () => {
     expect(stage.canRun(makeState())).toBe(true);
   });
 
-  it('sets state.outputs.reviewer = { approved: true, feedback: [] }', async () => {
+  it('sets state.outputs.reviewer = { approved: true, findings: [], attempts: 0 }', async () => {
     const stage = createReviewerStage({});
     const result = await stage.execute(makeState(), makeCtx());
-    expect(result.outputs.reviewer).toEqual({ approved: true, feedback: [] });
+    expect(result.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
   });
 });

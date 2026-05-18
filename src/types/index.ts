@@ -158,9 +158,55 @@ export interface TestAuthorOutput {
   commits: string[];
 }
 
+export type FindingSeverity = 'blocking' | 'critical' | 'major' | 'minor' | 'nit';
+
+export interface Finding {
+  severity: FindingSeverity;
+  /** Path relative to repo root. */
+  file: string;
+  /** Optional line number; some findings are file-level, not line-level. */
+  line?: number;
+  /** Short imperative summary. */
+  title: string;
+  /** Explanation of the issue. */
+  description: string;
+  /** Optional remediation hint. */
+  suggestion?: string;
+  /** Which reviewer axis raised it (or "multiple" after aggregation). */
+  axis: string;
+}
+
 export interface ReviewerOutput {
-  /** Whether the work is approved. Plan 4 stub always emits `true`. */
+  /** True iff zero blocking AND zero critical findings. */
   approved: boolean;
-  /** Per-reviewer findings. Plan 4 stub emits `[]`. Plan 5 fills this in. */
-  feedback: unknown[];
+  /** Aggregated findings across all 6 review axes. */
+  findings: Finding[];
+  /** Number of reviewer iterations run so far (revisionLoop tracks this). */
+  attempts: number;
+}
+
+export interface DraftPrOutput {
+  id: number;
+  url: string;
+  branch: string;
+  /** ISO timestamp. */
+  createdAt: string;
+}
+
+export interface PullRequest {
+  id: number;
+  url: string;
+  sourceRefName: string;
+  targetRefName: string;
+}
+
+export interface CreatePullRequestArgs {
+  repositoryName: string;
+  /** e.g. "refs/heads/agent/wi-101-fix-login" */
+  sourceRefName: string;
+  /** e.g. "refs/heads/main" */
+  targetRefName: string;
+  title: string;
+  description: string;
+  isDraft: boolean;
 }

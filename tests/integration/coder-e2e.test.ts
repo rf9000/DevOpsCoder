@@ -171,7 +171,7 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
       filesChanged: ['x.ts'],
       commits: ['abc'],
     });
-    expect(saved.outputs.reviewer).toEqual({ approved: true, feedback: [] });
+    expect(saved.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
     expect(saved.outputs.testAuthor).toEqual({
       summary: 'tested',
       testFilesChanged: ['x.test.ts'],

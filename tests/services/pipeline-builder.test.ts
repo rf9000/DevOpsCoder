@@ -167,7 +167,7 @@ describe('buildPipeline (Plan 4 full chain)', () => {
       filesChanged: ['x.ts'],
       commits: ['abc'],
     });
-    expect(state.outputs.reviewer).toEqual({ approved: true, feedback: [] });
+    expect(state.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
     expect(state.outputs.testAuthor).toEqual({
       summary: 'tested',
       testFilesChanged: ['x.test.ts'],
@@ -211,7 +211,7 @@ describe('buildPipeline (Plan 4 full chain)', () => {
     };
     state.outputs.worktree = sampleWorktree;
     const result = await revisionLoopStage.execute(state, makeCtx());
-    expect(result.outputs.reviewer).toEqual({ approved: true, feedback: [] });
+    expect(result.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
     expect(runner.calls).toHaveLength(1);
   });
 });
