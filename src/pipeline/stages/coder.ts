@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Stage } from '../stage.ts';
-import type { AgentRunner, CanUseToolFn } from '../agent-stage.ts';
+import type { AgentRunner } from '../agent-stage.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
 import type {
   AppConfig,
@@ -12,15 +12,20 @@ import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
+import {
+  MAX_TRANSIENT_RETRIES,
+  composeCanUseTool,
+  defaultGetCurrentHeadSha,
+  defaultResetWorktree,
+} from './_stage-helpers.ts';
+
+export { MAX_TRANSIENT_RETRIES } from './_stage-helpers.ts';
 
 export const coderOutputSchema = z.object({
   summary: z.string(),
   filesChanged: z.array(z.string()),
   commits: z.array(z.string()),
 }) satisfies z.ZodType<CoderOutput>;
-
-/** Maximum number of times the coder retries the runner after an AgentOutputParseError. */
-export const MAX_TRANSIENT_RETRIES = 2;
 
 const CODER_BASH_ALLOW: RegExp[] = [
   /^git (status|diff|log|show|blame)\b/,
@@ -57,59 +62,6 @@ const CODER_BASH_DENY: RegExp[] = [
   /^npm i\b/,
   /^pip install\b/,
 ];
-
-function composeCanUseTool(filters: CanUseToolFn[]): CanUseToolFn {
-  return async (toolName, input) => {
-    for (const filter of filters) {
-      const result = await filter(toolName, input);
-      if (result.behavior === 'deny') return result;
-    }
-    return { behavior: 'allow' };
-  };
-}
-
-async function defaultGetCurrentHeadSha(worktreePath: string): Promise<string> {
-  const proc = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
-    cwd: worktreePath,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const out = await new Response(proc.stdout as ReadableStream).text();
-  const code = await proc.exited;
-  if (code !== 0) {
-    throw new Error(
-      `git rev-parse HEAD failed (exit ${code}) in ${worktreePath}`,
-    );
-  }
-  return out.trim();
-}
-
-async function defaultResetWorktree(
-  worktreePath: string,
-  baselineSha: string,
-): Promise<void> {
-  // Best-effort cleanup; ignore errors (worktree may be in a weird state)
-  try {
-    const reset = Bun.spawn(['git', 'reset', '--hard', baselineSha], {
-      cwd: worktreePath,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    await reset.exited;
-  } catch {
-    // ignore
-  }
-  try {
-    const clean = Bun.spawn(['git', 'clean', '-fd'], {
-      cwd: worktreePath,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    await clean.exited;
-  } catch {
-    // ignore
-  }
-}
 
 export interface CoderStageDeps {
   config: AppConfig;
