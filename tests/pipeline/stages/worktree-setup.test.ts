@@ -43,6 +43,8 @@ function makeCtx(config: Partial<AppConfig> = {}) {
     maxRejectCycles: 3,
     coderMaxTurns: 80,
     testAuthorMaxTurns: 50,
+    maxCostUsdPerWi: 5.00,
+    stageTimeoutMs: {},
     claudeModel: 'claude-opus-4-7',
     stateDir: '.state',
     assignedToFilter: [],

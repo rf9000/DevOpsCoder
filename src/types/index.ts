@@ -15,6 +15,8 @@ export interface AppConfig {
   maxRejectCycles: number;
   coderMaxTurns: number;
   testAuthorMaxTurns: number;
+  maxCostUsdPerWi: number;
+  stageTimeoutMs: Record<string, number>;
   claudeModel: string;
   stateDir: string;
   assignedToFilter: string[];

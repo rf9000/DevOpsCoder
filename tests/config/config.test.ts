@@ -8,6 +8,7 @@ const validEnv: Record<string, string> = {
   ADO_REPOSITORY_NAME: 'test-repo',
   TARGET_REPO_PATH: '/repos/continia-banking',
   WORKTREE_BASE: '/repos/.worktrees',
+  MAX_COST_USD_PER_WI: '5.00',
 };
 
 describe('loadConfig', () => {
@@ -114,5 +115,28 @@ describe('loadConfig', () => {
   it('maps ADO_REPOSITORY_NAME to repositoryName', () => {
     const config = loadConfig({ ...validEnv, ADO_REPOSITORY_NAME: 'test-repo' });
     expect(config.repositoryName).toBe('test-repo');
+  });
+
+  it('throws when MAX_COST_USD_PER_WI is missing', () => {
+    const env = { ...validEnv };
+    delete env.MAX_COST_USD_PER_WI;
+    expect(() => loadConfig(env)).toThrow(/MAX_COST_USD_PER_WI/);
+    expect(() => loadConfig(env)).toThrow(/Invalid configuration/);
+  });
+
+  it('maps MAX_COST_USD_PER_WI to config.maxCostUsdPerWi', () => {
+    const config = loadConfig({ ...validEnv, MAX_COST_USD_PER_WI: '5.00' });
+    expect(config.maxCostUsdPerWi).toBe(5);
+  });
+
+  it('defaults all seven STAGE_TIMEOUT_MS_* when env vars are absent', () => {
+    const config = loadConfig(validEnv);
+    expect(config.stageTimeoutMs['analyzer']).toBe(300000);
+    expect(config.stageTimeoutMs['worktree-setup']).toBe(60000);
+    expect(config.stageTimeoutMs['coder']).toBe(1800000);
+    expect(config.stageTimeoutMs['reviewer']).toBe(900000);
+    expect(config.stageTimeoutMs['test-author']).toBe(1200000);
+    expect(config.stageTimeoutMs['draft-pr-creator']).toBe(120000);
+    expect(config.stageTimeoutMs['worktree-teardown']).toBe(60000);
   });
 });
