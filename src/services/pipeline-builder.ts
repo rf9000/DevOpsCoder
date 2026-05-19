@@ -65,7 +65,7 @@ export interface PipelineBuilderDeps {
   resetWorktree?: (worktreePath: string, baselineSha: string) => Promise<void>;
   /** Optional draft-PR description template override. Default reads from src/prompts/draft-pr-description.md. */
   prDescriptionTemplate?: string;
-  /** Optional pushBranch override for the draft-PR creator. Default uses Bun.spawn('git', ['push', 'origin', branch]). */
+  /** Optional pushBranch override for the draft-PR creator. Defaults to a real `git push origin <branch>` call. */
   pushBranch?: (branch: string, cwd: string) => Promise<void>;
 }
 

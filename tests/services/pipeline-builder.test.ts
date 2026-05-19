@@ -61,7 +61,7 @@ function makeAdo(): AdoClient {
 function makeWorktreeManager(): WorktreeManager {
   return {
     ensureWorktree: async () => sampleWorktree,
-    removeWorktree: async () => {},
+    removeWorktree: mock(async () => {}),
   };
 }
 
@@ -195,6 +195,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
     });
     expect(state.outputs.draftPr).toMatchObject({ id: 0, url: '', branch: sampleWorktree.branch });
     expect(pushBranch).toHaveBeenCalledTimes(1);
+    expect(worktreeManager.removeWorktree as ReturnType<typeof mock>).toHaveBeenCalledTimes(1);
   });
 
   it('revisionLoop runs exactly one iteration (coder + 6 reviewer axes)', async () => {
@@ -249,35 +250,6 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
 });
 
 describe('buildPipeline (Plan 5 full chain)', () => {
-  it('returns a 6-stage pipeline: analyzer → worktree-setup → revision-loop → test-author → draft-pr-creator → worktree-teardown', () => {
-    const stages = buildPipeline({
-      config,
-      logger: createLogger(),
-      ado: makeAdo(),
-      runner: makeRecordingRunner(() => ({})),
-      worktreeManager: makeWorktreeManager(),
-      discoveredSkills: [],
-      analyzerPromptTemplate: 'A',
-      coderPromptTemplate: 'C',
-      testAuthorPromptTemplate: 'T',
-      reviewerSharedPromptTemplate: 'R',
-      reviewerAxisPromptTemplates: Object.fromEntries(
-        REVIEW_AXES.map((a) => [a, a]),
-      ) as Record<typeof REVIEW_AXES[number], string>,
-      prDescriptionTemplate: 'D',
-      pushBranch: mock(async () => {}),
-    });
-    expect(stages).toHaveLength(6);
-    expect(stages.map((s) => s.name)).toEqual([
-      'analyzer',
-      'worktree-setup',
-      'revision-loop',
-      'test-author',
-      'draft-pr-creator',
-      'worktree-teardown',
-    ]);
-  });
-
   it('onExhausted throws when reviewer rejects maxRevisions times', async () => {
     const localConfig: AppConfig = { ...config, maxRevisions: 2 };
     const runner = makeRecordingRunner((args) => {
