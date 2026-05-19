@@ -108,23 +108,21 @@ export function renderCostExhaustionMarkdown(
   lines.push(`## Pipeline blocked: cost cap exceeded`);
   lines.push('');
 
-  if (cost) {
-    lines.push(
-      `The pipeline spent $${cost.total.toFixed(4)} (cap: $${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
-    );
-  } else {
+  if (!cost) {
     lines.push(
       `The pipeline exceeded the configured cost cap ($${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
     );
-  }
-  lines.push('');
-
-  lines.push(`### Per-stage spend`);
-  lines.push('');
-
-  if (!cost) {
+    lines.push('');
+    lines.push(`### Per-stage spend`);
+    lines.push('');
     lines.push('(no cost data recorded)');
   } else {
+    lines.push(
+      `The pipeline spent $${cost.total.toFixed(4)} (cap: $${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
+    );
+    lines.push('');
+    lines.push(`### Per-stage spend`);
+    lines.push('');
     lines.push('| Stage | USD |');
     lines.push('|---|---|');
     const sortedStages = Object.keys(cost.perStage).sort();
@@ -396,8 +394,8 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),
             );
-          } else if (/cost cap/i.test(terminalError.message)) {
-            const markdown = renderCostExhaustionMarkdown(persisted!, config, workItemId);
+          } else if (persisted && /cost cap/i.test(terminalError.message)) {
+            const markdown = renderCostExhaustionMarkdown(persisted, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),
