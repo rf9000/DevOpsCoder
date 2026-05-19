@@ -268,6 +268,13 @@ export function createProcessor(deps: ProcessorDeps): Processor {
         state.rejection = undefined;
       }
 
+      // NEW (task-08): clear cancelled flag from a previous cycle's external abort.
+      // The fresh cycle should start clean so the orchestrator can run unimpeded.
+      if (state.cancelled) {
+        state.cancelled = false;
+        store.save(state);
+      }
+
       store.save(state);
 
       const stages = buildPipeline({ config, logger, ado });
@@ -285,6 +292,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
 
       try {
         const final = await runPipeline({ stages, state, context, store });
+
+        // NEW (task-08): cancelled-return path — orchestrator bailed via external abort.
+        // No ADO writes: trigger tag stays, worktree stays, next poll cycle resumes.
+        if (final.cancelled) {
+          return { kind: 'skipped', workItemId, reason: 'cancelled' };
+        }
 
         // Reject path: check rejection BEFORE completedAt
         if (final.rejection) {
@@ -312,6 +325,16 @@ export function createProcessor(deps: ProcessorDeps): Processor {
         return { kind: 'paused', workItemId, stage: pausedStage };
       } catch (err) {
         const persisted = store.load(workItemId);
+
+        // NEW (task-08): defensive belt-and-suspenders check.
+        // In theory the orchestrator never throws on external abort (it returns cleanly
+        // with state.cancelled = true), so this branch is currently unreachable in
+        // production — but if a future stage combines abort with a throw, we still do
+        // the right thing: skip all ADO writes.
+        if (persisted?.cancelled) {
+          return { kind: 'skipped', workItemId, reason: 'cancelled' };
+        }
+
         const terminalError =
           persisted?.terminalError ?? {
             stage: persisted?.currentStage ?? 'unknown',

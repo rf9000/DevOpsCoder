@@ -603,4 +603,102 @@ describe('createProcessor', () => {
     const saved = store.load(101)!;
     expect(saved.rejection?.dispatched).toBe(true);
   });
+
+  // ── Plan 6 task-08: cancelled-state handling ─────────────────────────────
+
+  it('entry-clear: state.cancelled=true is cleared before pipeline runs and outcome is completed', async () => {
+    // Pre-populate state with cancelled: true (simulates previous cycle bailed via external abort)
+    store.save({
+      workItemId: 101,
+      slug: 'fix-login',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      attempts: {},
+      outputs: {},
+      cancelled: true,
+    });
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [], // empty pipeline → immediate completion
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+
+    // Pipeline ran successfully; cancelled flag was cleared before pipeline started
+    expect(outcome.kind).toBe('completed');
+    const persisted = store.load(101)!;
+    // cancelled should be cleared (false or undefined are both acceptable)
+    expect(persisted.cancelled === false || persisted.cancelled === undefined).toBe(true);
+  });
+
+  it('runPipeline returns cancelled state → outcome skipped/cancelled + zero ADO writes', async () => {
+    // Stage that sets state.cancelled = true and returns (simulates what external-abort path produces)
+    const cancelStage: Stage = {
+      name: 'coder',
+      canRun: () => true,
+      execute: async (state) => {
+        state.cancelled = true;
+        state.currentStage = 'coder';
+        return state;
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [cancelStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+
+    // Must return skipped/cancelled
+    expect(outcome.kind).toBe('skipped');
+    if (outcome.kind === 'skipped') {
+      expect(outcome.reason).toBe('cancelled');
+      expect(outcome.workItemId).toBe(101);
+    }
+
+    // Zero ADO writes: trigger tag stays, no blocked tag, no comment
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
+    expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('cancelled path does NOT add blockedTag (focused assertion)', async () => {
+    // Same setup as above; focused solely on the blocked-tag not being added
+    const cancelStage: Stage = {
+      name: 'coder',
+      canRun: () => true,
+      execute: async (state) => {
+        state.cancelled = true;
+        return state;
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [cancelStage],
+      abortFlag: { aborted: false },
+    });
+
+    await proc.processWorkItem(101);
+
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
+  });
 });
