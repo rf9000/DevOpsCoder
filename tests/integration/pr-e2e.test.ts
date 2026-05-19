@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -135,12 +135,17 @@ function makeBuildPipelineWrapper(
 }
 
 describe('PR e2e (Plan 5 full pipeline)', () => {
-  // Each test manages its own tmpDir — no shared state.
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'pr-e2e-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   it('scenario 1: happy path — analyzer→coder→reviewer approves→test-author→draft PR→teardown', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pr-e2e-s1-'));
-    afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
     const config = { ...baseConfig, stateDir: dir };
     const store = new PipelineStateStore(dir);
 
@@ -223,8 +228,6 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
   });
 
   it('scenario 2: revisionLoop iterates — reviewer rejects attempt 1, approves attempt 2', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pr-e2e-s2-'));
-    afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
     const config = { ...baseConfig, stateDir: dir };
     const store = new PipelineStateStore(dir);
@@ -315,8 +318,6 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
   });
 
   it('scenario 3: revisionLoop exhausts — reviewer rejects all 3 attempts → blocked tag, no PR, worktree retained', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pr-e2e-s3-'));
-    afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
     const config = { ...baseConfig, stateDir: dir };
     const store = new PipelineStateStore(dir);
@@ -398,8 +399,6 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
   });
 
   it('scenario 4: PR creation fails — branch pushed but createPullRequest throws → blocked tag, worktree retained', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pr-e2e-s4-'));
-    afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
     const config = { ...baseConfig, stateDir: dir };
     const store = new PipelineStateStore(dir);
