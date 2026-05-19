@@ -370,6 +370,39 @@ describe('createAdoClient', () => {
     });
   });
 
+  describe('signal forwarding', () => {
+    it('forwards opts.signal to the underlying fetch call', async () => {
+      const controller = new AbortController();
+      const fetchImpl = setupFetch([
+        jsonResponse(201, { id: 999, text: '<p>hi</p>' }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      await client.addWorkItemComment(101, '<p>hi</p>', { signal: controller.signal });
+      expect(calls[0]!.init?.signal).toBe(controller.signal);
+    });
+
+    it('rejects with AbortError when signal is pre-aborted before the first fetch', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const fetchImpl = setupFetch((_url, init) => {
+        if (init?.signal?.aborted) {
+          throw new DOMException('aborted', 'AbortError');
+        }
+        return jsonResponse(200, { id: 101, fields: {} });
+      });
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      let caught: unknown;
+      try {
+        await client.getWorkItem(101, { signal: controller.signal });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeDefined();
+      const err = caught as { name?: string; message?: string };
+      expect(err.name === 'AbortError' || /abort/i.test(err.message ?? '')).toBe(true);
+    });
+  });
+
   describe('error + retry behaviour', () => {
     it('throws AzureDevOpsError with statusCode on 4xx', async () => {
       const fetchImpl = setupFetch([

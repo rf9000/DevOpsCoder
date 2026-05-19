@@ -18,13 +18,13 @@ export class AzureDevOpsError extends Error {
 }
 
 export interface AdoClient {
-  queryWorkItemsByTag(tag: string): Promise<number[]>;
-  getWorkItem(workItemId: number): Promise<WorkItem>;
-  getWorkItemComments(workItemId: number): Promise<WorkItemComment[]>;
-  addTagToWorkItem(workItemId: number, tag: string): Promise<void>;
-  removeTagFromWorkItem(workItemId: number, tag: string): Promise<void>;
-  addWorkItemComment(workItemId: number, html: string): Promise<void>;
-  createPullRequest(opts: CreatePullRequestArgs): Promise<PullRequest>;
+  queryWorkItemsByTag(tag: string, opts?: { signal?: AbortSignal }): Promise<number[]>;
+  getWorkItem(workItemId: number, opts?: { signal?: AbortSignal }): Promise<WorkItem>;
+  getWorkItemComments(workItemId: number, opts?: { signal?: AbortSignal }): Promise<WorkItemComment[]>;
+  addTagToWorkItem(workItemId: number, tag: string, opts?: { signal?: AbortSignal }): Promise<void>;
+  removeTagFromWorkItem(workItemId: number, tag: string, opts?: { signal?: AbortSignal }): Promise<void>;
+  addWorkItemComment(workItemId: number, html: string, opts?: { signal?: AbortSignal }): Promise<void>;
+  createPullRequest(args: CreatePullRequestArgs, opts?: { signal?: AbortSignal }): Promise<PullRequest>;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000];
@@ -70,10 +70,25 @@ export function createAdoClient(
     return fetchImpl(url, { ...init, headers });
   }
 
+  function delayOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('aborted', 'AbortError'));
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('aborted', 'AbortError'));
+      });
+    });
+  }
+
   async function adoFetchWithRetry<T>(
     path: string,
     init?: RequestInit,
   ): Promise<T> {
+    const signal = init?.signal ?? undefined;
     const attempts = retryDelaysMs.length + 1;
     let lastErr: AzureDevOpsError | null = null;
     for (let i = 0; i < attempts; i++) {
@@ -88,21 +103,22 @@ export function createAdoClient(
         response.status,
       );
       if (response.status < 500 || response.status >= 600) throw lastErr;
-      const delay = retryDelaysMs[i];
-      if (i < attempts - 1 && delay !== undefined) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
+      const delayMs = retryDelaysMs[i];
+      if (i < attempts - 1 && delayMs !== undefined) {
+        await delayOrAbort(delayMs, signal);
       }
     }
     throw lastErr!;
   }
 
-  async function fetchWorkItem(workItemId: number): Promise<WorkItem> {
+  async function fetchWorkItem(workItemId: number, signal?: AbortSignal): Promise<WorkItem> {
     return adoFetchWithRetry<WorkItem>(
       `/_apis/wit/workitems/${workItemId}?api-version=7.1&$expand=all`,
+      signal !== undefined ? { signal } : undefined,
     );
   }
 
-  async function patchTags(workItemId: number, tags: string[]): Promise<void> {
+  async function patchTags(workItemId: number, tags: string[], signal?: AbortSignal): Promise<void> {
     await adoFetchWithRetry(
       `/_apis/wit/workitems/${workItemId}?api-version=7.1`,
       {
@@ -111,12 +127,13 @@ export function createAdoClient(
         body: JSON.stringify([
           { op: 'replace', path: '/fields/System.Tags', value: joinTags(tags) },
         ]),
+        signal,
       },
     );
   }
 
   return {
-    async queryWorkItemsByTag(tag: string): Promise<number[]> {
+    async queryWorkItemsByTag(tag: string, opts: { signal?: AbortSignal } = {}): Promise<number[]> {
       const tagLit = `'${escapeWiql(tag)}'`;
       const filterClause =
         config.assignedToFilter.length > 0
@@ -131,61 +148,65 @@ export function createAdoClient(
       ].join('\n');
       const result = await adoFetchWithRetry<WiqlQueryResponse>(
         `/${encodeURIComponent(config.project)}/_apis/wit/wiql?api-version=7.1`,
-        { method: 'POST', body: JSON.stringify({ query }) },
+        { method: 'POST', body: JSON.stringify({ query }), signal: opts.signal },
       );
       return result.workItems.map((w) => w.id);
     },
 
-    getWorkItem: fetchWorkItem,
+    async getWorkItem(workItemId: number, opts: { signal?: AbortSignal } = {}): Promise<WorkItem> {
+      return fetchWorkItem(workItemId, opts.signal);
+    },
 
-    async getWorkItemComments(workItemId: number): Promise<WorkItemComment[]> {
+    async getWorkItemComments(workItemId: number, opts: { signal?: AbortSignal } = {}): Promise<WorkItemComment[]> {
       const response = await adoFetchWithRetry<{ comments?: WorkItemComment[] }>(
         `/${encodeURIComponent(config.project)}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.3`,
+        { signal: opts.signal },
       );
       return response.comments ?? [];
     },
 
-    async addTagToWorkItem(workItemId: number, tag: string): Promise<void> {
-      const wi = await fetchWorkItem(workItemId);
+    async addTagToWorkItem(workItemId: number, tag: string, opts: { signal?: AbortSignal } = {}): Promise<void> {
+      const wi = await fetchWorkItem(workItemId, opts.signal);
       const tags = splitTags(wi.fields['System.Tags']);
       if (hasTagCi(tags, tag)) return;
       tags.push(tag);
-      await patchTags(workItemId, tags);
+      await patchTags(workItemId, tags, opts.signal);
     },
 
-    async removeTagFromWorkItem(workItemId: number, tag: string): Promise<void> {
-      const wi = await fetchWorkItem(workItemId);
+    async removeTagFromWorkItem(workItemId: number, tag: string, opts: { signal?: AbortSignal } = {}): Promise<void> {
+      const wi = await fetchWorkItem(workItemId, opts.signal);
       const tags = splitTags(wi.fields['System.Tags']);
       if (!hasTagCi(tags, tag)) return;
       const n = tag.toLowerCase();
       const updated = tags.filter((t) => t.toLowerCase() !== n);
-      await patchTags(workItemId, updated);
+      await patchTags(workItemId, updated, opts.signal);
     },
 
-    async addWorkItemComment(workItemId: number, html: string): Promise<void> {
+    async addWorkItemComment(workItemId: number, html: string, opts: { signal?: AbortSignal } = {}): Promise<void> {
       await adoFetchWithRetry(
         `/${encodeURIComponent(config.project)}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.3`,
-        { method: 'POST', body: JSON.stringify({ text: html }) },
+        { method: 'POST', body: JSON.stringify({ text: html }), signal: opts.signal },
       );
     },
 
-    async createPullRequest(opts: CreatePullRequestArgs): Promise<PullRequest> {
+    async createPullRequest(args: CreatePullRequestArgs, opts: { signal?: AbortSignal } = {}): Promise<PullRequest> {
       const response = await adoFetchWithRetry<{
         pullRequestId: number;
         url: string;
         sourceRefName: string;
         targetRefName: string;
       }>(
-        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(opts.repositoryName)}/pullrequests?api-version=7.1`,
+        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(args.repositoryName)}/pullrequests?api-version=7.1`,
         {
           method: 'POST',
           body: JSON.stringify({
-            sourceRefName: opts.sourceRefName,
-            targetRefName: opts.targetRefName,
-            title: opts.title,
-            description: opts.description,
-            isDraft: opts.isDraft,
+            sourceRefName: args.sourceRefName,
+            targetRefName: args.targetRefName,
+            title: args.title,
+            description: args.description,
+            isDraft: args.isDraft,
           }),
+          signal: opts.signal,
         },
       );
       return {
