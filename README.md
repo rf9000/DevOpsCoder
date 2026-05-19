@@ -1,8 +1,8 @@
 # DevopsCoder
 
-The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo. DevopsCoder picks up work items tagged `agent implement`, runs an analyzer/coder/test-author/reviewer pipeline against a per-WI git worktree, and opens a draft PR.
+The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo and opens draft PRs. DevopsCoder picks up work items tagged `agent implement`, runs a full analyzer → coder/reviewer → test-author → draft-PR pipeline against a per-WI git worktree, then tears down the worktree on success.
 
-The repo is at the **milestone-5 stage** (Plan 4 done): the pipeline now writes to the target repo. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder (Claude with full edit tooling + strict Bash allowlist + path-escape filter) inside a `revisionLoop` (Plan 4 stubs the reviewer to always-approve; Plan 5 swaps in the real parallel-fanout reviewer), and then runs the test-author to add tests for the work. Both stages have retry-on-transient + baseline-reset semantics so a mid-cycle crash doesn't leave a dirty worktree. The pipeline still does not push or open a PR — that lands in Plan 5 along with the real reviewer and worktree teardown.
+The repo is at the **milestone-6 stage** (Plan 5 done): full end-to-end pipeline. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
 
 ## Tech stack
 
@@ -24,6 +24,7 @@ The repo is at the **milestone-5 stage** (Plan 4 done): the pipeline now writes 
 | `bun run src/cli/index.ts run-wi <id>` | Process a single work item by ID |
 | `bun run src/cli/index.ts reset-state <id>` | Delete `.state/{id}.json` + remove worktree + delete branch (`--keep-worktree` opt-out) |
 | `bun run src/cli/index.ts debug-tags` | List work item IDs tagged TRIGGER_TAG |
+| `bun run src/cli/index.ts debug-pr <id>` | Print the draft-PR record stored in state for a work item |
 
 ## Layout
 
@@ -34,9 +35,9 @@ src/
   pipeline/
     stage.ts       — Stage interface, PipelinePauseError, PipelineRejectError
     orchestrator.ts — runPipeline with pause + reject + terminal-error branches
-    stages/        — concrete stages: analyzer, worktree-setup, coder, reviewer (stub), test-author
+    stages/        — concrete stages: analyzer, worktree-setup, coder, reviewer, test-author, draft-pr-creator, worktree-teardown
     agent-stage.ts, revision-loop.ts, checkpoint.ts — factories
-  prompts/         — Claude system-prompt templates (analyzer.md, coder.md, test-author.md)
+  prompts/         — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
   sdk/             — Azure DevOps REST client
   services/        — Claude SDK wrapper, watcher, processor, pipeline-builder,
                      wi-context fetcher, skill-loader, worktree-manager
@@ -45,12 +46,12 @@ src/
   utils/           — Logger, slugify, runPool, html helpers, bash-allowlist, path-escape-filter
 tests/             — mirrors src/ layout; integration/ for cross-cutting tests
 docs/
-  superpowers/plans/ — implementation plans (Plan 1 done, Plan 2 done, Plan 3 done, Plan 4 done)
+  superpowers/plans/ — implementation plans (Plans 1–5 done)
 ```
 
 ## Local setup
 
-1. Copy `.env.example` to `.env` and fill in the Azure DevOps PAT, org, project, and `TARGET_REPO_PATH` / `WORKTREE_BASE`.
+1. Copy `.env.example` to `.env` and fill in the Azure DevOps PAT, org, project, `ADO_REPOSITORY_NAME`, and `TARGET_REPO_PATH` / `WORKTREE_BASE`.
 2. `bun install`
 3. `bun test`
 

@@ -70,7 +70,7 @@ A `Stage` whose `detect()` returns whether a human-action gate has cleared. If n
 
 **File:** `src/sdk/azure-devops-client.ts`
 
-`createAdoClient(config, fetchImpl?, retryDelaysMs?)` returns an `AdoClient` interface (queryWorkItemsByTag, getWorkItem, addTagToWorkItem, removeTagFromWorkItem, addWorkItemComment). `fetchImpl` defaults to `globalThis.fetch.bind(globalThis)` so unit tests pass a mock without monkey-patching globals. Auth: `Basic <base64(":" + pat)>` per request. Retry: 5xx retries up to `retryDelaysMs.length + 1` attempts; 4xx is fatal. Tag I/O round-trips `System.Tags` (semicolon-separated string) — fetch, split, filter, PATCH back, case-insensitive matching, no-op when nothing changes.
+`createAdoClient(config, fetchImpl?, retryDelaysMs?)` returns an `AdoClient` interface (queryWorkItemsByTag, getWorkItem, addTagToWorkItem, removeTagFromWorkItem, addWorkItemComment, createPullRequest). `fetchImpl` defaults to `globalThis.fetch.bind(globalThis)` so unit tests pass a mock without monkey-patching globals. Auth: `Basic <base64(":" + pat)>` per request. Retry: 5xx retries up to `retryDelaysMs.length + 1` attempts; 4xx is fatal. Tag I/O round-trips `System.Tags` (semicolon-separated string) — fetch, split, filter, PATCH back, case-insensitive matching, no-op when nothing changes. `createPullRequest` posts to the ADO Git REST API (`/_apis/git/repositories/{repositoryName}/pullrequests`) with `isDraft: true`; returns `{ id, url }`.
 
 ## Concurrency pool
 
@@ -101,7 +101,9 @@ A `Stage` whose `detect()` returns whether a human-action gate has cleared. If n
 
 **File:** `src/services/pipeline-builder.ts`
 
-`buildPipeline(deps)` returns the `Stage[]` for one WI. Plan 4: `[analyzer, worktreeSetup, revisionLoop(coder, reviewer), testAuthor]`. Plan 5 will append `draftPrCreator` + `worktreeTeardown` and replace the reviewer body in-place (file name and factory name stay stable). Production callers use defaults (real `createClaudeAgentRunner`, real `createWorktreeManager`, real `discoverTargetRepoSkills`, `readFileSync` on the three prompt files); tests override `runner` / `worktreeManager` / `discoveredSkills` / `analyzerPromptTemplate` / `coderPromptTemplate` / `testAuthorPromptTemplate` / `getCurrentHeadSha` / `resetWorktree` so they don't hit Claude, git, or the filesystem.
+`buildPipeline(deps)` returns the full Plan 5 stage chain: `[analyzer, worktree-setup, revisionLoop(coder, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]`. On revision-loop exhaustion (`onExhausted`) the hook throws, the orchestrator records `terminalError`, and the processor catches it — posting reviewer findings as a WI comment and adding the blocked tag. On all failure paths (analyzer reject, coder/test-author error, reviewer exhaustion, draft-PR creation failure), `worktree-teardown` is intentionally NOT run; humans inspect what was left behind.
+
+Production injection points: `runner`, `worktreeManager`, `discoveredSkills`, `analyzerPromptTemplate`, `coderPromptTemplate`, `testAuthorPromptTemplate`, `reviewerSharedPromptTemplate`, `reviewerAxisPromptTemplates`, `prDescriptionTemplate`, `pushBranch`, `getCurrentHeadSha`, `resetWorktree`, `canUseTool`. All default to real implementations; tests inject mocks so they don't hit Claude, git, or the filesystem.
 
 ## Analyzer stage (readiness gate)
 
@@ -151,17 +153,39 @@ Hand-rolled Stage (intentionally NOT via `agentStage` factory) because of retry-
 
 Same shape as the coder stage. Differences: reads `state.outputs.coder` in addition (for context on what to test); output schema uses `testFilesChanged` instead of `filesChanged`; Bash allowlist adds test-runner commands (`bun test`, `npm test`, `npx vitest`, `jest`, `pytest`, `go test`); `maxTurns: config.testAuthorMaxTurns`. Stored in `state.outputs.testAuthor`.
 
-## Reviewer stage (Plan 4 stub)
+## Reviewer stage (real, Plan 5)
 
 **File:** `src/pipeline/stages/reviewer.ts`
 
-Plan 4 stub. Synchronously sets `state.outputs.reviewer = { approved: true, feedback: [] }`. No Claude call, no tokens. The file name (`reviewer.ts`) and factory name (`createReviewerStage`) are STABLE across Plan 4 → Plan 5; Plan 5 will replace only the body of `execute` with the real parallel-fanout reviewer. `pipeline-builder` wiring does not change between plans. `revisionLoop`'s `isApproved` predicate reads `state.outputs.reviewer.approved` — in Plan 4 the loop runs exactly one iteration since the stub always approves.
+Runs 6 per-axis Claude agents in parallel via `Promise.all`. Each axis (safety-correctness, performance, code-structure, naming-style, security, integration) gets the shared reviewer head (`reviewer-shared.md`) prepended to its own axis prompt (`reviewers/<axis>.md`). All 6 agents receive the same user prompt (WI context + coder/test-author summaries + worktree path + commit range). Tools: `Read, Grep, Glob, Bash` (read-only Bash allowlist; no `Edit`/`Write`). Each axis emits `{ findings: Finding[] }`. The flat list is passed to `aggregateReviewerFindings`; `approved = !any(blocking|critical)`. Intentionally NOT retried on transient errors — the reviewer is read-only, so there is nothing to reset. A thrown per-axis error propagates from `Promise.all` to the orchestrator's terminal-failure branch. Output stored in `state.outputs.reviewer` as `{ approved, findings, attempts }`.
+
+## aggregateReviewerFindings helper
+
+**File:** `src/pipeline/stages/_stage-helpers.ts`
+
+Pure function. Deduplicates a flat `Finding[]` from all 6 axes by `file:line` key (file-level findings use `file:__file__` key). Within each group: highest-severity finding's `title`, `description`, `suggestion`, `file`, `line`, and `severity` are kept verbatim; `axis` becomes a comma-separated, deduped, insertion-order list of every axis that fired on that location. Result is sorted severity-descending (`blocking` first, `nit` last). No I/O, no logging, no mutation of input objects.
+
+## Draft-PR creator stage
+
+**File:** `src/pipeline/stages/draft-pr-creator.ts`
+
+`createDraftPrCreatorStage(deps)` runs after the test-author succeeds. Steps: (1) push the branch via `Bun.spawn(['git', 'push', 'origin', branch])` (injectable `pushBranch` override for tests); (2) build the PR description from the template (`draft-pr-description.md`) with `{{placeholder}}` substitutions for WI context, analyzer/coder/test-author summaries, reviewer note, branch, and base SHA; (3) call `ado.createPullRequest({ repositoryName, sourceRefName, targetRefName: 'refs/heads/main', title: '[Agent] <wi-title>', description, isDraft: true })`. Output `{ id, url, branch, createdAt }` stored in `state.outputs.draftPr`. The `code-review` label is NOT applied — human action only. Both push errors and ADO errors propagate directly to the orchestrator's terminal-failure branch.
+
+## Worktree-teardown stage
+
+**File:** `src/pipeline/stages/worktree-teardown.ts`
+
+`createWorktreeTeardownStage(deps)` is the last stage in the pipeline. Calls `worktreeManager.removeWorktree` and wraps it in try/catch — cleanup is best-effort. A teardown failure is logged as a warning and swallowed; it never re-throws. If `state.outputs.worktree` is undefined (pipeline failed before worktree-setup ran), the stage returns immediately with no log. The stage only runs when all prior stages succeeded — because the orchestrator exits on any thrown error, failure paths (analyzer reject, coder/test-author error, reviewer exhaustion, draft-PR creation failure) skip teardown entirely, leaving the worktree on disk for inspection.
+
+## Exhaustion handling (revisionLoop)
+
+When the revision loop reaches `maxRevisions` without approval, `onExhausted` throws `Error('reviewer rejected N times — exhausted revision loop')`. The orchestrator catches this, records `state.terminalError`, and re-throws. The processor catches the throw and, if there are reviewer findings in state, renders them as grouped-by-severity markdown, converts to HTML via `marked`, and posts as a WI comment. It then adds the `blockedTag` to the work item. The worktree is intentionally retained (teardown is skipped because the pipeline threw). To start over: `bun run src/cli/index.ts reset-state <id>`.
 
 ## Bash allowlist (canUseTool)
 
 **File:** `src/utils/bash-allowlist.ts`
 
-`createBashAllowlist({ allow: RegExp[], deny: RegExp[] })` returns a `CanUseToolFn`. Non-Bash tool calls are unconditionally allowed (compose with `createPathEscapeFilter` for `Edit`/`Write`). For Bash: deny matches first (deny takes precedence), then allow. Anything not matching an allow pattern is denied (strict allowlist semantics). Used by the coder + test-author stages with role-specific patterns; Plan 5's reviewer may use it too.
+`createBashAllowlist({ allow: RegExp[], deny: RegExp[] })` returns a `CanUseToolFn`. Non-Bash tool calls are unconditionally allowed (compose with `createPathEscapeFilter` for `Edit`/`Write`). For Bash: deny matches first (deny takes precedence), then allow. Anything not matching an allow pattern is denied (strict allowlist semantics). Used by the coder, test-author, and reviewer stages with role-specific patterns.
 
 ## Path-escape filter (canUseTool)
 

@@ -6,7 +6,7 @@ Guidance for Claude Code working in this repository.
 
 DevopsCoder is the implement-tagged work-item pipeline for our Azure DevOps automation suite. It is the first agent that writes to the target repo (branches, commits, push, draft PR). It deploys as a Docker container alongside the existing 4 read-only agents.
 
-The repo is at the **milestone-5 stage** (Plan 4 done): full write-side pipeline. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree via `worktree-manager` (state-driven idempotent reuse off fresh `origin/main`), then runs `revisionLoop(coder, reviewer-stub)` — the coder uses Claude with `Edit`/`Write`/`Bash` against the worktree, guarded by a strict Bash allowlist + path-escape filter, with retry-on-transient and per-attempt baseline reset on error. The reviewer is a Plan 4 stub that always approves (Plan 5 will replace the body in-place — file name and factory name are stable). Test-author follows the same pattern with a test-runner allowlist. Both stages emit structured Zod-validated JSON. The pipeline still does not push or open a PR — Plan 5 adds the real reviewer, draft-PR creator, and worktree teardown.
+The repo is at the **milestone-6 stage** (Plan 5 done): full end-to-end pipeline. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree via `worktree-manager` (state-driven idempotent reuse off fresh `origin/main`), then runs `revisionLoop(coder, reviewer)` — the coder uses Claude with `Edit`/`Write`/`Bash` against the worktree, guarded by a strict Bash allowlist + path-escape filter, with retry-on-transient and per-attempt baseline reset on error. The reviewer is now real: 6 independent Claude agents run in parallel (`Promise.all`) across axes safety-correctness, performance, code-structure, naming-style, security, and integration; findings are deduplicated by file:line and sorted severity-descending. `approved = !any(blocking|critical)`. If approved, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success the worktree is torn down; on failure paths the worktree is intentionally left for inspection. See `docs/superpowers/plans/2026-05-18-plan-5-reviewer-pr-teardown.md` for the Plan 5 design.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ The repo is at the **milestone-5 stage** (Plan 4 done): full write-side pipeline
 - **Markdown:** `marked` for rendering reject-comment markdown into HTML for ADO comment posts.
 - **Testing:** `bun:test`
 - **State:** per-work-item JSON files under `.state/{workItemId}.json`
-- **Pipeline:** stage-based orchestrator. Each stage is a `Stage` (`name`, `canRun`, `execute`). Stages signal flow via three error sentinels: `PipelinePauseError` (halt and wait), `PipelineRejectError` (analyzer says WI isn't ready — populates `state.rejection`), or a regular `Error` (terminal failure). Factories: `agentStage`, `revisionLoop`, `checkpoint` — but stages with branching flow (like `analyzer`) are hand-rolled.
+- **Pipeline:** stage-based orchestrator. Each stage is a `Stage` (`name`, `canRun`, `execute`). Stages signal flow via three error sentinels: `PipelinePauseError` (halt and wait), `PipelineRejectError` (analyzer says WI isn't ready — populates `state.rejection`), or a regular `Error` (terminal failure). Factories: `agentStage`, `revisionLoop`, `checkpoint` — but stages with branching flow (like `analyzer`) are hand-rolled. Full 6-stage chain: `[analyzer, worktree-setup, revisionLoop(coder, reviewer), test-author, draft-pr-creator, worktree-teardown]`.
 
 ## Key patterns
 
@@ -34,15 +34,16 @@ The repo is at the **milestone-5 stage** (Plan 4 done): full write-side pipeline
 - `bun run src/cli/index.ts run-wi <id>` — process one work item by ID
 - `bun run src/cli/index.ts reset-state <id>` — delete `.state/{id}.json`
 - `bun run src/cli/index.ts debug-tags` — list WI IDs tagged with `TRIGGER_TAG`
+- `bun run src/cli/index.ts debug-pr <id>` — print the draft-PR record stored in state for a WI
 
 ## File Layout
 
 - `src/cli/` — CLI entry point (+ `--keep-worktree` flag for `reset-state`)
 - `src/config/` — Zod env validation (incl. `coderMaxTurns`, `testAuthorMaxTurns`)
 - `src/pipeline/` — Stage interface + orchestrator + factories
-- `src/pipeline/stages/` — analyzer, worktree-setup, coder, reviewer (stub), test-author
-- `src/prompts/` — Claude system-prompt templates (analyzer.md, coder.md, test-author.md)
-- `src/sdk/` — Azure DevOps REST client (PAT auth, retries, WIQL, tag/comment ops)
+- `src/pipeline/stages/` — analyzer, worktree-setup, coder, reviewer, test-author, draft-pr-creator, worktree-teardown
+- `src/prompts/` — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
+- `src/sdk/` — Azure DevOps REST client (PAT auth, retries, WIQL, tag/comment ops, createPullRequest)
 - `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder, wi-context fetcher, skill-loader, worktree-manager
 - `src/state/` — `PipelineStateStore`
 - `src/types/` — shared interfaces
@@ -60,4 +61,4 @@ The repo is at the **milestone-5 stage** (Plan 4 done): full write-side pipeline
 ## Sibling references
 
 `C:\GeneralDev\DevOpsPullers\DevOpsInvestigateWorkItems` — closest sibling. Mirror its file layout and patterns. Reimplement, don't import.
-`C:\GeneralDev\DevOpsPullers\DevOpsCodeReviewer` — for the parallel-subagent review fan-out (used by the reviewer stage in a later plan).
+`C:\GeneralDev\DevOpsPullers\DevOpsCodeReviewer` — reference for parallel-subagent review fan-out patterns (the reviewer stage follows the same 6-axis Promise.all approach).
