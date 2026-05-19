@@ -4,8 +4,12 @@ import type { PipelineState, StageHistoryEntry, PipelineCostInfo } from '../type
 import { CostExceededError, StageTimeoutError } from '../types/index.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
 
-/** Fallback per-stage timeout for stages not in config.stageTimeoutMs (e.g. revision-loop). */
-const DEFAULT_STAGE_TIMEOUT_MS = 120_000;
+/**
+ * Fallback per-stage timeout for stages not in config.stageTimeoutMs (e.g.
+ * revision-loop). Exported so the processor's timeout-comment renderer reports
+ * the same fallback the orchestrator actually enforced.
+ */
+export const DEFAULT_STAGE_TIMEOUT_MS = 120_000;
 
 export interface RunPipelineOptions {
   stages: Stage[];

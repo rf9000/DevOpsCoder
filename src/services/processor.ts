@@ -14,7 +14,7 @@ import type { Logger } from '../utils/logger.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
 import type { Stage, AbortFlag } from '../pipeline/stage.ts';
-import { createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
+import { DEFAULT_STAGE_TIMEOUT_MS, createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
 import { slugify } from '../utils/slug.ts';
 import type { PipelineBuilderDeps } from './pipeline-builder.ts';
 
@@ -145,15 +145,11 @@ export function renderCostExhaustionMarkdown(
   return lines.join('\n');
 }
 
-/** Default fallback — mirrors orchestrator's DEFAULT_STAGE_TIMEOUT_MS. */
-const DEFAULT_STAGE_TIMEOUT_MS = 120_000;
-
 function stageNameToEnvVar(stageName: string): string {
   return `STAGE_TIMEOUT_MS_${stageName.toUpperCase().replace(/-/g, '_')}`;
 }
 
 export function renderStageTimeoutMarkdown(
-  state: PipelineState,
   terminalError: PipelineTerminalError,
   config: AppConfig,
   workItemId: number,
@@ -182,11 +178,6 @@ export function renderStageTimeoutMarkdown(
   lines.push(
     `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
   );
-
-  // Suppress unused-variable lint for `state` — kept in signature for future
-  // use (e.g., surfacing partial outputs) and API consistency with the other
-  // renderers. The void cast makes the intentional non-use explicit.
-  void state;
 
   return lines.join('\n');
 }
@@ -449,7 +440,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
               ado.addWorkItemComment(workItemId, html),
             );
           } else if (persisted && /timeout/i.test(terminalError.message)) {
-            const markdown = renderStageTimeoutMarkdown(persisted, terminalError, config, workItemId);
+            const markdown = renderStageTimeoutMarkdown(terminalError, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),

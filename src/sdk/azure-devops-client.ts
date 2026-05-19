@@ -92,7 +92,10 @@ export function createAdoClient(
     path: string,
     init?: RequestInit,
   ): Promise<T> {
-    const signal = init?.signal;
+    // init?.signal is `AbortSignal | null | undefined` (RequestInit types signal
+    // as `AbortSignal | null`); coerce the null case to undefined for downstream
+    // helpers that expect `AbortSignal | undefined`.
+    const signal = init?.signal ?? undefined;
     const attempts = retryDelaysMs.length + 1;
     let lastErr: AzureDevOpsError | null = null;
     for (let i = 0; i < attempts; i++) {
