@@ -30,6 +30,7 @@ import type {
   AppConfig,
   CoderOutput,
   Finding,
+  PipelineCostInfo,
   PipelineState,
   ReviewerOutput,
   TestAuthorOutput,
@@ -150,17 +151,18 @@ function makeDeps(
   };
 }
 
-/** A runner that returns empty findings for every axis call. */
+/** A runner that returns empty findings for every axis call (wrapped in {value, costUsd}). */
 function makeRunner(
   resultFn?: (args: AgentRunArgs<unknown>) => Promise<unknown>,
+  costUsdPerCall = 0.10,
 ): AgentRunner & { calls: AgentRunArgs<unknown>[] } {
   const calls: AgentRunArgs<unknown>[] = [];
   return {
     calls,
     run: mock(async (args: AgentRunArgs<unknown>) => {
       calls.push(args);
-      if (resultFn) return await resultFn(args);
-      return { findings: [] };
+      const value = resultFn ? await resultFn(args) : { findings: [] };
+      return { value, costUsd: costUsdPerCall };
     }) as AgentRunner['run'],
   };
 }
@@ -184,8 +186,11 @@ describe('createReviewerStage', () => {
   it('T2: runs exactly 6 runner.run calls (one per axis)', async () => {
     const runner = makeRunner();
     const stage = createReviewerStage(makeDeps(runner));
-    await stage.execute(makeState(), makeCtx());
+    const result = await stage.execute(makeState(), makeCtx());
     expect(runner.calls).toHaveLength(6);
+    // Cost tracking: 6 axes × $0.10 each = $0.60 recorded as a single 'reviewer' entry
+    expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.60, 4);
+    expect((result.outputs.cost as PipelineCostInfo).perStage['reviewer']).toBeCloseTo(0.60, 4);
   });
 
   // -------------------------------------------------------------------------

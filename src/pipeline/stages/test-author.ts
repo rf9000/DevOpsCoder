@@ -19,6 +19,7 @@ import {
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
 } from './_stage-helpers.ts';
+import { createCostTracker } from '../../utils/cost-tracker.ts';
 
 export { MAX_TRANSIENT_RETRIES } from './_stage-helpers.ts';
 
@@ -157,7 +158,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
   return {
     name: 'test-author',
     canRun: () => true,
-    async execute(state, _ctx) {
+    async execute(state, ctx) {
       const analyzer = state.outputs.analyzer as AnalyzerOutput | undefined;
       const coder = state.outputs.coder as CoderOutput | undefined;
       const wiCtx = state.outputs.wiContext as WorkItemContext | undefined;
@@ -187,7 +188,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         try {
-          const output = await deps.runner.run<TestAuthorOutput>({
+          const { value: output, costUsd } = await deps.runner.run<TestAuthorOutput>({
             prompt,
             schema: testAuthorOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
@@ -197,7 +198,10 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
             settingSources: ['project'],
             maxTurns: deps.config.testAuthorMaxTurns,
             canUseTool,
+            signal: ctx.signal,
           });
+          // Only record cost on success (failed attempts threw before this line).
+          createCostTracker(state).add('test-author', costUsd);
           state.outputs.testAuthor = output;
           return state;
         } catch (err) {

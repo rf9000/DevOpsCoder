@@ -13,6 +13,7 @@ import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { composeCanUseTool, aggregateReviewerFindings } from './_stage-helpers.ts';
+import { createCostTracker } from '../../utils/cost-tracker.ts';
 
 // ---------------------------------------------------------------------------
 // Review axes
@@ -195,7 +196,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
   return {
     name: 'reviewer',
     canRun: () => true,
-    async execute(state, _ctx) {
+    async execute(state, ctx) {
       const wiCtx = state.outputs.wiContext as WorkItemContext | undefined;
       const analyzer = state.outputs.analyzer as AnalyzerOutput | undefined;
       const coder = state.outputs.coder as CoderOutput | undefined;
@@ -239,11 +240,16 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
             settingSources: ['project'],
             maxTurns,
             canUseTool,
+            signal: ctx.signal,
           }),
         ),
       );
 
-      const flat = axisResults.flatMap((r) => r.findings);
+      // Sum costUsd from all 6 axis runs and record as a single per-stage entry.
+      const totalCostUsd = axisResults.reduce((sum, r) => sum + r.costUsd, 0);
+      createCostTracker(state).add('reviewer', totalCostUsd);
+
+      const flat = axisResults.flatMap((r) => r.value.findings);
       const findings = aggregateReviewerFindings(flat);
       const approved = !findings.some(
         (f) => f.severity === 'blocking' || f.severity === 'critical',

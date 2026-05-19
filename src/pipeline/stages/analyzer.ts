@@ -9,6 +9,7 @@ import {
 } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AppConfig } from '../../types/index.ts';
+import { createCostTracker } from '../../utils/cost-tracker.ts';
 
 export const analyzerOutputSchema = z.object({
   verdict: z.enum(['proceed', 'reject']),
@@ -99,11 +100,11 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
   return {
     name: 'analyzer',
     canRun: () => true,
-    async execute(state, _ctx) {
+    async execute(state, ctx) {
       const wiCtx = await fetcher(deps.ado, state.workItemId);
       const prompt = buildAnalyzerUserPrompt(wiCtx, deps.discoveredSkills);
 
-      const output = await deps.runner.run<AnalyzerOutput>({
+      const { value: output, costUsd } = await deps.runner.run<AnalyzerOutput>({
         prompt,
         schema: analyzerOutputSchema,
         tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill'],
@@ -113,8 +114,10 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
         settingSources: ['project'],
         maxTurns: 20,
         canUseTool: deps.canUseTool,
+        signal: ctx.signal,
       });
 
+      createCostTracker(state).add('analyzer', costUsd);
       state.outputs.wiContext = wiCtx;
 
       if (output.verdict === 'reject') {

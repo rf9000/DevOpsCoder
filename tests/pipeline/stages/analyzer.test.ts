@@ -8,7 +8,7 @@ import { PipelineRejectError } from '../../../src/pipeline/stage.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
 import type { AgentRunArgs, AgentRunner } from '../../../src/pipeline/agent-stage.ts';
 import type { AdoClient } from '../../../src/sdk/azure-devops-client.ts';
-import type { AppConfig, PipelineState } from '../../../src/types/index.ts';
+import type { AppConfig, PipelineCostInfo, PipelineState } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
 
@@ -69,14 +69,15 @@ interface RecordingRunner extends AgentRunner {
 
 function makeRunner(
   result: AnalyzerOutput | (() => Promise<AnalyzerOutput>),
+  costUsd = 0.42,
 ): RecordingRunner {
   const calls: AgentRunArgs<unknown>[] = [];
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number }> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result() : result;
-      return out as unknown as T;
+      return { value: out as unknown as T, costUsd };
     },
   };
 }
@@ -174,6 +175,9 @@ describe('createAnalyzerStage', () => {
       summary: 'WI is ready',
       reasons: [],
     });
+    // Cost tracking: analyzer records costUsd returned by the runner
+    expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
+    expect((result.outputs.cost as PipelineCostInfo).perStage['analyzer']).toBeCloseTo(0.42, 4);
   });
 
   it('reject: throws PipelineRejectError carrying reasons + summary + questions', async () => {

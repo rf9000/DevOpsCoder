@@ -14,6 +14,7 @@ import type {
   AppConfig,
   CoderOutput,
   Finding,
+  PipelineCostInfo,
   PipelineState,
   ReviewerOutput,
   WorktreeContext,
@@ -105,15 +106,16 @@ interface RecordingRunner extends AgentRunner {
 
 function makeRunner(
   result: CoderOutput | ((call: number) => Promise<CoderOutput>),
+  costUsd = 0.42,
 ): RecordingRunner {
   const calls: AgentRunArgs<unknown>[] = [];
   let i = 0;
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number }> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result(i++) : result;
-      return out as unknown as T;
+      return { value: out as unknown as T, costUsd };
     },
   };
 }
@@ -252,6 +254,9 @@ describe('createCoderStage', () => {
     const result = await stage.execute(makeState(), makeCtx());
     expect(result.outputs.coder).toEqual(successOutput);
     expect(runner.calls).toHaveLength(1);
+    // Cost tracking: coder records costUsd returned by the runner
+    expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
+    expect((result.outputs.cost as PipelineCostInfo).perStage['coder']).toBeCloseTo(0.42, 4);
   });
 
   it('throws if upstream outputs missing (analyzer/wiContext/worktree)', async () => {
