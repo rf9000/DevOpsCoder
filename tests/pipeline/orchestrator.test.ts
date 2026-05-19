@@ -28,7 +28,7 @@ function makeContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
   };
-  const logger = { info: mock(() => {}), error: mock(() => {}) };
+  const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}) };
   return {
     config,
     logger,
