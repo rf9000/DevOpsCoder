@@ -6,13 +6,15 @@ Guidance for Claude Code working in this repository.
 
 DevopsCoder is the implement-tagged work-item pipeline for our Azure DevOps automation suite. It is the first agent that writes to the target repo (branches, commits, push, draft PR). It deploys as a Docker container alongside the existing 4 read-only agents.
 
-The repo is at the **milestone-6 stage** (Plan 5 done): full end-to-end pipeline. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree via `worktree-manager` (state-driven idempotent reuse off fresh `origin/main`), then runs `revisionLoop(coder, reviewer)` — the coder uses Claude with `Edit`/`Write`/`Bash` against the worktree, guarded by a strict Bash allowlist + path-escape filter, with retry-on-transient and per-attempt baseline reset on error. The reviewer is now real: 6 independent Claude agents run in parallel (`Promise.all`) across axes safety-correctness, performance, code-structure, naming-style, security, and integration; findings are deduplicated by file:line and sorted severity-descending. `approved = !any(blocking|critical)`. If approved, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success the worktree is torn down; on failure paths the worktree is intentionally left for inspection. See `docs/superpowers/plans/2026-05-18-plan-5-reviewer-pr-teardown.md` for the Plan 5 design.
+The repo is at the **milestone-7 stage** (Plans 1-6 done): full end-to-end pipeline with cost and safety rails. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree via `worktree-manager` (state-driven idempotent reuse off fresh `origin/main`), then runs `revisionLoop(coder, reviewer)` — the coder uses Claude with `Edit`/`Write`/`Bash` against the worktree, guarded by a strict Bash allowlist + path-escape filter, with retry-on-transient and per-attempt baseline reset on error. The reviewer is now real: 6 independent Claude agents run in parallel (`Promise.all`) across axes safety-correctness, performance, code-structure, naming-style, security, and integration; findings are deduplicated by file:line and sorted severity-descending. `approved = !any(blocking|critical)`. If approved, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success the worktree is torn down; on failure paths the worktree is intentionally left for inspection. See `docs/superpowers/plans/2026-05-18-plan-5-reviewer-pr-teardown.md` for the Plan 5 design.
+
+Plan 6 adds safety rails: `AgentRunner.run<T>` returns `{ value, costUsd }`; each LLM stage calls `tracker.add(stageName, costUsd)` to accumulate cost into `state.outputs.cost: PipelineCostInfo`; the orchestrator checks the cap before each top-level stage (`CostExceededError`) and wraps each stage in a `setTimeout` race (`StageTimeoutError`). An `AbortSignal` is threaded through `PipelineContext.signal` per stage and forwarded to the runner and ADO client. External abort sets `state.cancelled` (resumable); cost-cap and timeout set `state.terminalError` with a formatted WI comment. See `docs/superpowers/plans/2026-05-19-plan-6-cost-safety-rails.md`.
 
 ## Architecture
 
 - **Runtime:** Bun (TypeScript)
 - **Validation:** Zod for env config and agent output schemas
-- **AI:** `@anthropic-ai/claude-agent-sdk` — `query()` is wrapped in an injectable `AgentRunner` interface (`src/pipeline/agent-stage.ts`). The production runner (`src/services/claude-agent-runner.ts`) uses the `claude_code` system prompt preset with a JSON-only structured-output instruction appended, then validates the result against the per-stage Zod schema. Supports `cwd`, `disallowedTools`, `maxTurns`, `canUseTool`, `settingSources`, `systemPromptAppend` for per-stage tuning.
+- **AI:** `@anthropic-ai/claude-agent-sdk` — `query()` is wrapped in an injectable `AgentRunner` interface (`src/pipeline/agent-stage.ts`). `AgentRunner.run<T>` returns `{ value, costUsd }` — cost is first-class. The production runner (`src/services/claude-agent-runner.ts`) uses the `claude_code` system prompt preset with a JSON-only structured-output instruction appended, then validates the result against the per-stage Zod schema. Supports `cwd`, `disallowedTools`, `maxTurns`, `canUseTool`, `settingSources`, `systemPromptAppend`, `signal` for per-stage tuning.
 - **Markdown:** `marked` for rendering reject-comment markdown into HTML for ADO comment posts.
 - **Testing:** `bun:test`
 - **State:** per-work-item JSON files under `.state/{workItemId}.json`
@@ -39,7 +41,7 @@ The repo is at the **milestone-6 stage** (Plan 5 done): full end-to-end pipeline
 ## File Layout
 
 - `src/cli/` — CLI entry point (+ `--keep-worktree` flag for `reset-state`)
-- `src/config/` — Zod env validation (incl. `coderMaxTurns`, `testAuthorMaxTurns`)
+- `src/config/` — Zod env validation (incl. `coderMaxTurns`, `testAuthorMaxTurns`, `maxCostUsdPerWi`, `stageTimeoutMs`)
 - `src/pipeline/` — Stage interface + orchestrator + factories
 - `src/pipeline/stages/` — analyzer, worktree-setup, coder, reviewer, test-author, draft-pr-creator, worktree-teardown
 - `src/prompts/` — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)

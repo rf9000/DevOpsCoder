@@ -192,3 +192,48 @@ When the revision loop reaches `maxRevisions` without approval, `onExhausted` th
 **File:** `src/utils/path-escape-filter.ts`
 
 `createPathEscapeFilter(cwd)` returns a `CanUseToolFn` that rejects `Edit`/`Write`/`NotebookEdit` calls whose `file_path` resolves outside `cwd`. Belt-and-suspenders against a runaway agent writing to the host's DevopsCoder source or system files (the SDK's `cwd` alone doesn't enforce this — `permissionMode: 'bypassPermissions'` is set in the runner). Compose with `createBashAllowlist` via the local `composeCanUseTool` helper in the coder/test-author stages.
+
+## AgentRunner.run\<T\> returns {value, costUsd} (Plan 6)
+
+**File:** `src/pipeline/agent-stage.ts`
+
+`AgentRunner.run<T>` returns `AgentRunResult<T> = { value: T; costUsd: number }`. Cost is first-class — callers destructure `{ value, costUsd }` and forward `costUsd` to the cost tracker. `costUsd` may be `0` if the SDK did not report a cost (e.g., on a transient failure). The optional `signal?: AbortSignal` field was also added to `AgentRunArgs` so callers can thread the per-stage abort signal through.
+
+## createCostTracker helper (Plan 6)
+
+**File:** `src/utils/cost-tracker.ts`
+
+`createCostTracker(state)` initializes `state.outputs.cost: PipelineCostInfo` if absent, or resumes from existing data on re-entry. Returns `{ add(stage, usd), total(), perStage() }`. `add` is write-through — the orchestrator's cost-cap pre-check reads `state.outputs.cost.total` live on every loop iteration. `PipelineCostInfo = { total: number; perStage: Record<string, number> }` is defined in `src/types/index.ts`. Pure: no I/O, no logging, no thrown errors.
+
+## Per-stage wall-clock timeout (Plan 6)
+
+**File:** `src/pipeline/orchestrator.ts`
+
+Before running each stage, the orchestrator creates an `AbortController`, fires `setTimeout(() => ctrl.abort('timeout'), timeoutMs)`, and polls `abortFlag` at 100 ms intervals to also fire on external abort. The per-stage timeout is `config.stageTimeoutMs[stage.name] ?? DEFAULT_STAGE_TIMEOUT_MS` (exported constant: `120_000` ms). The 7 named stages have individual overrides configurable via `STAGE_TIMEOUT_MS_<STAGE_NAME>` env vars (see `.env.example`). On timeout the orchestrator throws `StageTimeoutError`, records `state.terminalError`, and re-throws.
+
+## Cost-cap pre-stage check (Plan 6)
+
+**File:** `src/pipeline/orchestrator.ts`
+
+Before each top-level stage `execute()`, the orchestrator reads `state.outputs.cost.total` and throws `CostExceededError` if it exceeds `config.maxCostUsdPerWi`. The check runs between top-level stages — `revisionLoop` (which contains multiple coder + reviewer calls) is one top-level stage, so the cap granularity is coarser inside the loop. Per-stage cost caps within the loop are deferred. `CostExceededError.message` contains the literal substring `cost cap` (lowercase) so the processor can route it without importing the class.
+
+## Cancellation vs failure distinction (Plan 6)
+
+**Files:** `src/pipeline/orchestrator.ts`, `src/services/processor.ts`
+
+Two distinct terminal states — not interchangeable:
+
+- `state.cancelled = true` — external abort (SIGINT or `abortFlag.aborted`). Orchestrator returns cleanly (no throw). Processor returns `{ kind: 'skipped', reason: 'cancelled' }`. No ADO writes, no blocked tag, trigger tag retained. Resumable on next poll cycle (processor clears `state.cancelled` on re-entry).
+- `state.terminalError` — cost-cap exceeded, stage timeout, or any unhandled thrown error. Orchestrator throws. Processor catches, posts a WI comment, adds the blocked tag.
+
+## renderCostExhaustionMarkdown / renderStageTimeoutMarkdown (Plan 6)
+
+**File:** `src/services/processor.ts`
+
+Two pure renderers for the Plan 6 terminal paths. Routing in the processor's catch block uses regex matches on `terminalError.message`: `/cost cap/i` → `renderCostExhaustionMarkdown`; `/timeout/i` → `renderStageTimeoutMarkdown`. Precedence: reviewer findings (check first) > cost cap > timeout. `renderCostExhaustionMarkdown` includes a per-stage spend table from `state.outputs.cost`. `renderStageTimeoutMarkdown` reports the configured timeout and the env var name the operator can adjust.
+
+## AbortSignal threading (Plan 6)
+
+**Files:** `src/pipeline/stage.ts`, `src/pipeline/orchestrator.ts`
+
+`PipelineContext.signal: AbortSignal` is a required field. The orchestrator creates a fresh `AbortController` per stage iteration and assigns `ctrl.signal` to `stageCtx.signal`. Stages pass `ctx.signal` to `runner.run({ ..., signal })` and to ADO client calls that accept a signal. The per-stage controller fires on timeout (`reason === 'timeout'`) or external abort (`reason === 'external'`); the orchestrator inspects `ctrl.signal.reason` in the catch block to distinguish the two cases before falling through to `PipelinePauseError` / `PipelineRejectError` handling.

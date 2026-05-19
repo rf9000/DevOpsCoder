@@ -2,7 +2,9 @@
 
 The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo and opens draft PRs. DevopsCoder picks up work items tagged `agent implement`, runs a full analyzer → coder/reviewer → test-author → draft-PR pipeline against a per-WI git worktree, then tears down the worktree on success.
 
-The repo is at the **milestone-6 stage** (Plan 5 done): full end-to-end pipeline. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
+The repo is at the **milestone-7 stage** (Plans 1-6 done): full end-to-end pipeline with cost and safety rails. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
+
+Plan 6 adds safety rails: a per-WI cumulative cost cap (`MAX_COST_USD_PER_WI`), per-stage wall-clock timeouts (7 configurable `STAGE_TIMEOUT_MS_*` env vars), and mid-stage abort propagation via `AbortSignal` threaded through `PipelineContext`. Exceeding the cost cap or a stage timeout records a `terminalError`, posts a formatted WI comment, and adds the blocked tag. An external abort (SIGINT) sets `state.cancelled` instead — resumable, no blocked tag.
 
 ## Tech stack
 
@@ -46,12 +48,12 @@ src/
   utils/           — Logger, slugify, runPool, html helpers, bash-allowlist, path-escape-filter
 tests/             — mirrors src/ layout; integration/ for cross-cutting tests
 docs/
-  superpowers/plans/ — implementation plans (Plans 1–5 done)
+  superpowers/plans/ — implementation plans (Plans 1–6 done)
 ```
 
 ## Local setup
 
-1. Copy `.env.example` to `.env` and fill in the Azure DevOps PAT, org, project, `ADO_REPOSITORY_NAME`, and `TARGET_REPO_PATH` / `WORKTREE_BASE`.
+1. Copy `.env.example` to `.env` and fill in the Azure DevOps PAT, org, project, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH` / `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` (required — no default; operator must consciously set this).
 2. `bun install`
 3. `bun test`
 
