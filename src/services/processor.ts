@@ -4,10 +4,12 @@ import type {
   PipelineCostInfo,
   PipelineRejection,
   PipelineState,
+  PipelineTerminalError,
   ProcessOutcome,
   ReviewerOutput,
   FindingSeverity,
 } from '../types/index.ts';
+import { formatTimeout } from '../types/index.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
@@ -139,6 +141,52 @@ export function renderCostExhaustionMarkdown(
   lines.push(
     `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
   );
+
+  return lines.join('\n');
+}
+
+/** Default fallback — mirrors orchestrator's DEFAULT_STAGE_TIMEOUT_MS. */
+const DEFAULT_STAGE_TIMEOUT_MS = 120_000;
+
+function stageNameToEnvVar(stageName: string): string {
+  return `STAGE_TIMEOUT_MS_${stageName.toUpperCase().replace(/-/g, '_')}`;
+}
+
+export function renderStageTimeoutMarkdown(
+  state: PipelineState,
+  terminalError: PipelineTerminalError,
+  config: AppConfig,
+  workItemId: number,
+): string {
+  const stageName = terminalError.stage;
+  const rawMs = config.stageTimeoutMs[stageName] ?? DEFAULT_STAGE_TIMEOUT_MS;
+  const timeoutFormatted = formatTimeout(rawMs);
+  const envVarName = stageNameToEnvVar(stageName);
+
+  const lines: string[] = [];
+
+  lines.push(`## Pipeline blocked: stage timed out`);
+  lines.push('');
+  lines.push(
+    `The "${stageName}" stage exceeded its wall-clock timeout of ${timeoutFormatted} and was hard-killed. The pipeline left the work in whatever partial state the stage produced before the abort fired.`,
+  );
+  lines.push('');
+  lines.push(`### Last stage attempt`);
+  lines.push('');
+  lines.push(`- Stage: \`${stageName}\``);
+  lines.push(`- Timeout: \`${timeoutFormatted}\` (configured via \`${envVarName}\` — see \`.env.example\`)`);
+  lines.push(`- Aborted at: ${terminalError.at}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+  );
+
+  // Suppress unused-variable lint for `state` — kept in signature for future
+  // use (e.g., surfacing partial outputs) and API consistency with the other
+  // renderers. The void cast makes the intentional non-use explicit.
+  void state;
 
   return lines.join('\n');
 }
@@ -396,6 +444,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             );
           } else if (persisted && /cost cap/i.test(terminalError.message)) {
             const markdown = renderCostExhaustionMarkdown(persisted, config, workItemId);
+            const html = await marked(markdown);
+            await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
+              ado.addWorkItemComment(workItemId, html),
+            );
+          } else if (persisted && /timeout/i.test(terminalError.message)) {
+            const markdown = renderStageTimeoutMarkdown(persisted, terminalError, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),

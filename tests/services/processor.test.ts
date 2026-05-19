@@ -9,7 +9,7 @@ import { createLogger } from '../../src/utils/logger.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
-import { CostExceededError } from '../../src/types/index.ts';
+import { CostExceededError, StageTimeoutError } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
 
 const baseConfig = {
@@ -755,6 +755,84 @@ describe('createProcessor', () => {
       ado,
       store,
       buildPipeline: () => [costCapStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
+  });
+
+  // ── Plan 6 task-10: stage-timeout comment routing ────────────────────────
+
+  it('timeout terminal error posts comment with stage name + timeout value in HTML', async () => {
+    let postedHtml = '';
+    const callOrder: string[] = [];
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+        callOrder.push('comment');
+      }),
+      addTagToWorkItem: mock(async () => {
+        callOrder.push('tag');
+      }),
+    });
+
+    const timeoutStage: Stage = {
+      name: 'reviewer',
+      canRun: () => true,
+      execute: async () => {
+        throw new StageTimeoutError('reviewer', 900_000);
+      },
+    };
+
+    const proc = createProcessor({
+      config: { ...baseConfig, stageTimeoutMs: { reviewer: 900_000 } },
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [timeoutStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+
+    // Comment posted once
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+
+    // HTML must contain: "timed out", stage name, formatted timeout, env-var name
+    expect(postedHtml).toContain('timed out');
+    expect(postedHtml).toContain('reviewer');
+    expect(postedHtml).toContain('15min');
+    expect(postedHtml).toContain('STAGE_TIMEOUT_MS_REVIEWER');
+
+    // Blocked tag was added
+    expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+
+    // Comment posted BEFORE the tag
+    expect(callOrder).toEqual(['comment', 'tag']);
+  });
+
+  it('dry-run with timeout terminal error: suppresses both comment and tag', async () => {
+    const timeoutStage: Stage = {
+      name: 'reviewer',
+      canRun: () => true,
+      execute: async () => {
+        throw new StageTimeoutError('reviewer', 900_000);
+      },
+    };
+
+    const ado = makeAdo();
+
+    const proc = createProcessor({
+      config: { ...baseConfig, dryRun: true, stageTimeoutMs: { reviewer: 900_000 } },
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [timeoutStage],
       abortFlag: { aborted: false },
     });
 

@@ -109,7 +109,7 @@ export class CostExceededError extends Error {
   }
 }
 
-function formatTimeout(ms: number): string {
+export function formatTimeout(ms: number): string {
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1).replace(/\.0$/, '')}min`;
   if (ms >= 1_000) return `${(ms / 1_000).toFixed(1).replace(/\.0$/, '')}s`;
   return `${ms}ms`;
