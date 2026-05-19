@@ -77,6 +77,8 @@ export interface CoderStageDeps {
   resetWorktree?: (worktreePath: string, baselineSha: string) => Promise<void>;
 }
 
+// Keep in sync with SEVERITY_RANK in ./_stage-helpers.ts — diverging would silently
+// drop a severity group from the rendered prompt or skew aggregation ordering.
 const SEVERITY_ORDER: Finding['severity'][] = [
   'blocking',
   'critical',
