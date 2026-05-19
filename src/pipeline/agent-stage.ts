@@ -1,7 +1,6 @@
 import type { z } from 'zod';
 import type { Stage, PipelineContext } from './stage.ts';
 import type { PipelineState } from '../types/index.ts';
-import { createCostTracker } from '../utils/cost-tracker.ts';
 
 export type CanUseToolFn = (
   toolName: string,
@@ -49,11 +48,6 @@ export interface AgentStageConfig<T> {
   canUseTool?: CanUseToolFn;
   applyOutput: (state: PipelineState, output: T) => PipelineState;
   canRun?: (state: PipelineState) => boolean;
-  /**
-   * Optional: if provided, the factory writes the run's costUsd to
-   * state.outputs.cost via createCostTracker using this key as the stage name.
-   */
-  trackCostAs?: string;
 }
 
 export function agentStage<T>(
@@ -65,7 +59,7 @@ export function agentStage<T>(
     canRun: cfg.canRun ?? (() => true),
     async execute(state, ctx) {
       const prompt = cfg.buildPrompt(state, ctx);
-      const { value: output, costUsd } = await runner.run<T>({
+      const { value: output } = await runner.run<T>({
         prompt,
         schema: cfg.schema,
         tools: cfg.tools,
@@ -78,9 +72,6 @@ export function agentStage<T>(
         canUseTool: cfg.canUseTool,
         signal: ctx.signal,
       });
-      if (cfg.trackCostAs !== undefined) {
-        createCostTracker(state).add(cfg.trackCostAs, costUsd);
-      }
       return cfg.applyOutput(state, output);
     },
   };

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { agentStage } from '../../src/pipeline/agent-stage.ts';
 import type { AgentRunner } from '../../src/pipeline/agent-stage.ts';
 import type { PipelineContext } from '../../src/pipeline/stage.ts';
-import type { AppConfig, PipelineCostInfo, PipelineState } from '../../src/types/index.ts';
+import type { AppConfig, PipelineState } from '../../src/types/index.ts';
 
 const FIXED_NOW = new Date('2026-05-04T12:00:00.000Z');
 
@@ -47,10 +47,10 @@ const VerdictSchema = z.object({
 
 describe('agentStage', () => {
   it('passes the built prompt + schema + tools + model to the runner', async () => {
-    const seenArgs: Array<{ prompt: string; schema: unknown; tools?: string[]; model?: string }> = [];
+    const seenArgs: Array<{ prompt: string; schema: unknown; tools?: string[]; model?: string; signal?: AbortSignal }> = [];
     const runner: AgentRunner = {
       run: mock(async (args) => {
-        seenArgs.push(args as { prompt: string; schema: unknown; tools?: string[]; model?: string });
+        seenArgs.push(args as { prompt: string; schema: unknown; tools?: string[]; model?: string; signal?: AbortSignal });
         return { value: { verdict: 'proceed', taskSummary: 'do x' }, costUsd: 0.42 };
       }) as AgentRunner['run'],
     };
@@ -62,7 +62,6 @@ describe('agentStage', () => {
         tools: ['Read'],
         model: 'claude-opus-4-7',
         applyOutput: (s, out) => ({ ...s, outputs: { ...s.outputs, analyzer: out } }),
-        trackCostAs: 'analyzer',
       },
       runner,
     );
@@ -76,10 +75,8 @@ describe('agentStage', () => {
     expect(seenArgs[0]?.schema).toBe(VerdictSchema);
     expect(seenArgs[0]?.tools).toEqual(['Read']);
     expect(seenArgs[0]?.model).toBe('claude-opus-4-7');
+    expect(seenArgs[0]?.signal).toBe(ctx.signal);
     expect(next.outputs.analyzer).toEqual({ verdict: 'proceed', taskSummary: 'do x' });
-    // Cost tracking: trackCostAs wires costUsd into state.outputs.cost
-    expect((next.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
-    expect((next.outputs.cost as PipelineCostInfo).perStage['analyzer']).toBeCloseTo(0.42, 4);
   });
 
   it('uses canRun option when provided, defaulting to always-true', async () => {
