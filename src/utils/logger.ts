@@ -1,6 +1,6 @@
 export interface Logger {
   info(message: string): void;
-  warn(payload: Record<string, unknown>, message: string): void;
+  warn(message: string, payload?: Record<string, unknown>): void;
   error(message: string, err?: unknown): void;
 }
 
@@ -15,14 +15,16 @@ export function createLogger(prefix?: string): Logger {
     info(msg) {
       console.log(fmt(msg));
     },
-    warn(payload, msg) {
-      const { err, ...rest } = payload;
-      const errStr = err instanceof Error ? err.message : err !== undefined ? String(err) : undefined;
+    warn(msg, payload) {
       const parts = [fmt(msg)];
-      if (errStr) parts.push(errStr);
-      const extraKeys = Object.keys(rest);
-      if (extraKeys.length > 0) {
-        parts.push(JSON.stringify(rest));
+      if (payload) {
+        const { err, ...rest } = payload;
+        const errStr = err instanceof Error ? err.message : err !== undefined ? String(err) : undefined;
+        if (errStr) parts.push(errStr);
+        const extraKeys = Object.keys(rest);
+        if (extraKeys.length > 0) {
+          parts.push(JSON.stringify(rest));
+        }
       }
       console.warn(parts.join(' :: '));
     },

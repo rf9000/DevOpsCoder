@@ -29,8 +29,8 @@ export function createWorktreeTeardownStage(deps: WorktreeTeardownStageDeps): St
         });
       } catch (err) {
         deps.logger.warn(
-          { err, workItemId: state.workItemId, slug: state.slug },
           `worktree teardown failed for wi-${state.workItemId}-${state.slug}`,
+          { err, workItemId: state.workItemId, slug: state.slug },
         );
         // Do NOT rethrow — cleanup is best-effort; pipeline already succeeded.
       }

@@ -136,11 +136,12 @@ describe('createWorktreeTeardownStage', () => {
       result = await stage.execute(inputState, makeCtx());
     }).not.toThrow();
 
-    // logger.warn was called with an error-shaped payload
+    // logger.warn was called with message + an error-shaped payload
     const warnCalls = (logger.warn as ReturnType<typeof mock>).mock.calls;
     expect(warnCalls.length).toBeGreaterThan(0);
-    const warnArg = warnCalls[0]![0] as { err: unknown };
-    expect(warnArg.err).toBe(removeError);
+    expect(warnCalls[0]![0]).toContain('worktree teardown failed');
+    const warnPayload = warnCalls[0]![1] as { err: unknown };
+    expect(warnPayload.err).toBe(removeError);
 
     // State returned unchanged
     expect(result).toBe(inputState);
