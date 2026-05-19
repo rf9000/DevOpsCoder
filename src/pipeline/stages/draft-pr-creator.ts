@@ -147,13 +147,9 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
       const branch = worktree.branch;
       const push = deps.pushBranch ?? defaultPushBranch;
 
-      // 1. Push branch
-      try {
-        await push(branch, worktree.path);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`failed to push branch ${branch}: ${msg}`);
-      }
+      // 1. Push branch — let the underlying push error propagate; the orchestrator
+      // logs the stage name, so the original error message is already actionable.
+      await push(branch, worktree.path);
 
       // 2. Build PR description
       const prDescription = buildPrDescription({
@@ -167,21 +163,16 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         config: deps.config,
       });
 
-      // 3. Create the PR
-      let prResult;
-      try {
-        prResult = await deps.ado.createPullRequest({
-          repositoryName: deps.config.repositoryName,
-          sourceRefName: `refs/heads/${branch}`,
-          targetRefName: 'refs/heads/main',
-          title: `[Agent] ${wiCtx.title}`,
-          description: prDescription,
-          isDraft: true,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`failed to create PR for ${branch}: ${msg}`);
-      }
+      // 3. Create the PR — let AzureDevOpsError propagate; its message already
+      // carries the URL, status, and ADO response body.
+      const prResult = await deps.ado.createPullRequest({
+        repositoryName: deps.config.repositoryName,
+        sourceRefName: `refs/heads/${branch}`,
+        targetRefName: 'refs/heads/main',
+        title: `[Agent] ${wiCtx.title}`,
+        description: prDescription,
+        isDraft: true,
+      });
 
       // 4. Store output
       const output: DraftPrOutput = {
