@@ -271,6 +271,9 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       store.save(state);
 
       const stages = buildPipeline({ config, logger, ado });
+      // Forward stub for task-08: outerCtrl will be wired to SIGINT there; the signal
+      // satisfies PipelineContext's required field today, with abort propagation handled
+      // via ctx.abortFlag in the orchestrator.
       const outerCtrl = new AbortController();
       const context = {
         config,

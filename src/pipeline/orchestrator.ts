@@ -45,6 +45,31 @@ function appendHistory(state: PipelineState, entry: StageHistoryEntry): void {
   state.history.push(entry);
 }
 
+/**
+ * Record a stage failure on state, append a 'failure' history entry, save, and
+ * throw the error. Used by the cost-cap pre-check, the timeout branch, and the
+ * fall-through terminal-error path — keeps the three error-routing sites in sync.
+ */
+function recordTerminalAndThrow(
+  state: PipelineState,
+  store: PipelineStateStore,
+  stageName: string,
+  err: Error,
+  startedAt: string,
+  endedAt: string,
+): never {
+  state.terminalError = { stage: stageName, message: err.message, at: endedAt };
+  appendHistory(state, {
+    stage: stageName,
+    startedAt,
+    endedAt,
+    outcome: 'failure',
+    message: err.message,
+  });
+  store.save(state);
+  throw err;
+}
+
 export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineState> {
   const { stages, context, store } = opts;
   let state = opts.state;
@@ -67,20 +92,8 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
     if (totalCost > context.config.maxCostUsdPerWi) {
       const stageName = state.currentStage;
       const costErr = new CostExceededError(totalCost, context.config.maxCostUsdPerWi, stageName);
-      state.terminalError = {
-        stage: stageName,
-        message: costErr.message,
-        at: context.now().toISOString(),
-      };
-      appendHistory(state, {
-        stage: stageName,
-        startedAt: context.now().toISOString(),
-        endedAt: context.now().toISOString(),
-        outcome: 'failure',
-        message: costErr.message,
-      });
-      store.save(state);
-      throw costErr;
+      const costNow = context.now().toISOString();
+      recordTerminalAndThrow(state, store, stageName, costErr, costNow, costNow);
     }
 
     const idx = findStageIndex(stages, state.currentStage);
@@ -122,8 +135,6 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
 
     try {
       state = await stage.execute(state, stageCtx);
-      clearTimeout(timer);
-      clearInterval(abortFlagWatcher);
       const endedAt = context.now().toISOString();
       if (state.currentStage === stage.name) {
         state.currentStage = stages[idx + 1]?.name ?? null;
@@ -137,8 +148,6 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       state.attempts[stage.name] = (state.attempts[stage.name] ?? 0) + 1;
       store.save(state);
     } catch (err) {
-      clearTimeout(timer);
-      clearInterval(abortFlagWatcher);
       const endedAt = context.now().toISOString();
 
       // Plan 6: distinguish timeout vs external abort BEFORE existing branches.
@@ -146,16 +155,7 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
         const reason = ctrl.signal.reason as unknown;
         if (reason === 'timeout') {
           const timeoutErr = new StageTimeoutError(stage.name, timeoutMs);
-          state.terminalError = { stage: stage.name, message: timeoutErr.message, at: endedAt };
-          appendHistory(state, {
-            stage: stage.name,
-            startedAt,
-            endedAt,
-            outcome: 'failure',
-            message: timeoutErr.message,
-          });
-          store.save(state);
-          throw timeoutErr;
+          recordTerminalAndThrow(state, store, stage.name, timeoutErr, startedAt, endedAt);
         }
         if (reason === 'external') {
           // SIGINT / external shutdown: mark cancelled, return cleanly (no throw).
@@ -195,17 +195,11 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
         store.save(state);
         return state;
       }
-      const message = err instanceof Error ? err.message : String(err);
-      state.terminalError = { stage: stage.name, message, at: endedAt };
-      appendHistory(state, {
-        stage: stage.name,
-        startedAt,
-        endedAt,
-        outcome: 'failure',
-        message,
-      });
-      store.save(state);
-      throw err;
+      const errAsError = err instanceof Error ? err : new Error(String(err));
+      recordTerminalAndThrow(state, store, stage.name, errAsError, startedAt, endedAt);
+    } finally {
+      clearTimeout(timer);
+      clearInterval(abortFlagWatcher);
     }
   }
 
