@@ -87,18 +87,12 @@ const REVIEWER_BASH_DENY: RegExp[] = [
 // ---------------------------------------------------------------------------
 
 export interface ReviewerStageDeps {
-  /**
-   * NOTE: All core fields are optional here so that `pipeline-builder.ts`'s Plan 4
-   * `createReviewerStage({})` call continues to typecheck until task-11 wires the
-   * real deps. The execute body throws at runtime if required fields are absent.
-   * Task-11 will tighten these to required when wiring.
-   */
-  config?: AppConfig;
-  runner?: AgentRunner;
+  config: AppConfig;
+  runner: AgentRunner;
   /** Shared head, prepended to each axis system prompt (contents of src/prompts/reviewer-shared.md). */
-  sharedPromptTemplate?: string;
+  sharedPromptTemplate: string;
   /** Per-axis system prompts, keyed by axis name (contents of src/prompts/reviewers/*.md). */
-  axisPromptTemplates?: Record<ReviewAxis, string>;
+  axisPromptTemplates: Record<ReviewAxis, string>;
   /** Optional override for the number of turns each axis gets. Default 30. */
   maxTurnsPerAxis?: number;
 }
@@ -201,20 +195,6 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
     name: 'reviewer',
     canRun: () => true,
     async execute(state, _ctx) {
-      // If the required deps are not yet wired (task-11 wires them), fall back
-      // to the Plan 4 always-approve stub so that existing integration tests
-      // and pipeline-builder tests continue to pass until task-11 is done.
-      if (!deps.config || !deps.runner || !deps.sharedPromptTemplate || !deps.axisPromptTemplates) {
-        const output: ReviewerOutput = { approved: true, findings: [], attempts: 0 };
-        state.outputs.reviewer = output;
-        return state;
-      }
-      // Narrow optional fields after the guard above.
-      const config = deps.config;
-      const runner = deps.runner;
-      const sharedPromptTemplate = deps.sharedPromptTemplate;
-      const axisPromptTemplates = deps.axisPromptTemplates;
-
       const wiCtx = state.outputs.wiContext as WorkItemContext | undefined;
       const analyzer = state.outputs.analyzer as AnalyzerOutput | undefined;
       const coder = state.outputs.coder as CoderOutput | undefined;
@@ -238,7 +218,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         testAuthor,
         worktree,
         attempts,
-        maxAttempts: config.maxRevisions,
+        maxAttempts: deps.config.maxRevisions,
       });
 
       const canUseTool = composeCanUseTool([
@@ -248,13 +228,13 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
 
       const axisResults = await Promise.all(
         REVIEW_AXES.map((axis) =>
-          runner.run<{ findings: Finding[] }>({
+          deps.runner.run<{ findings: Finding[] }>({
             prompt,
             schema: axisOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill'],
             disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
             cwd: worktree.path,
-            systemPromptAppend: `${sharedPromptTemplate}\n\n${axisPromptTemplates[axis]}`,
+            systemPromptAppend: `${deps.sharedPromptTemplate}\n\n${deps.axisPromptTemplates[axis]}`,
             settingSources: ['project'],
             maxTurns,
             canUseTool,

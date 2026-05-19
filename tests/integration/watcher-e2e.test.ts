@@ -6,6 +6,7 @@ import { join } from 'path';
 import { runPollCycle, createAbortFlag } from '../../src/services/watcher.ts';
 import { createProcessor } from '../../src/services/processor.ts';
 import { buildPipeline } from '../../src/services/pipeline-builder.ts';
+import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
@@ -42,9 +43,10 @@ function makeRecordingRunner(): AgentRunner {
     async run<T>(args: AgentRunArgs<T>): Promise<T> {
       void args;
       const i = callIndex++;
-      // call 0 = analyzer, call 1 = coder, call 2 = test-author
+      // call 0 = analyzer, call 1 = coder, calls 2-7 = 6 reviewer axes, call 8 = test-author
       if (i === 0) return { verdict: 'proceed', summary: 'ok', reasons: [] } as unknown as T;
       if (i === 1) return { summary: 'ok', filesChanged: [], commits: [] } as unknown as T;
+      if (i >= 2 && i <= 7) return { findings: [] } as unknown as T;
       return { summary: 'ok', testFilesChanged: [], commits: [] } as unknown as T;
     },
   };
@@ -63,6 +65,10 @@ function buildPipelineForTest(deps: PipelineBuilderDeps) {
     analyzerPromptTemplate: 'test-prompt',
     coderPromptTemplate: 'test-coder-prompt',
     testAuthorPromptTemplate: 'test-test-author-prompt',
+    reviewerSharedPromptTemplate: 'R',
+    reviewerAxisPromptTemplates: Object.fromEntries(
+      REVIEW_AXES.map((a) => [a, a]),
+    ) as Record<typeof REVIEW_AXES[number], string>,
     getCurrentHeadSha: async () => 'deadbeef',
     resetWorktree: async () => {},
   });

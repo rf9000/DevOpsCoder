@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildPipeline } from '../../src/services/pipeline-builder.ts';
+import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type {
@@ -125,7 +126,7 @@ describe('buildPipeline (Plan 4 full chain)', () => {
     ]);
   });
 
-  it('end-to-end happy path: analyzer proceeds → coder commits → reviewer (stub) approves → test-author commits', async () => {
+  it('end-to-end happy path: analyzer proceeds → coder commits → reviewer approves → test-author commits', async () => {
     const runner = makeRecordingRunner((args) => {
       const sysPrompt = args.systemPromptAppend ?? '';
       if (sysPrompt === 'A') {
@@ -141,6 +142,9 @@ describe('buildPipeline (Plan 4 full chain)', () => {
           commits: ['def'],
         };
       }
+      if (sysPrompt.startsWith('R\n\n')) {
+        return { findings: [] };
+      }
       return {};
     });
     const stages = buildPipeline({
@@ -153,6 +157,10 @@ describe('buildPipeline (Plan 4 full chain)', () => {
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      reviewerSharedPromptTemplate: 'R',
+      reviewerAxisPromptTemplates: Object.fromEntries(
+        REVIEW_AXES.map((a) => [a, a]),
+      ) as Record<typeof REVIEW_AXES[number], string>,
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
     });
@@ -161,7 +169,8 @@ describe('buildPipeline (Plan 4 full chain)', () => {
     for (const stage of stages) {
       state = await stage.execute(state, ctx);
     }
-    expect(runner.calls).toHaveLength(3); // analyzer + coder + test-author (reviewer is stub)
+    // 9 = analyzer + coder + 6 reviewer axes + test-author
+    expect(runner.calls).toHaveLength(9);
     expect(state.outputs.analyzer).toBeDefined();
     expect(state.outputs.worktree).toEqual(sampleWorktree);
     expect(state.outputs.coder).toEqual({
@@ -169,7 +178,7 @@ describe('buildPipeline (Plan 4 full chain)', () => {
       filesChanged: ['x.ts'],
       commits: ['abc'],
     });
-    expect(state.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
+    expect(state.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 1 });
     expect(state.outputs.testAuthor).toEqual({
       summary: 'tested',
       testFilesChanged: ['x.test.ts'],
@@ -177,12 +186,15 @@ describe('buildPipeline (Plan 4 full chain)', () => {
     });
   });
 
-  it('revisionLoop with stub reviewer runs exactly one iteration', async () => {
-    const runner = makeRecordingRunner(() => ({
-      summary: 's',
-      filesChanged: [],
-      commits: [],
-    }));
+  it('revisionLoop runs exactly one iteration (coder + 6 reviewer axes)', async () => {
+    const runner = makeRecordingRunner((args) => {
+      const sysPrompt = args.systemPromptAppend ?? '';
+      if (sysPrompt.startsWith('R\n\n')) {
+        return { findings: [] };
+      }
+      // coder call
+      return { summary: 's', filesChanged: [], commits: [] };
+    });
     const stages = buildPipeline({
       config,
       logger: createLogger(),
@@ -193,6 +205,10 @@ describe('buildPipeline (Plan 4 full chain)', () => {
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      reviewerSharedPromptTemplate: 'R',
+      reviewerAxisPromptTemplates: Object.fromEntries(
+        REVIEW_AXES.map((a) => [a, a]),
+      ) as Record<typeof REVIEW_AXES[number], string>,
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
     });
@@ -213,7 +229,8 @@ describe('buildPipeline (Plan 4 full chain)', () => {
     };
     state.outputs.worktree = sampleWorktree;
     const result = await revisionLoopStage.execute(state, makeCtx());
-    expect(result.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
-    expect(runner.calls).toHaveLength(1);
+    expect(result.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 1 });
+    // 7 = coder + 6 reviewer axes
+    expect(runner.calls).toHaveLength(7);
   });
 });

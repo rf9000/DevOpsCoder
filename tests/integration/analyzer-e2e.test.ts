@@ -6,6 +6,7 @@ import { join } from 'path';
 import { runPollCycle, createAbortFlag } from '../../src/services/watcher.ts';
 import { createProcessor } from '../../src/services/processor.ts';
 import { buildPipeline } from '../../src/services/pipeline-builder.ts';
+import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
@@ -94,6 +95,10 @@ function makeBuildPipeline(runner: AgentRunner) {
       analyzerPromptTemplate: 'analyzer prompt body for test',
       coderPromptTemplate: 'coder prompt body for test',
       testAuthorPromptTemplate: 'test-author prompt body for test',
+      reviewerSharedPromptTemplate: 'R',
+      reviewerAxisPromptTemplates: Object.fromEntries(
+        REVIEW_AXES.map((a) => [a, a]),
+      ) as Record<typeof REVIEW_AXES[number], string>,
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
     });
@@ -234,6 +239,8 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     const runner = makeRunner(async (call) => {
       if (call === 0) return { verdict: 'proceed', summary: 'Now it makes sense', reasons: [] };
       if (call === 1) return { summary: 'coded', filesChanged: [], commits: [] };
+      // calls 2-7 = 6 reviewer axis calls
+      if (call >= 2 && call <= 7) return { findings: [] };
       return { summary: 'tested', testFilesChanged: [], commits: [] };
     });
     const abortFlag = createAbortFlag();
@@ -268,7 +275,7 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
     expect(ado.addWorkItemComment).not.toHaveBeenCalled();
 
-    // The runner WAS called for all 3 agent stages (analyzer + coder + test-author)
-    expect(runner.calls).toHaveLength(3);
+    // The runner WAS called for all agent stages: analyzer + coder + 6 reviewer axes + test-author = 9
+    expect(runner.calls).toHaveLength(9);
   });
 });

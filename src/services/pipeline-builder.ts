@@ -17,12 +17,21 @@ import { createAnalyzerStage } from '../pipeline/stages/analyzer.ts';
 import { createWorktreeSetupStage } from '../pipeline/stages/worktree-setup.ts';
 import { createCoderStage } from '../pipeline/stages/coder.ts';
 import { createTestAuthorStage } from '../pipeline/stages/test-author.ts';
-import { createReviewerStage } from '../pipeline/stages/reviewer.ts';
+import { createReviewerStage, REVIEW_AXES } from '../pipeline/stages/reviewer.ts';
 import { revisionLoop } from '../pipeline/revision-loop.ts';
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
 const CODER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder.md`;
 const TEST_AUTHOR_PROMPT_PATH = `${import.meta.dir}/../prompts/test-author.md`;
+const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
+const REVIEWER_AXIS_PROMPT_PATHS: Record<typeof REVIEW_AXES[number], string> = {
+  'safety-correctness': `${import.meta.dir}/../prompts/reviewers/safety-correctness.md`,
+  'performance': `${import.meta.dir}/../prompts/reviewers/performance.md`,
+  'code-structure': `${import.meta.dir}/../prompts/reviewers/code-structure.md`,
+  'naming-style': `${import.meta.dir}/../prompts/reviewers/naming-style.md`,
+  'security': `${import.meta.dir}/../prompts/reviewers/security.md`,
+  'integration': `${import.meta.dir}/../prompts/reviewers/integration.md`,
+};
 
 export interface PipelineBuilderDeps {
   config: AppConfig;
@@ -40,6 +49,10 @@ export interface PipelineBuilderDeps {
   coderPromptTemplate?: string;
   /** Optional test-author prompt body override. */
   testAuthorPromptTemplate?: string;
+  /** Optional reviewer shared-prompt body override. */
+  reviewerSharedPromptTemplate?: string;
+  /** Optional per-axis reviewer prompt body overrides. Default reads from src/prompts/reviewers/*.md. */
+  reviewerAxisPromptTemplates?: Record<typeof REVIEW_AXES[number], string>;
   /** Optional canUseTool override for the analyzer. */
   canUseTool?: CanUseToolFn;
   /** Test override: inject a fake HEAD-sha reader so coder/test-author don't spawn git. */
@@ -49,12 +62,11 @@ export interface PipelineBuilderDeps {
 }
 
 /**
- * Builds the full Plan 4 stage chain:
+ * Builds the full stage chain:
  *   [analyzer, worktree-setup, revisionLoop(coder, reviewer), test-author]
  *
  * Production callers (CLI → processor) use the defaults; tests inject mocks via the
- * optional override fields. Plan 5 will replace the reviewer's body in-place;
- * pipeline-builder wiring does NOT change between Plan 4 and Plan 5.
+ * optional override fields.
  */
 export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const runner =
@@ -72,6 +84,16 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const testAuthorPromptTemplate =
     deps.testAuthorPromptTemplate ??
     readFileSync(TEST_AUTHOR_PROMPT_PATH, 'utf-8');
+  const reviewerSharedPromptTemplate =
+    deps.reviewerSharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8');
+  const reviewerAxisPromptTemplates =
+    deps.reviewerAxisPromptTemplates ??
+    Object.fromEntries(
+      REVIEW_AXES.map((axis) => [
+        axis,
+        readFileSync(REVIEWER_AXIS_PROMPT_PATHS[axis], 'utf-8'),
+      ]),
+    ) as Record<typeof REVIEW_AXES[number], string>;
 
   const coder = createCoderStage({
     config: deps.config,
@@ -82,7 +104,12 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     resetWorktree: deps.resetWorktree,
   });
 
-  const reviewer = createReviewerStage({});
+  const reviewer = createReviewerStage({
+    config: deps.config,
+    runner,
+    sharedPromptTemplate: reviewerSharedPromptTemplate,
+    axisPromptTemplates: reviewerAxisPromptTemplates,
+  });
 
   return [
     createAnalyzerStage({

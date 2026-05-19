@@ -6,6 +6,7 @@ import { join } from 'path';
 import { runPollCycle, createAbortFlag } from '../../src/services/watcher.ts';
 import { createProcessor } from '../../src/services/processor.ts';
 import { buildPipeline } from '../../src/services/pipeline-builder.ts';
+import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import { AgentOutputParseError } from '../../src/services/claude-agent-runner.ts';
@@ -110,6 +111,10 @@ function makeBuildPipelineWrapper(
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      reviewerSharedPromptTemplate: 'R',
+      reviewerAxisPromptTemplates: Object.fromEntries(
+        REVIEW_AXES.map((a) => [a, a]),
+      ) as Record<typeof REVIEW_AXES[number], string>,
       // Stub the git operations the coder/test-author would otherwise spawn:
       getCurrentHeadSha: async () => sampleWorktree.baseSha,
       resetWorktree: async () => {},
@@ -131,12 +136,13 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('happy path: analyzer→worktree→coder→reviewer (stub)→test-author → completed', async () => {
+  it('happy path: analyzer→worktree→coder→reviewer→test-author → completed', async () => {
     const runner = makeStagedRunner((args) => {
       const sys = args.systemPromptAppend ?? '';
       if (sys === 'A') return { verdict: 'proceed', summary: 'ready', reasons: [] };
       if (sys === 'C') return { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] };
       if (sys === 'T') return { summary: 'tested', testFilesChanged: ['x.test.ts'], commits: ['def'] };
+      if (sys.startsWith('R\n\n')) return { findings: [] };
       throw new Error(`unexpected stage prompt: ${sys}`);
     });
     const worktreeManager = makeWorktreeManager();
@@ -173,7 +179,7 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
       filesChanged: ['x.ts'],
       commits: ['abc'],
     });
-    expect(saved.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 0 });
+    expect(saved.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 1 });
     expect(saved.outputs.testAuthor).toEqual({
       summary: 'tested',
       testFilesChanged: ['x.test.ts'],
@@ -182,8 +188,8 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
 
     expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(201, 'agent implement');
     expect(worktreeManager.ensureWorktree).toHaveBeenCalled();
-    // Runner: analyzer (1) + coder (1) + test-author (1) = 3. Reviewer stub doesn't call runner.
-    expect(runner.calls).toHaveLength(3);
+    // Runner: analyzer (1) + coder (1) + 6 reviewer axes + test-author (1) = 9.
+    expect(runner.calls).toHaveLength(9);
   });
 
   it('coder retries on AgentOutputParseError (transient), eventually succeeds', async () => {
@@ -199,6 +205,7 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
         return { summary: 'coded after retries', filesChanged: ['x.ts'], commits: ['abc'] };
       }
       if (sys === 'T') return { summary: 'tested', testFilesChanged: ['x.test.ts'], commits: ['def'] };
+      if (sys.startsWith('R\n\n')) return { findings: [] };
       throw new Error(`unexpected: ${sys}`);
     });
     const worktreeManager = makeWorktreeManager();
@@ -232,8 +239,8 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
       commits: ['abc'],
     });
     expect(saved.completedAt).toBeTruthy();
-    // Total runner calls: analyzer (1) + coder (3 attempts: 2 fail + 1 success) + test-author (1) = 5
-    expect(runner.calls).toHaveLength(5);
+    // Total runner calls: analyzer (1) + coder (3 attempts: 2 fail + 1 success) + 6 reviewer axes + test-author (1) = 11
+    expect(runner.calls).toHaveLength(11);
   });
 
   it('coder fails terminally (hard error) → terminal failure + blockedTag added', async () => {
