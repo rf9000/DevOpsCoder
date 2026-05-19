@@ -86,6 +86,8 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     readFileSync(TEST_AUTHOR_PROMPT_PATH, 'utf-8');
   const reviewerSharedPromptTemplate =
     deps.reviewerSharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8');
+  // Object.fromEntries types as Record<string, string>; cast is safe because
+  // the source array is REVIEW_AXES — the same union the cast widens to.
   const reviewerAxisPromptTemplates =
     deps.reviewerAxisPromptTemplates ??
     Object.fromEntries(

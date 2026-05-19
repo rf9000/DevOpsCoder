@@ -54,13 +54,14 @@ const axisOutputSchema = z.object({
 const REVIEWER_BASH_ALLOW: RegExp[] = [
   /^git (status|diff|log|show|blame)\b/,
   /^bun (run )?typecheck\b/,
-  /^bun test\b/, // also covers `bun test <path>` and `bun test --run`
+  /^bun test\b/, // covers `bun test <path>`, `bun test --timeout`, etc.
   /^ls\b/,
   /^cat\b/,
   /^pwd\b/,
 ];
 
 const REVIEWER_BASH_DENY: RegExp[] = [
+  /^bun test .*--watch\b/, // `bun test --watch` runs a persistent watcher process that would hang an agent turn — deny.
   /^git push\b/,
   /^git commit\b/,
   /^git checkout\b/,
@@ -231,7 +232,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
           deps.runner.run<{ findings: Finding[] }>({
             prompt,
             schema: axisOutputSchema,
-            tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill'],
+            tools: ['Read', 'Grep', 'Glob', 'Bash'],
             disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
             cwd: worktree.path,
             systemPromptAppend: `${deps.sharedPromptTemplate}\n\n${deps.axisPromptTemplates[axis]}`,

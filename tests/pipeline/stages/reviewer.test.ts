@@ -213,7 +213,7 @@ describe('createReviewerStage', () => {
     await stage.execute(makeState(), makeCtx());
 
     for (const call of runner.calls) {
-      expect(call.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
+      expect(call.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash']);
       expect(call.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
       expect(call.cwd).toBe(sampleWorktree.path);
     }
