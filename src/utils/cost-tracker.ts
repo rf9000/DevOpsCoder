@@ -26,7 +26,6 @@ export function createCostTracker(state: PipelineState): CostTracker {
     cost = { total: 0, perStage: {} };
     state.outputs.cost = cost;
   }
-  // Type narrowing inside the closure.
   const c = cost;
 
   return {
