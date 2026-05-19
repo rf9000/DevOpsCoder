@@ -131,12 +131,12 @@ describe('loadConfig', () => {
 
   it('defaults all seven STAGE_TIMEOUT_MS_* when env vars are absent', () => {
     const config = loadConfig(validEnv);
-    expect(config.stageTimeoutMs['analyzer']).toBe(300000);
-    expect(config.stageTimeoutMs['worktree-setup']).toBe(60000);
-    expect(config.stageTimeoutMs['coder']).toBe(1800000);
-    expect(config.stageTimeoutMs['reviewer']).toBe(900000);
-    expect(config.stageTimeoutMs['test-author']).toBe(1200000);
-    expect(config.stageTimeoutMs['draft-pr-creator']).toBe(120000);
-    expect(config.stageTimeoutMs['worktree-teardown']).toBe(60000);
+    expect(config.stageTimeoutMs['analyzer']).toBe(300_000);
+    expect(config.stageTimeoutMs['worktree-setup']).toBe(60_000);
+    expect(config.stageTimeoutMs['coder']).toBe(1_800_000);
+    expect(config.stageTimeoutMs['reviewer']).toBe(900_000);
+    expect(config.stageTimeoutMs['test-author']).toBe(1_200_000);
+    expect(config.stageTimeoutMs['draft-pr-creator']).toBe(120_000);
+    expect(config.stageTimeoutMs['worktree-teardown']).toBe(60_000);
   });
 });
