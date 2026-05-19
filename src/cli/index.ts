@@ -24,6 +24,7 @@ Usage:
   bun run src/cli/index.ts run-wi <id>      Process one work item by ID
   bun run src/cli/index.ts reset-state <id> Delete state + remove worktree + delete branch
   bun run src/cli/index.ts debug-tags       List WIs tagged with TRIGGER_TAG
+  bun run src/cli/index.ts debug-pr <id>    Print the draft-PR record for a work item
   bun run src/cli/index.ts version
   bun run src/cli/index.ts help
 
@@ -150,6 +151,30 @@ async function main(): Promise<void> {
       logger.info(`querying WIs tagged '${config.triggerTag}'`);
       const ids = await ado.queryWorkItemsByTag(config.triggerTag);
       console.log(JSON.stringify({ tag: config.triggerTag, ids }, null, 2));
+      return;
+    }
+
+    case 'debug-pr': {
+      const idArg = process.argv[3];
+      if (!idArg) {
+        console.error('debug-pr requires a work item ID');
+        process.exitCode = 1;
+        return;
+      }
+      const id = Number(idArg);
+      if (!Number.isFinite(id)) {
+        console.error(`invalid work item ID: ${idArg}`);
+        process.exitCode = 1;
+        return;
+      }
+      const { store } = buildDeps();
+      const state = store.load(id);
+      const draftPr = state?.outputs.draftPr;
+      if (!draftPr) {
+        console.log(`no draft PR recorded for WI ${id}`);
+        return;
+      }
+      console.log(JSON.stringify(draftPr, null, 2));
       return;
     }
 
