@@ -85,6 +85,9 @@ export function renderRejectMarkdown(
   return lines.join('\n');
 }
 
+// Keep in sync with SEVERITY_RANK in ../pipeline/stages/_stage-helpers.ts and
+// SEVERITY_ORDER in ../pipeline/stages/coder.ts — divergence would drop a
+// severity group from rendered comments or skew aggregation ordering.
 const SEVERITY_ORDER: FindingSeverity[] = [
   'blocking',
   'critical',
