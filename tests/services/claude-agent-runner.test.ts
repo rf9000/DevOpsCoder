@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { z } from 'zod';
 import type { AgentRunArgs } from '../../src/pipeline/agent-stage.ts';
 import type { AppConfig } from '../../src/types/index.ts';
@@ -177,6 +177,19 @@ describe('buildQueryOptions', () => {
 describe('createClaudeAgentRunner', () => {
   const VerdictSchema = z.object({ verdict: z.enum(['proceed', 'reject']) });
 
+  afterEach(() => {
+    setQueryImpl(async function* defaultImpl() {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0,
+        usage: { input_tokens: 10, output_tokens: 5 },
+        num_turns: 1,
+      };
+    });
+  });
+
   it('extracts total_cost_usd from a result message', async () => {
     setQueryImpl(async function* () {
       yield {
@@ -240,21 +253,16 @@ describe('createClaudeAgentRunner', () => {
     expect((caught as Error).name).toBe('AbortError');
   });
 
-  it('completes successfully when no signal is provided (regression guard)', async () => {
-    setQueryImpl(async function* () {
-      yield {
-        type: 'result',
-        subtype: 'success',
-        result: '{"verdict":"reject"}',
-        total_cost_usd: 0.1,
-        usage: { input_tokens: 8, output_tokens: 4 },
-        num_turns: 1,
-      };
-    });
-
-    const runner = createClaudeAgentRunner(deps);
-    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
-    expect(res.value).toEqual({ verdict: 'reject' });
-    expect(res.costUsd).toBe(0.1);
+  it('passes args.signal through buildQueryOptions as opts.abortSignal', () => {
+    const ctrl = new AbortController();
+    const opts = buildQueryOptions(
+      {
+        prompt: 'p',
+        schema: z.any(),
+        signal: ctrl.signal,
+      } as AgentRunArgs<unknown>,
+      { config: baseConfig, logger: createLogger() },
+    );
+    expect(opts['abortSignal']).toBe(ctrl.signal);
   });
 });

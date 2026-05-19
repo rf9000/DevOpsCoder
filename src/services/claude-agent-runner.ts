@@ -63,11 +63,6 @@ export function buildQueryOptions<T>(
   if (args.cwd !== undefined) opts.cwd = args.cwd;
   if (args.canUseTool !== undefined) opts.canUseTool = args.canUseTool;
   if (args.settingSources !== undefined) opts.settingSources = args.settingSources;
-  /**
-   * Pass the AbortSignal to the SDK using the standard `abortSignal` field name.
-   * The SDK MAY honour this natively; if not, the in-loop check in `run()` acts
-   * as a defensive fallback.
-   */
   if (args.signal !== undefined) opts.abortSignal = args.signal;
 
   return opts;
@@ -94,6 +89,10 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
         }
 
         if (message.type === 'result') {
+          // The SDK declares total_cost_usd as `number` on the result message, but
+          // the field is sometimes absent at runtime (e.g., on non-success subtypes
+          // or during partial failures). Cast through `| undefined` and default to
+          // 0 so a missing cost never breaks the orchestrator's cap arithmetic.
           costUsd = (message.total_cost_usd as number | undefined) ?? 0;
           deps.logger.info(
             `agent: $${costUsd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns`,
