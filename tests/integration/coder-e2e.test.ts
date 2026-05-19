@@ -15,6 +15,7 @@ import type { AppConfig, WorktreeContext } from '../../src/types/index.ts';
 import type {
   AgentRunArgs,
   AgentRunner,
+  AgentRunResult,
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
@@ -89,13 +90,11 @@ function makeStagedRunner(
   let i = 0;
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = responder(args as AgentRunArgs<unknown>, i++);
-      if (out instanceof Promise) {
-        return (await out) as unknown as T;
-      }
-      return out as unknown as T;
+      const value = out instanceof Promise ? ((await out) as unknown as T) : (out as unknown as T);
+      return { value, costUsd: 0 };
     },
   };
 }

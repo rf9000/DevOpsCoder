@@ -11,6 +11,7 @@ import type {
 import type {
   AgentRunArgs,
   AgentRunner,
+  AgentRunResult,
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 
@@ -100,9 +101,9 @@ function makeRecordingRunner(
   const calls: AgentRunArgs<unknown>[] = [];
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
-      return responder(args as AgentRunArgs<unknown>) as unknown as T;
+      return { value: responder(args as AgentRunArgs<unknown>) as unknown as T, costUsd: 0 };
     },
   };
 }

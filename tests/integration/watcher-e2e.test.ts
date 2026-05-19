@@ -11,7 +11,7 @@ import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig } from '../../src/types/index.ts';
-import type { AgentRunArgs, AgentRunner } from '../../src/pipeline/agent-stage.ts';
+import type { AgentRunArgs, AgentRunner, AgentRunResult } from '../../src/pipeline/agent-stage.ts';
 import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
 
 const baseConfig: AppConfig = {
@@ -42,14 +42,16 @@ const baseConfig: AppConfig = {
 function makeRecordingRunner(): AgentRunner {
   let callIndex = 0;
   return {
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       void args;
       const i = callIndex++;
       // call 0 = analyzer, call 1 = coder, calls 2-7 = 6 reviewer axes, call 8 = test-author
-      if (i === 0) return { verdict: 'proceed', summary: 'ok', reasons: [] } as unknown as T;
-      if (i === 1) return { summary: 'ok', filesChanged: [], commits: [] } as unknown as T;
-      if (i >= 2 && i <= 7) return { findings: [] } as unknown as T;
-      return { summary: 'ok', testFilesChanged: [], commits: [] } as unknown as T;
+      let value: unknown;
+      if (i === 0) value = { verdict: 'proceed', summary: 'ok', reasons: [] };
+      else if (i === 1) value = { summary: 'ok', filesChanged: [], commits: [] };
+      else if (i >= 2 && i <= 7) value = { findings: [] };
+      else value = { summary: 'ok', testFilesChanged: [], commits: [] };
+      return { value: value as unknown as T, costUsd: 0 };
     },
   };
 }

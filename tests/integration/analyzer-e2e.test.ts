@@ -14,6 +14,7 @@ import type { AppConfig } from '../../src/types/index.ts';
 import type {
   AgentRunArgs,
   AgentRunner,
+  AgentRunResult,
 } from '../../src/pipeline/agent-stage.ts';
 import type {
   PipelineBuilderDeps,
@@ -76,10 +77,10 @@ function makeRunner(
   let i = 0;
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
       const result = await out(i++);
-      return result as unknown as T;
+      return { value: result as unknown as T, costUsd: 0 };
     },
   };
 }
