@@ -1,9 +1,10 @@
 import { readFileSync } from 'fs';
 import type { Stage } from '../pipeline/stage.ts';
-import type { AppConfig, ReviewerOutput } from '../types/index.ts';
+import type { AppConfig, PipelineState, ReviewerOutput } from '../types/index.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AgentRunner, CanUseToolFn } from '../pipeline/agent-stage.ts';
+import type { PipelineContext } from '../pipeline/stage.ts';
 import { createClaudeAgentRunner } from './claude-agent-runner.ts';
 import {
   discoverTargetRepoSkills,
@@ -19,11 +20,14 @@ import { createCoderStage } from '../pipeline/stages/coder.ts';
 import { createTestAuthorStage } from '../pipeline/stages/test-author.ts';
 import { createReviewerStage, REVIEW_AXES } from '../pipeline/stages/reviewer.ts';
 import { revisionLoop } from '../pipeline/revision-loop.ts';
+import { createDraftPrCreatorStage } from '../pipeline/stages/draft-pr-creator.ts';
+import { createWorktreeTeardownStage } from '../pipeline/stages/worktree-teardown.ts';
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
 const CODER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder.md`;
 const TEST_AUTHOR_PROMPT_PATH = `${import.meta.dir}/../prompts/test-author.md`;
 const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
+const DRAFT_PR_DESCRIPTION_PROMPT_PATH = `${import.meta.dir}/../prompts/draft-pr-description.md`;
 const REVIEWER_AXIS_PROMPT_PATHS: Record<typeof REVIEW_AXES[number], string> = {
   'safety-correctness': `${import.meta.dir}/../prompts/reviewers/safety-correctness.md`,
   'performance': `${import.meta.dir}/../prompts/reviewers/performance.md`,
@@ -59,11 +63,22 @@ export interface PipelineBuilderDeps {
   getCurrentHeadSha?: (worktreePath: string) => Promise<string>;
   /** Test override: inject a fake worktree resetter so coder/test-author don't spawn git. */
   resetWorktree?: (worktreePath: string, baselineSha: string) => Promise<void>;
+  /** Optional draft-PR description template override. Default reads from src/prompts/draft-pr-description.md. */
+  prDescriptionTemplate?: string;
+  /** Optional pushBranch override for the draft-PR creator. Default uses Bun.spawn('git', ['push', 'origin', branch]). */
+  pushBranch?: (branch: string, cwd: string) => Promise<void>;
 }
 
 /**
- * Builds the full stage chain:
- *   [analyzer, worktree-setup, revisionLoop(coder, reviewer), test-author]
+ * Builds the full Plan 5 stage chain:
+ *   [analyzer, worktree-setup, revisionLoop(coder, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]
+ *
+ * On exhaustion of the revision loop (reviewer rejected `maxRevisions` times),
+ * onExhausted throws, the orchestrator records a terminalError, and the
+ * processor (separately) posts the reviewer findings as a WI comment and
+ * adds the blocked tag. On all failure paths (analyzer reject, coder/test-author
+ * error, reviewer exhaustion, draft-PR creation failure), worktree teardown is
+ * intentionally NOT run — humans inspect what the agent left behind.
  *
  * Production callers (CLI → processor) use the defaults; tests inject mocks via the
  * optional override fields.
@@ -96,6 +111,8 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
         readFileSync(REVIEWER_AXIS_PROMPT_PATHS[axis], 'utf-8'),
       ]),
     ) as Record<typeof REVIEW_AXES[number], string>;
+  const prDescriptionTemplate =
+    deps.prDescriptionTemplate ?? readFileSync(DRAFT_PR_DESCRIPTION_PROMPT_PATH, 'utf-8');
 
   const coder = createCoderStage({
     config: deps.config,
@@ -132,6 +149,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
         const review = state.outputs.reviewer as ReviewerOutput | undefined;
         return review?.approved === true;
       },
+      onExhausted: async (_state: PipelineState, _ctx: PipelineContext): Promise<PipelineState> => {
+        throw new Error(`reviewer rejected ${deps.config.maxRevisions} times — exhausted revision loop`);
+      },
     }),
     createTestAuthorStage({
       config: deps.config,
@@ -140,6 +160,16 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       discoveredSkills,
       getCurrentHeadSha: deps.getCurrentHeadSha,
       resetWorktree: deps.resetWorktree,
+    }),
+    createDraftPrCreatorStage({
+      config: deps.config,
+      ado: deps.ado,
+      prDescriptionTemplate,
+      pushBranch: deps.pushBranch,
+    }),
+    createWorktreeTeardownStage({
+      worktreeManager,
+      logger: deps.logger,
     }),
   ];
 }

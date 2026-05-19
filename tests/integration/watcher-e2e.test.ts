@@ -71,6 +71,9 @@ function buildPipelineForTest(deps: PipelineBuilderDeps) {
     ) as Record<typeof REVIEW_AXES[number], string>,
     getCurrentHeadSha: async () => 'deadbeef',
     resetWorktree: async () => {},
+    // Stub draft-PR creator so tests don't git-push or read the prompt file:
+    prDescriptionTemplate: 'D',
+    pushBranch: async () => {},
   });
 }
 

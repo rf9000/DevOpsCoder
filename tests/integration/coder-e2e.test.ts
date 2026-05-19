@@ -65,7 +65,7 @@ function makeAdo(taggedIds: number[]): AdoClient {
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),
-    createPullRequest: mock(async () => ({ id: 0, url: '', sourceRefName: '', targetRefName: '' })),
+    createPullRequest: mock(async () => ({ id: 1, url: 'https://example.com/pr/1', sourceRefName: '', targetRefName: '' })),
   };
 }
 
@@ -118,6 +118,9 @@ function makeBuildPipelineWrapper(
       // Stub the git operations the coder/test-author would otherwise spawn:
       getCurrentHeadSha: async () => sampleWorktree.baseSha,
       resetWorktree: async () => {},
+      // Stub draft-PR creator so tests don't git-push or read the prompt file:
+      prDescriptionTemplate: 'D',
+      pushBranch: async () => {},
     });
 }
 
@@ -188,6 +191,8 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
 
     expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(201, 'agent implement');
     expect(worktreeManager.ensureWorktree).toHaveBeenCalled();
+    expect(worktreeManager.removeWorktree).toHaveBeenCalledTimes(1);
+    expect(saved.outputs.draftPr).toMatchObject({ id: 1, url: 'https://example.com/pr/1', branch: sampleWorktree.branch });
     // Runner: analyzer (1) + coder (1) + 6 reviewer axes + test-author (1) = 9.
     expect(runner.calls).toHaveLength(9);
   });
