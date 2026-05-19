@@ -68,6 +68,10 @@ export interface PipelineState {
   currentStage: string | null;
   history: StageHistoryEntry[];
   attempts: Record<string, number>;
+  /**
+   * Per-stage outputs keyed by `Stage.name`. Reserved keys: `cost` carries
+   * `PipelineCostInfo` (managed by createCostTracker, see src/utils/cost-tracker.ts).
+   */
   outputs: Record<string, unknown>;
 }
 
@@ -210,4 +214,53 @@ export interface CreatePullRequestArgs {
   title: string;
   description: string;
   isDraft: boolean;
+}
+
+/**
+ * Cumulative cost information written to `state.outputs.cost` by createCostTracker
+ * (task-04, src/utils/cost-tracker.ts). Consumers can read this from the pipeline
+ * state to observe per-stage and total spend.
+ */
+export interface PipelineCostInfo {
+  /** Cumulative cost across all stages so far, in USD. */
+  total: number;
+  /** Per-stage spend, keyed by Stage.name (e.g. 'analyzer', 'coder', 'reviewer'). */
+  perStage: Record<string, number>;
+}
+
+/**
+ * Thrown by the orchestrator when the cumulative pipeline cost exceeds the
+ * configured cap. The message intentionally contains the literal substring
+ * `cost cap` (lowercase) so that the processor (src/services/processor.ts,
+ * task-09) can route it via `/cost cap/i.test(err.message)` without importing
+ * this class directly.
+ */
+export class CostExceededError extends Error {
+  override readonly name = 'CostExceededError';
+  constructor(
+    public readonly currentTotalUsd: number,
+    public readonly capUsd: number,
+    public readonly stage: string,
+  ) {
+    super(
+      `cost cap exceeded at stage "${stage}": $${currentTotalUsd.toFixed(4)} > $${capUsd.toFixed(4)}`,
+    );
+  }
+}
+
+/**
+ * Thrown by the orchestrator when a single stage exceeds its wall-clock time
+ * budget. The message intentionally contains the literal substring `timeout`
+ * (lowercase) so that the processor (src/services/processor.ts, task-10) can
+ * route it via `/timeout/i.test(err.message)` without importing this class
+ * directly.
+ */
+export class StageTimeoutError extends Error {
+  override readonly name = 'StageTimeoutError';
+  constructor(
+    public readonly stage: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`stage "${stage}" exceeded timeout of ${timeoutMs}ms`);
+  }
 }
