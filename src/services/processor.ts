@@ -1,6 +1,7 @@
 import { marked } from 'marked';
 import type {
   AppConfig,
+  PipelineCostInfo,
   PipelineRejection,
   PipelineState,
   ProcessOutcome,
@@ -95,6 +96,54 @@ const SEVERITY_ORDER: FindingSeverity[] = [
   'minor',
   'nit',
 ];
+
+export function renderCostExhaustionMarkdown(
+  state: PipelineState,
+  config: AppConfig,
+  workItemId: number,
+): string {
+  const lines: string[] = [];
+  const cost = state.outputs.cost as PipelineCostInfo | undefined;
+
+  lines.push(`## Pipeline blocked: cost cap exceeded`);
+  lines.push('');
+
+  if (cost) {
+    lines.push(
+      `The pipeline spent $${cost.total.toFixed(4)} (cap: $${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
+    );
+  } else {
+    lines.push(
+      `The pipeline exceeded the configured cost cap ($${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
+    );
+  }
+  lines.push('');
+
+  lines.push(`### Per-stage spend`);
+  lines.push('');
+
+  if (!cost) {
+    lines.push('(no cost data recorded)');
+  } else {
+    lines.push('| Stage | USD |');
+    lines.push('|---|---|');
+    const sortedStages = Object.keys(cost.perStage).sort();
+    for (const stage of sortedStages) {
+      const usd = cost.perStage[stage] ?? 0;
+      lines.push(`| ${stage} | $${usd.toFixed(4)} |`);
+    }
+    lines.push(`| **Total** | **$${cost.total.toFixed(4)}** |`);
+  }
+
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+  );
+
+  return lines.join('\n');
+}
 
 export function renderReviewerFindingsMarkdown(
   reviewer: ReviewerOutput,
@@ -343,6 +392,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           const reviewer = persisted?.outputs.reviewer as ReviewerOutput | undefined;
           if (reviewer && reviewer.findings.length > 0) {
             const markdown = renderReviewerFindingsMarkdown(reviewer, config, workItemId);
+            const html = await marked(markdown);
+            await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
+              ado.addWorkItemComment(workItemId, html),
+            );
+          } else if (/cost cap/i.test(terminalError.message)) {
+            const markdown = renderCostExhaustionMarkdown(persisted!, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),

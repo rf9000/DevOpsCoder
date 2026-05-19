@@ -9,6 +9,7 @@ import { createLogger } from '../../src/utils/logger.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
+import { CostExceededError } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
 
 const baseConfig = {
@@ -673,6 +674,94 @@ describe('createProcessor', () => {
     expect(ado.addWorkItemComment).not.toHaveBeenCalled();
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
     expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
+  });
+
+  // ── Plan 6 task-09: cost-cap comment routing ─────────────────────────────
+
+  it('cost-cap terminal error: posts comment with cap/total/per-stage HTML and adds blocked tag', async () => {
+    let postedHtml = '';
+    const callOrder: string[] = [];
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+        callOrder.push('comment');
+      }),
+      addTagToWorkItem: mock(async () => {
+        callOrder.push('tag');
+      }),
+    });
+
+    const costCapStage: Stage = {
+      name: 'reviewer',
+      canRun: () => true,
+      execute: async (state) => {
+        // Simulate cost accumulation across prior stages
+        state.outputs.cost = {
+          total: 6.0,
+          perStage: { analyzer: 1.0, coder: 5.0 },
+        };
+        throw new CostExceededError(6.0, 5.0, 'reviewer');
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [costCapStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+
+    // Comment was posted once
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+
+    // HTML must contain cap value, total, and per-stage stage names
+    expect(postedHtml).toContain('cost cap');
+    expect(postedHtml).toContain('5.0000'); // cap
+    expect(postedHtml).toContain('6.0000'); // total
+    expect(postedHtml).toContain('analyzer');
+    expect(postedHtml).toContain('coder');
+
+    // Blocked tag was added
+    expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+
+    // Comment posted BEFORE the tag
+    expect(callOrder).toEqual(['comment', 'tag']);
+  });
+
+  it('dry-run with cost-cap terminal error: suppresses comment and tag', async () => {
+    const costCapStage: Stage = {
+      name: 'reviewer',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.cost = {
+          total: 6.0,
+          perStage: { analyzer: 1.0, coder: 5.0 },
+        };
+        throw new CostExceededError(6.0, 5.0, 'reviewer');
+      },
+    };
+
+    const ado = makeAdo();
+
+    const proc = createProcessor({
+      config: { ...baseConfig, dryRun: true },
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [costCapStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
 
 });
