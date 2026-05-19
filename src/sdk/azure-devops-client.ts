@@ -77,10 +77,14 @@ export function createAdoClient(
         return;
       }
       const timer = setTimeout(resolve, ms);
-      signal?.addEventListener('abort', () => {
-        clearTimeout(timer);
-        reject(new DOMException('aborted', 'AbortError'));
-      });
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true },
+      );
     });
   }
 
@@ -88,7 +92,7 @@ export function createAdoClient(
     path: string,
     init?: RequestInit,
   ): Promise<T> {
-    const signal = init?.signal ?? undefined;
+    const signal = init?.signal;
     const attempts = retryDelaysMs.length + 1;
     let lastErr: AzureDevOpsError | null = null;
     for (let i = 0; i < attempts; i++) {

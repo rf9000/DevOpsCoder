@@ -399,7 +399,7 @@ describe('createAdoClient', () => {
       }
       expect(caught).toBeDefined();
       const err = caught as { name?: string; message?: string };
-      expect(err.name === 'AbortError' || /abort/i.test(err.message ?? '')).toBe(true);
+      expect(err.name).toBe('AbortError');
     });
   });
 
