@@ -8,7 +8,7 @@ import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
-import type { AppConfig, WorkItem } from '../../src/types/index.ts';
+import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
 
 const baseConfig = {
@@ -405,6 +405,144 @@ describe('createProcessor', () => {
     expect(postedHtml).toContain('no design');
     expect(postedHtml).toContain('What is the expected UI?');
     expect(postedHtml).toContain('agent implement');
+  });
+
+  it('terminal error with reviewer findings: posts comment + adds blocked tag (comment before tag)', async () => {
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      findings: [
+        {
+          severity: 'blocking',
+          file: 'src/auth.ts',
+          line: 42,
+          title: 'SQL injection vulnerability',
+          description: 'Unsanitised input passed directly to query.',
+          suggestion: 'Use parameterised queries.',
+          axis: 'security',
+        },
+        {
+          severity: 'critical',
+          file: 'src/utils.ts',
+          title: 'Missing null check',
+          description: 'Value can be null at runtime.',
+          axis: 'correctness',
+        },
+      ],
+      attempts: 3,
+    };
+
+    const callOrder: string[] = [];
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+        callOrder.push('comment');
+      }),
+      addTagToWorkItem: mock(async () => {
+        callOrder.push('tag');
+      }),
+    });
+
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        throw new Error('revision loop exhausted');
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+
+    // Comment was posted with reviewer findings HTML
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+    expect(postedHtml).toContain('blocking findings');
+    expect(postedHtml).toContain('SQL injection vulnerability');
+
+    // Blocked tag was added
+    expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+
+    // Comment posted BEFORE the tag
+    expect(callOrder).toEqual(['comment', 'tag']);
+  });
+
+  it('terminal error WITHOUT reviewer findings: adds blocked tag, no comment posted', async () => {
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async () => {
+        throw new Error('pipeline exploded with no reviewer output');
+      },
+    };
+
+    const ado = makeAdo();
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+  });
+
+  it('dry run: terminal error with reviewer findings — neither comment nor tag is posted', async () => {
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      findings: [
+        {
+          severity: 'blocking',
+          file: 'src/foo.ts',
+          title: 'Bad thing',
+          description: 'Very bad.',
+          axis: 'security',
+        },
+      ],
+      attempts: 2,
+    };
+
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        throw new Error('exhausted');
+      },
+    };
+
+    const ado = makeAdo();
+
+    const proc = createProcessor({
+      config: { ...baseConfig, dryRun: true },
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
 
   it('crash-recovery: state.rejection set without dispatched flag → retry tag ops, no new comment, no pipeline run', async () => {

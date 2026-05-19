@@ -4,6 +4,8 @@ import type {
   PipelineRejection,
   PipelineState,
   ProcessOutcome,
+  ReviewerOutput,
+  FindingSeverity,
 } from '../types/index.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
@@ -79,6 +81,66 @@ export function renderRejectMarkdown(
       `After you've addressed the items above, re-add the \`${config.triggerTag}\` tag to try again.`,
     );
   }
+
+  return lines.join('\n');
+}
+
+const SEVERITY_ORDER: FindingSeverity[] = [
+  'blocking',
+  'critical',
+  'major',
+  'minor',
+  'nit',
+];
+
+export function renderReviewerFindingsMarkdown(
+  reviewer: ReviewerOutput,
+  config: AppConfig,
+  workItemId: number,
+): string {
+  const lines: string[] = [];
+  const totalFindings = reviewer.findings.length;
+
+  lines.push(
+    `## Pipeline blocked: reviewer rejected after ${reviewer.attempts} attempt${reviewer.attempts === 1 ? '' : 's'}`,
+  );
+  lines.push('');
+  lines.push(
+    `The reviewer found ${totalFindings} finding${totalFindings === 1 ? '' : 's'} across ${reviewer.attempts} attempt${reviewer.attempts === 1 ? '' : 's'} that could not be resolved.`,
+  );
+  lines.push('');
+
+  // Group findings by severity in descending order
+  const grouped = new Map<FindingSeverity, typeof reviewer.findings>();
+  for (const sev of SEVERITY_ORDER) grouped.set(sev, []);
+  for (const finding of reviewer.findings) {
+    grouped.get(finding.severity)?.push(finding);
+  }
+
+  for (const sev of SEVERITY_ORDER) {
+    const group = grouped.get(sev) ?? [];
+    if (group.length === 0) continue;
+
+    lines.push(`### ${sev} findings (${group.length})`);
+    lines.push('');
+    for (const f of group) {
+      const location = f.line !== undefined ? `${f.file}:${f.line}` : f.file;
+      lines.push(`- **${location}** (${f.axis}): ${f.title}`);
+      lines.push('');
+      lines.push(`  ${f.description}`);
+      lines.push('');
+      if (f.suggestion) {
+        lines.push(`  Suggestion: ${f.suggestion}`);
+        lines.push('');
+      }
+    }
+  }
+
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+  );
 
   return lines.join('\n');
 }
@@ -249,14 +311,20 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             at: new Date().toISOString(),
           };
         if (!config.dryRun) {
-          try {
-            await ado.addTagToWorkItem(workItemId, config.blockedTag);
-          } catch (tagErr) {
-            logger.error(
-              `failed to add blocked tag to WI ${workItemId}`,
-              tagErr,
+          const reviewer = persisted?.outputs.reviewer as ReviewerOutput | undefined;
+          if (reviewer && reviewer.findings.length > 0) {
+            const markdown = renderReviewerFindingsMarkdown(reviewer, config, workItemId);
+            const html = await marked(markdown);
+            await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
+              ado.addWorkItemComment(workItemId, html),
             );
           }
+          await safeAdoOp(
+            logger,
+            workItemId,
+            `addTagToWorkItem(${config.blockedTag})`,
+            () => ado.addTagToWorkItem(workItemId, config.blockedTag),
+          );
         }
         return { kind: 'failed', workItemId, error: terminalError };
       }
