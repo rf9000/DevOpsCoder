@@ -13,7 +13,9 @@ import type {
 import type {
   AppConfig,
   CoderOutput,
+  Finding,
   PipelineState,
+  ReviewerOutput,
   WorktreeContext,
 } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
@@ -133,6 +135,8 @@ describe('buildCoderUserPrompt', () => {
     expect(prompt).toContain(sampleWorktree.branch);
     expect(prompt).toContain('The login button is broken.');
     expect(prompt).toContain('### Acceptance Criteria');
+    // no reviewer feedback passed — section must NOT appear
+    expect(prompt).not.toContain('Previous reviewer findings');
   });
 
   it('includes skill list when discoveredSkills is non-empty', () => {
@@ -147,6 +151,87 @@ describe('buildCoderUserPrompt', () => {
     );
     expect(prompt).toContain('## Available Invocable Skills');
     expect(prompt).toContain('- **al-formatter**: Formats AL');
+  });
+
+  it('renders "Previous reviewer findings" section when feedback is present', () => {
+    const findings: Finding[] = [
+      {
+        severity: 'blocking',
+        file: 'src/auth.ts',
+        line: 42,
+        title: 'SQL injection vulnerability',
+        description: 'User input is concatenated directly into the query.',
+        suggestion: 'Use parameterised queries.',
+        axis: 'security',
+      },
+      {
+        severity: 'major',
+        file: 'src/utils.ts',
+        title: 'Missing null check',
+        description: 'Value can be undefined at this point.',
+        axis: 'correctness',
+      },
+    ];
+    const prompt = buildCoderUserPrompt(
+      sampleAnalyzer,
+      sampleWiCtx,
+      sampleWorktree,
+      [],
+      findings,
+    );
+    expect(prompt).toContain('Previous reviewer findings');
+    expect(prompt).toContain('SQL injection vulnerability');
+    expect(prompt).toContain('Missing null check');
+    expect(prompt).toContain('### blocking findings');
+    expect(prompt).toContain('### major findings');
+  });
+
+  it('groups multiple findings by severity in descending order', () => {
+    const findings: Finding[] = [
+      {
+        severity: 'major',
+        file: 'src/a.ts',
+        title: 'Major issue A',
+        description: 'A description.',
+        axis: 'style',
+      },
+      {
+        severity: 'critical',
+        file: 'src/b.ts',
+        title: 'Critical issue B',
+        description: 'B description.',
+        axis: 'correctness',
+      },
+      {
+        severity: 'nit',
+        file: 'src/c.ts',
+        title: 'Nit issue C',
+        description: 'C description.',
+        axis: 'style',
+      },
+      {
+        severity: 'critical',
+        file: 'src/d.ts',
+        title: 'Critical issue D',
+        description: 'D description.',
+        axis: 'security',
+      },
+    ];
+    const prompt = buildCoderUserPrompt(
+      sampleAnalyzer,
+      sampleWiCtx,
+      sampleWorktree,
+      [],
+      findings,
+    );
+    expect(prompt).toContain('Previous reviewer findings');
+    expect(prompt).toContain('Critical issue B');
+    expect(prompt).toContain('Critical issue D');
+    expect(prompt).toContain('Major issue A');
+    expect(prompt).toContain('Nit issue C');
+    // descending severity order: critical before major before nit
+    expect(prompt.indexOf('### critical findings')).toBeLessThan(prompt.indexOf('### major findings'));
+    expect(prompt.indexOf('### major findings')).toBeLessThan(prompt.indexOf('### nit findings'));
   });
 });
 

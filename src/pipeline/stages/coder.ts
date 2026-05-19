@@ -5,6 +5,8 @@ import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
 import type {
   AppConfig,
   CoderOutput,
+  Finding,
+  ReviewerOutput,
   WorktreeContext,
 } from '../../types/index.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
@@ -75,6 +77,14 @@ export interface CoderStageDeps {
   resetWorktree?: (worktreePath: string, baselineSha: string) => Promise<void>;
 }
 
+const SEVERITY_ORDER: Finding['severity'][] = [
+  'blocking',
+  'critical',
+  'major',
+  'minor',
+  'nit',
+];
+
 /**
  * Build the coder's user-prompt markdown from analyzer output + WI context + worktree info.
  * Pure helper for testability.
@@ -84,6 +94,7 @@ export function buildCoderUserPrompt(
   wiCtx: WorkItemContext,
   worktree: WorktreeContext,
   skills: DiscoveredSkill[],
+  previousReviewerFeedback?: Finding[],
 ): string {
   const sections: string[] = [];
   sections.push(`# Implementing Work Item ${wiCtx.id}: ${wiCtx.title}`);
@@ -131,6 +142,37 @@ export function buildCoderUserPrompt(
       sections.push(`- **${s.name}**: ${s.description}`);
     }
   }
+  if (previousReviewerFeedback && previousReviewerFeedback.length > 0) {
+    sections.push('\n## Previous reviewer findings — address or justify ignoring\n');
+    sections.push(
+      'The reviewer rejected your previous attempt with the following findings.\n' +
+      'For each, either fix the issue in this attempt OR explain in your summary\n' +
+      'why the finding doesn\'t apply.',
+    );
+    // Group by severity, preserving within-group input order.
+    const bySeverity = new Map<Finding['severity'], Finding[]>();
+    for (const f of previousReviewerFeedback) {
+      const group = bySeverity.get(f.severity);
+      if (group) {
+        group.push(f);
+      } else {
+        bySeverity.set(f.severity, [f]);
+      }
+    }
+    for (const severity of SEVERITY_ORDER) {
+      const group = bySeverity.get(severity);
+      if (!group || group.length === 0) continue;
+      sections.push(`\n### ${severity} findings\n`);
+      for (const f of group) {
+        const loc = f.line != null ? `${f.file}:${f.line}` : f.file;
+        sections.push(`- **${loc}** (${f.axis}): ${f.title}`);
+        sections.push(`  ${f.description}`);
+        if (f.suggestion) {
+          sections.push(`  Suggestion: ${f.suggestion}`);
+        }
+      }
+    }
+  }
   return sections.join('\n');
 }
 
@@ -158,11 +200,14 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
       }
 
       const baselineSha = await getHead(worktree.path);
+      const reviewer = state.outputs.reviewer as ReviewerOutput | undefined;
+      const previousFindings = reviewer?.findings;
       const prompt = buildCoderUserPrompt(
         analyzer,
         wiCtx,
         worktree,
         deps.discoveredSkills,
+        previousFindings,
       );
       const canUseTool = composeCanUseTool([
         createBashAllowlist({ allow: CODER_BASH_ALLOW, deny: CODER_BASH_DENY }),
