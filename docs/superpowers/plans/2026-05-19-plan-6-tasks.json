@@ -1,0 +1,125 @@
+{
+  "$schema_version": "1.0",
+  "plan_file": "docs/superpowers/plans/2026-05-19-plan-6-cost-safety-rails.md",
+  "repo_root": "C:/GeneralDev/DevOpsPullers/DevOpsCoder",
+  "shell": "powershell",
+  "agent_protocol": {
+    "subagent_brief": "Plan 6 adds three production-readiness rails to the existing pipeline: per-WI cost cap with between-stages enforcement; per-stage wall-clock timeout (defaults analyzer 5min / coder 30min / reviewer 15min / test-author 20min / draft-pr 2min); mid-stage abort propagation via AbortSignal threaded through AgentRunner.run. External SIGINT/SIGTERM marks state.cancelled = true (resumable, no blocked tag); cost-cap and timeout share the existing terminal-error routing with two new comment renderers. AgentRunner.run<T> contract is broken: returns Promise<{ value: T; costUsd: number }> instead of Promise<T>. The controller (parent agent) provides full verbatim code per task. Strict TDD where flagged: failing test first, verify failure, minimal implementation, verify pass, commit.",
+    "tdd_pattern": "Tasks that include test files follow strict TDD: (1) write the failing test, (2) run the test to verify it fails with the expected message, (3) write the minimal implementation, (4) run the test to verify it passes, (5) commit.",
+    "completion_criteria": "A task is complete only when every entry in 'verification_commands' exits 0 with the expected output AND the commit described in 'commit' has been created.",
+    "do_not": [
+      "Do not skip the 'verify it fails' step.",
+      "Do not amend or rewrite earlier commits.",
+      "Do not run --no-verify or skip hooks.",
+      "Do not introduce real network calls or real Claude SDK calls in tests. Mock the runner, mock the AdoClient, mock the worktree-manager.",
+      "Do not add a 'soft warn' path for cost or timeout — Plan 6 is hard-kill only.",
+      "Do not tear down the worktree on any failure or cancellation path — humans inspect what the agent left behind.",
+      "Do not introduce a per-stage cost cap — Plan 6 enforces a single per-WI cap only.",
+      "Do not introduce a per-WI wall-clock cap — Plan 6 enforces per-stage timeouts only.",
+      "Do not change AgentRunner.run<T>'s contract piecemeal across multiple commits — the {value, costUsd} change lands in one commit (task-03) with all 30 mock cascades.",
+      "Do not introduce a 'cancelled' kind to ProcessOutcome — fold into 'skipped' with reason: 'cancelled'."
+    ]
+  },
+  "tasks": [
+    {
+      "id": "task-01-types-and-errors",
+      "name": "Types + error classes",
+      "depends_on": [],
+      "summary": "Add to src/types/index.ts: PipelineCostInfo { total: number; perStage: Record<string, number> }. Add CostExceededError (carries currentTotalUsd, capUsd, stage) and StageTimeoutError (carries stage, timeoutMs) classes — either in src/types/index.ts or a new src/types/errors.ts (your call based on file size). Both extend Error with override readonly name. CostExceededError.message MUST include the literal substring 'cost cap' (so processor task-09 can regex-match it); StageTimeoutError.message MUST include the literal substring 'timeout' (for processor task-10). Example messages: 'cost cap exceeded at stage \"coder\": $0.6234 > $0.5000' and 'stage \"reviewer\" exceeded timeout of 900000ms'. Update PipelineState type doc: state.outputs.cost is reserved for PipelineCostInfo. No new tests for the classes themselves (covered indirectly via tasks 05/09/10).",
+      "tdd": false
+    },
+    {
+      "id": "task-02-config",
+      "name": "Config: MAX_COST_USD_PER_WI + 7 stage timeouts",
+      "depends_on": ["task-01-types-and-errors"],
+      "summary": "Add to src/config/index.ts Zod schema: MAX_COST_USD_PER_WI (z.coerce.number().positive(), required, no default) → config.maxCostUsdPerWi. Add seven STAGE_TIMEOUT_MS_* env vars (optional, with defaults): ANALYZER=300000 (5min), CODER=1800000 (30min), REVIEWER=900000 (15min), TEST_AUTHOR=1200000 (20min), DRAFT_PR_CREATOR=120000 (2min), WORKTREE_SETUP=60000 (1min), WORKTREE_TEARDOWN=60000 (1min). Surface as config.stageTimeoutMs: Record<string, number> keyed by stage NAME (lowercase kebab matching Stage.name — 'analyzer', 'worktree-setup', 'coder', 'reviewer', 'test-author', 'draft-pr-creator', 'worktree-teardown'). Update .env.example. Update existing AppConfig test fixtures (~20 sites). 3 new tests in tests/config/config.test.ts: throws on missing MAX_COST_USD_PER_WI; maps maxCostUsdPerWi correctly; defaults the seven stage timeouts when env vars absent.",
+      "tdd": true,
+      "expected_test_count": 3
+    },
+    {
+      "id": "task-03-agent-runner-contract",
+      "name": "AgentRunner.run<T> returns {value, costUsd}; AgentRunArgs.signal",
+      "depends_on": ["task-01-types-and-errors"],
+      "summary": "Breaking change to src/pipeline/agent-stage.ts: AgentRunner.run<T> now returns Promise<{ value: T; costUsd: number }>. Add AgentRunArgs.signal?: AbortSignal (additive). Update src/services/claude-agent-runner.ts: extract total_cost_usd from the SDK's final result (use a defensive default of 0 if absent); pass args.signal through to the SDK query call (verify SDK API supports AbortSignal — fallback: check signal.aborted in the message-consume loop and throw if aborted). Update the runner's existing tests in tests/services/claude-agent-runner.test.ts to assert the new shape. 4 new tests: extracts total_cost_usd; missing field → 0; signal abort throws AbortError; signal not provided → normal completion. DO NOT cascade to consumer mocks in this task — task-11 handles the ~30-site fan-out. The agentStage factory in agent-stage.ts and the four agent-driven stage implementations (analyzer/coder/test-author/reviewer) WILL break typecheck after this task — that's expected; task-06 fixes them.",
+      "tdd": true,
+      "expected_test_count": 4
+    },
+    {
+      "id": "task-04-cost-tracker",
+      "name": "createCostTracker(state) pure helper",
+      "depends_on": ["task-01-types-and-errors"],
+      "summary": "Create src/utils/cost-tracker.ts. Exports createCostTracker(state: PipelineState): CostTracker where CostTracker = { add(stage: string, usd: number): void; total(): number; perStage(): Record<string, number> }. Initializes state.outputs.cost = { total: 0, perStage: {} } via reference write-through if absent. add() is additive: tracker.add('coder', 0.42) twice produces total = 0.84 and perStage.coder = 0.84. Pure: no I/O, no logging. Idempotent on re-entry: createCostTracker(state) reads existing state.outputs.cost if present (after a resume or after task-08's processor reset). New test file tests/utils/cost-tracker.test.ts with 5 tests: fresh state initializes cost; add accumulates per-stage; add accumulates total across stages; total/perStage on empty returns 0/{}; reading existing state.outputs.cost preserves prior totals.",
+      "tdd": true,
+      "expected_test_count": 5
+    },
+    {
+      "id": "task-05-orchestrator-wiring",
+      "name": "PipelineContext.signal + per-stage AbortController + timeout race + cost-cap pre-check",
+      "depends_on": ["task-01-types-and-errors", "task-02-config", "task-03-agent-runner-contract", "task-04-cost-tracker"],
+      "summary": "Add signal: AbortSignal to PipelineContext in src/pipeline/stage.ts. Update src/pipeline/orchestrator.ts: for each stage, (1) check ctx.abortFlag.aborted before starting → return state cleanly; (2) check state.outputs.cost?.total > config.maxCostUsdPerWi → throw new CostExceededError(...); (3) construct a per-stage AbortController; spawn a setInterval (100ms) that watches ctx.abortFlag and calls controller.abort('external') if it flips; spawn a setTimeout(stageTimeoutMs, () => controller.abort('timeout')); (4) call stage.execute(state, { ...ctx, signal: controller.signal }); (5) catch path: if controller.signal.aborted, inspect controller.signal.reason — 'timeout' → throw StageTimeoutError; 'external' → set state.cancelled = true, store.save(state), return state (NOT throw); (6) finally: clearTimeout + clearInterval. Stage timeouts come from config.stageTimeoutMs[stage.name] with a final fallback to 120000 (2min) if a stage name isn't in the table. 9 new tests in tests/pipeline/orchestrator.test.ts: under-cap proceeds (1); over-cap throws CostExceededError with cap value in message (1); cost accumulates across stages and check fires before stage N+1 (1); within timeout passes through (1); over timeout aborts and throws StageTimeoutError (1); timer cleared on normal completion (1); external abortFlag.aborted mid-stage sets state.cancelled and returns state without throwing (1); external abort does NOT write state.terminalError (1); external abort preserves trigger tag (verify by inspecting state.outputs and history — the orchestrator does not touch the WI's ADO tags, so this is a write-absence assertion).",
+      "tdd": true,
+      "expected_test_count": 9
+    },
+    {
+      "id": "task-06-stage-cost-tracking",
+      "name": "Wire {value, costUsd} destructuring + ctx.signal into 4 LLM-driven stages",
+      "depends_on": ["task-03-agent-runner-contract", "task-04-cost-tracker", "task-05-orchestrator-wiring"],
+      "summary": "Update analyzer.ts, coder.ts, test-author.ts, reviewer.ts to (a) destructure { value, costUsd } from runner.run; (b) pass signal: ctx.signal in the runner.run args; (c) call tracker.add(stage.name, costUsd) where tracker = createCostTracker(state). For the reviewer stage's 6 parallel runner.run calls inside Promise.all, sum their costUsd values and call tracker.add('reviewer', sum) once after Promise.all resolves. The agentStage factory in agent-stage.ts also needs the {value, costUsd} destructuring update — verify the analyzer stage (which uses agentStage) still works. Extend existing stage tests: each stage's happy-path test asserts that state.outputs.cost.perStage[stage.name] === <expected> after execute. Existing reviewer.test.ts axis-call mocks need {value: {findings: []}, costUsd: 0} shape (the reviewer-specific cascade). Approximately +4 small assertions across existing tests, no new test files.",
+      "tdd": true,
+      "expected_test_count": 4
+    },
+    {
+      "id": "task-07-ado-client-signal",
+      "name": "AdoClient signal forwarding",
+      "depends_on": ["task-03-agent-runner-contract"],
+      "summary": "Extend src/sdk/azure-devops-client.ts so adoFetch and adoFetchWithRetry accept an optional signal: AbortSignal parameter and forward it to the underlying fetch. Update each AdoClient interface method (queryWorkItemsByTag, getWorkItem, getWorkItemComments, addTagToWorkItem, removeTagFromWorkItem, addWorkItemComment, createPullRequest) to accept an optional opts: { signal?: AbortSignal } trailing argument. The draft-pr-creator stage will pass ctx.signal at task-08+; for now, the ADO client just needs to accept and forward. 2 new tests in tests/sdk/azure-devops-client.test.ts: signal is forwarded to the fetch call (assert via the mock fetch's init.signal); abort during a fetch retry rejects with AbortError (use AbortController.abort during a delay).",
+      "tdd": true,
+      "expected_test_count": 2
+    },
+    {
+      "id": "task-08-processor-cancelled",
+      "name": "Processor: cancelled-state path; clear cancelled on entry",
+      "depends_on": ["task-05-orchestrator-wiring"],
+      "summary": "Update src/services/processor.ts. (1) At the TOP of processWorkItem, after loading state, if state.cancelled === true, set state.cancelled = false and store.save(state) BEFORE invoking runPipeline — so the resumed cycle starts clean. (2) In the catch (err) block, FIRST check if the persisted state has cancelled === true — if so, return { kind: 'skipped', workItemId, reason: 'cancelled' } and SKIP all ADO writes (no blockedTag, no comment). The existing reviewer-findings/cost/timeout comment routing happens only when !state.cancelled. 3 new tests in tests/services/processor.test.ts: cancelled-on-entry is cleared and pipeline re-runs (use a stub pipeline that returns success); cancelled set mid-pipeline → outcome 'skipped'/'cancelled' + zero ADO writes; cancelled path does NOT add blockedTag.",
+      "tdd": true,
+      "expected_test_count": 3
+    },
+    {
+      "id": "task-09-processor-cost-comment",
+      "name": "renderCostExhaustionMarkdown + processor routing",
+      "depends_on": ["task-01-types-and-errors", "task-04-cost-tracker", "task-05-orchestrator-wiring"],
+      "summary": "Add exported helper renderCostExhaustionMarkdown(state: PipelineState, config: AppConfig, workItemId: number): string in src/services/processor.ts, near renderRejectMarkdown. Renders a markdown comment with: title ('## Pipeline blocked: cost cap exceeded'), the cap value (config.maxCostUsdPerWi), the total spent (state.outputs.cost.total), a per-stage spend table (state.outputs.cost.perStage), and the reset-state instruction line (mirror renderRejectMarkdown's footer). In the catch block, AFTER the existing 'if reviewer.findings.length > 0' branch, add an 'else if /cost cap/i.test(terminalError.message)' branch: render the cost markdown → marked() → safeAdoOp(addWorkItemComment). Dry-run still suppresses. 2 new tests in tests/services/processor.test.ts: cost-cap terminal error posts comment with HTML containing the cap value AND the per-stage table; dry-run with cost-cap suppresses the comment.",
+      "tdd": true,
+      "expected_test_count": 2
+    },
+    {
+      "id": "task-10-processor-timeout-comment",
+      "name": "renderStageTimeoutMarkdown + processor routing",
+      "depends_on": ["task-01-types-and-errors", "task-05-orchestrator-wiring"],
+      "summary": "Add exported helper renderStageTimeoutMarkdown(state: PipelineState, terminalError: PipelineTerminalError, config: AppConfig, workItemId: number): string. Renders a markdown comment with: title ('## Pipeline blocked: stage timed out'), the stage that timed out (terminalError.stage), the timeout value (config.stageTimeoutMs[stage]), how long it ran (approximate — terminalError.at minus the last history entry's startedAt for the same stage), and the reset-state instruction. In the catch block, after the cost-cap branch, add an 'else if /timeout/i.test(terminalError.message)' branch with the same safeAdoOp pattern. Dry-run suppresses. 2 new tests in tests/services/processor.test.ts: timeout terminal error posts comment with stage name + timeout value in HTML; dry-run with timeout suppresses.",
+      "tdd": true,
+      "expected_test_count": 2
+    },
+    {
+      "id": "task-11-test-mock-cascade",
+      "name": "Cascade {value, costUsd: 0} through ~30 AgentRunner test mocks",
+      "depends_on": ["task-03-agent-runner-contract", "task-06-stage-cost-tracking"],
+      "summary": "Update every test file that mocks AgentRunner.run<T> to return { value: <existing-return>, costUsd: 0 } instead of <existing-return>. Use the typecheck output as the worklist — run bun run typecheck, fix each TS error site, repeat until clean. Known cascade sites (find any others via typecheck): tests/services/pipeline-builder.test.ts (the makeStagedRunner/makeRecordingRunner helpers — central fix point), tests/integration/{coder,analyzer,watcher,pr}-e2e.test.ts, tests/pipeline/stages/{analyzer,coder,reviewer,test-author}.test.ts, tests/pipeline/agent-stage.test.ts, tests/pipeline/orchestrator.test.ts, tests/pipeline/revision-loop.test.ts, tests/pipeline/checkpoint.test.ts. Prefer fixing the shared makeRecordingRunner helper(s) once rather than 30 inline mocks. NO behavioral test changes — only return-shape adjustment. NO --no-verify, NO @ts-ignore, NO as any. After this task: full bun test should pass at baseline + all new test counts from tasks 02-10 (rough total ~280).",
+      "tdd": false
+    },
+    {
+      "id": "task-12-e2e-cost-cap",
+      "name": "Integration e2e: cost-cap exhaustion",
+      "depends_on": ["task-05-orchestrator-wiring", "task-06-stage-cost-tracking", "task-09-processor-cost-comment", "task-11-test-mock-cascade"],
+      "summary": "Create tests/integration/cost-cap-e2e.test.ts. One scenario via runPollCycle: analyzer (low cost) proceeds, coder runs with a costUsd that pushes cumulative past config.maxCostUsdPerWi; orchestrator's between-stage check fires before the reviewer stage starts; processor catches the CostExceededError; cost-exhaustion comment posted with per-stage breakdown; blockedTag added; NO draft PR; worktreeManager.removeWorktree NOT called. Mock pattern mirrors tests/integration/pr-e2e.test.ts (describe-level beforeEach/afterEach with shared tmpDir). Set config.maxCostUsdPerWi to a small value (e.g. 0.50) and have the coder mock return costUsd > cap. ~1 test.",
+      "tdd": false,
+      "expected_test_count": 1
+    },
+    {
+      "id": "task-13-docs",
+      "name": "Documentation + final verification",
+      "depends_on": ["task-12-e2e-cost-cap"],
+      "summary": "Update README.md / CLAUDE.md / PATTERNS.md / .env.example for Plan 6. README + CLAUDE: milestone-7 stage (Plan 6 done); note the new cost/timeout/abort safety rails and the cancellation-resumable contract. PATTERNS: add sections for the AgentRunner.run<T> {value, costUsd} contract; createCostTracker helper; per-stage timeout enforcement in the orchestrator; the cancellation-vs-failure distinction (state.cancelled is resumable; state.terminalError is terminal). .env.example: MAX_COST_USD_PER_WI (REQUIRED) + the seven STAGE_TIMEOUT_MS_* overrides documented with their defaults. Final gate: bun install / bun run typecheck / bun test all green; working tree clean. Expected total ~294 tests across ~34 files."
+    }
+  ]
+}

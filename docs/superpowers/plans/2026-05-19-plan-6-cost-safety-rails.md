@@ -151,7 +151,7 @@ catch (err):
 - `tests/services/processor.test.ts` — +5: cost comment+tag (1), timeout comment+tag (1), cancelled path skips writes (1), dry-run suppresses cost comment (1), dry-run suppresses timeout comment (1).
 - `tests/services/claude-agent-runner.test.ts` — +4: extracts total_cost_usd from result (1), missing field → 0 (1), signal abort → AbortError (1), signal not provided → normal (1).
 
-**Expected final test count:** baseline 259 + ~24 new = ~283 across ~34 files.
+**Expected final test count:** baseline 259 + ~35 new = ~294 across ~34 files. (Higher than the rough ~24 estimate during brainstorming once cancelled-path and config-fixture coverage was decomposed properly.)
 
 ## Existing utilities to reuse (DO NOT REIMPLEMENT)
 
@@ -198,7 +198,7 @@ End-to-end checks at plan completion:
 ```powershell
 bun install ; bun run typecheck ; bun test
 ```
-Expected: ~283 tests across ~34 files, 0 fail. Typecheck clean.
+Expected: ~294 tests across ~34 files, 0 fail. Typecheck clean.
 
 **CLI smoke:**
 ```powershell
