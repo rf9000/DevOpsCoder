@@ -9,6 +9,13 @@ export interface PipelineContext {
   config: AppConfig;
   logger: Logger;
   abortFlag: AbortFlag;
+  /**
+   * Per-stage abort signal. The orchestrator creates a fresh AbortController
+   * per stage iteration and threads its signal here. Stages should pass this
+   * to runner.run({ ..., signal: ctx.signal }) and to any other I/O calls
+   * (e.g. ado.addWorkItemComment, ado.createPullRequest) that accept a signal.
+   */
+  signal: AbortSignal;
   now: () => Date;
 }
 

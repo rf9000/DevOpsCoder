@@ -20,6 +20,7 @@ function mockContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     config,
     logger: { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}) },
     abortFlag: { aborted: false },
+    signal: new AbortController().signal,
     now: () => FIXED_NOW,
     ...overrides,
   };

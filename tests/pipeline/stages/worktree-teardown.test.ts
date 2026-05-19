@@ -69,6 +69,7 @@ function makeCtx() {
     config: baseConfig,
     logger: makeLogger(),
     abortFlag: { aborted: false },
+    signal: new AbortController().signal,
     now: () => new Date(),
   };
 }

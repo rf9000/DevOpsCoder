@@ -55,6 +55,7 @@ function makeCtx(config: Partial<AppConfig> = {}) {
     config: base,
     logger: createLogger(),
     abortFlag: { aborted: false },
+    signal: new AbortController().signal,
     now: () => new Date(),
   };
 }

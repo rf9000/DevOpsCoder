@@ -11,6 +11,7 @@ import type { Stage, PipelineContext } from '../../src/pipeline/stage.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
+import { CostExceededError, StageTimeoutError } from '../../src/types/index.ts';
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'devops-coder-orch-'));
@@ -34,6 +35,7 @@ function makeContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     config,
     logger,
     abortFlag: { aborted: false },
+    signal: new AbortController().signal,
     now: () => FIXED_NOW,
     ...overrides,
   };
@@ -356,5 +358,234 @@ describe('runPipeline', () => {
     ).rejects.toThrow('exploded');
     expect(state.terminalError?.stage).toBe('boom');
     expect(state.rejection).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 6 safety rails (task-05)
+// ---------------------------------------------------------------------------
+
+describe('runPipeline (Plan 6 safety rails)', () => {
+  // T1: Under cap proceeds
+  it('under cost cap: pipeline completes normally', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    state.outputs.cost = { total: 1.00, perStage: {} };
+    const ctx = makeContext(); // maxCostUsdPerWi: 5.00
+    const stage = makeStage('a');
+    const final = await runPipeline({ stages: [stage], state, context: ctx, store });
+    expect(final.completedAt).toBeDefined();
+    expect(final.terminalError).toBeUndefined();
+  });
+
+  // T2: Over cap throws CostExceededError
+  it('over cost cap: throws CostExceededError with terminalError recorded', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    state.outputs.cost = { total: 6.00, perStage: {} };
+    const ctx = makeContext(); // maxCostUsdPerWi: 5.00
+
+    let caught: unknown;
+    try {
+      await runPipeline({ stages: [makeStage('a')], state, context: ctx, store });
+    } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(CostExceededError);
+    // The terminalError message must contain 'cost cap'
+    const savedState = store.save.mock.calls[store.save.mock.calls.length - 1]?.[0] as PipelineState;
+    expect(savedState.terminalError?.message).toMatch(/cost cap/i);
+    expect(savedState.terminalError?.stage).toBe('a');
+  });
+
+  // T3: Cost accumulates across stages and check fires before stage N+1
+  it('cost check fires before stage N+1 after stage N pushes total over cap', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+
+    let stage2Called = false;
+    const stages: Stage[] = [
+      makeStage('stage1', async (s) => {
+        s.outputs.cost = { total: 6.00, perStage: { stage1: 6.00 } };
+        return s;
+      }),
+      makeStage('stage2', async (s) => {
+        stage2Called = true;
+        return s;
+      }),
+    ];
+
+    const ctx = makeContext(); // maxCostUsdPerWi: 5.00
+    let caught: unknown;
+    try {
+      await runPipeline({ stages, state, context: ctx, store });
+    } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(CostExceededError);
+    expect(stage2Called).toBe(false);
+  });
+
+  // T4: Within timeout passes through
+  it('within timeout: stage completes normally before timer fires', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    const ctx = makeContext({
+      config: {
+        org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+        repositoryName: 'test-repo', targetRepoPath: '/r', worktreeBase: '/w',
+        triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
+        pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
+        coderMaxTurns: 80, testAuthorMaxTurns: 50,
+        maxCostUsdPerWi: 5.00, stageTimeoutMs: { foo: 500 },
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+      },
+    });
+    // Stage resolves in 50ms, timeout is 500ms
+    const stage = makeStage('foo', async (s) => {
+      await new Promise<void>((res) => setTimeout(res, 50));
+      return s;
+    });
+
+    const final = await runPipeline({ stages: [stage], state, context: ctx, store });
+    expect(final.completedAt).toBeDefined();
+    expect(final.terminalError).toBeUndefined();
+  });
+
+  // T5: Over timeout aborts and throws StageTimeoutError
+  it('over timeout: throws StageTimeoutError and records terminalError', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    const ctx = makeContext({
+      config: {
+        org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+        repositoryName: 'test-repo', targetRepoPath: '/r', worktreeBase: '/w',
+        triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
+        pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
+        coderMaxTurns: 80, testAuthorMaxTurns: 50,
+        maxCostUsdPerWi: 5.00, stageTimeoutMs: { slow: 50 },
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+      },
+    });
+
+    // Stage listens to signal and rejects when aborted; resolves after 200ms if not aborted
+    const stage = makeStage('slow', (s, stageCtx) => new Promise<PipelineState>((resolve, reject) => {
+      stageCtx.signal.addEventListener('abort', () => {
+        const e = new Error('aborted by signal');
+        e.name = 'AbortError';
+        reject(e);
+      });
+      setTimeout(() => resolve(s), 200);
+    }));
+
+    let caught: unknown;
+    try {
+      await runPipeline({ stages: [stage], state, context: ctx, store });
+    } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(StageTimeoutError);
+    const savedState = store.save.mock.calls[store.save.mock.calls.length - 1]?.[0] as PipelineState;
+    expect(savedState.terminalError?.message).toMatch(/timeout/i);
+    expect(savedState.terminalError?.stage).toBe('slow');
+  });
+
+  // T6: Timer cleared on normal completion — no spurious abort after stage finishes
+  it('timer cleared on success: signal stays unaborted after stage completes', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    const ctx = makeContext({
+      config: {
+        org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+        repositoryName: 'test-repo', targetRepoPath: '/r', worktreeBase: '/w',
+        triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
+        pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
+        coderMaxTurns: 80, testAuthorMaxTurns: 50,
+        maxCostUsdPerWi: 5.00, stageTimeoutMs: { fast: 200 },
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+      },
+    });
+
+    let capturedSignal: AbortSignal | undefined;
+    // Stage resolves in 50ms; timeout is 200ms
+    const stage = makeStage('fast', async (s, stageCtx) => {
+      capturedSignal = stageCtx.signal;
+      await new Promise<void>((res) => setTimeout(res, 50));
+      return s;
+    });
+
+    await runPipeline({ stages: [stage], state, context: ctx, store });
+
+    // Wait well past the original timeout to confirm no spurious abort fires
+    await new Promise<void>((res) => setTimeout(res, 250));
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
+  // T7: External abortFlag mid-stage sets state.cancelled and returns state
+  it('external abort mid-stage: resolves cleanly with state.cancelled = true', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    const abortFlag = { aborted: false };
+    const ctx = makeContext({ abortFlag });
+
+    // Stage listens to signal and rejects when externally aborted
+    const stage = makeStage('a', (s, stageCtx) => new Promise<PipelineState>((resolve, reject) => {
+      stageCtx.signal.addEventListener('abort', () => {
+        const e = new Error('aborted by signal');
+        e.name = 'AbortError';
+        reject(e);
+      });
+      setTimeout(() => resolve(s), 500);
+    }));
+
+    // Trigger external abort after 50ms
+    setTimeout(() => { abortFlag.aborted = true; }, 50);
+
+    const final = await runPipeline({ stages: [stage], state, context: ctx, store });
+
+    expect(final.cancelled).toBe(true);
+    expect(final.terminalError).toBeUndefined();
+  });
+
+  // T8: External abort does NOT write state.terminalError
+  it('external abort: state.terminalError remains undefined', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    const abortFlag = { aborted: false };
+    const ctx = makeContext({ abortFlag });
+
+    const stage = makeStage('a', (s, stageCtx) => new Promise<PipelineState>((resolve, reject) => {
+      stageCtx.signal.addEventListener('abort', () => {
+        const e = new Error('aborted by signal');
+        e.name = 'AbortError';
+        reject(e);
+      });
+      setTimeout(() => resolve(s), 500);
+    }));
+
+    setTimeout(() => { abortFlag.aborted = true; }, 50);
+
+    const final = await runPipeline({ stages: [stage], state, context: ctx, store });
+    expect(final.terminalError).toBeUndefined();
+  });
+
+  // T9: External abort does NOT add a 'failure' history entry
+  it('external abort: no "failure" entry in history', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    const abortFlag = { aborted: false };
+    const ctx = makeContext({ abortFlag });
+
+    const stage = makeStage('a', (s, stageCtx) => new Promise<PipelineState>((resolve, reject) => {
+      stageCtx.signal.addEventListener('abort', () => {
+        const e = new Error('aborted by signal');
+        e.name = 'AbortError';
+        reject(e);
+      });
+      setTimeout(() => resolve(s), 500);
+    }));
+
+    setTimeout(() => { abortFlag.aborted = true; }, 50);
+
+    const final = await runPipeline({ stages: [stage], state, context: ctx, store });
+    const failureEntries = final.history.filter((h) => h.outcome === 'failure');
+    expect(failureEntries.length).toBe(0);
   });
 });

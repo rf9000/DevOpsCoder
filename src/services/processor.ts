@@ -271,10 +271,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       store.save(state);
 
       const stages = buildPipeline({ config, logger, ado });
+      const outerCtrl = new AbortController();
       const context = {
         config,
         logger,
         abortFlag,
+        signal: outerCtrl.signal,
         now: () => new Date(),
       };
 

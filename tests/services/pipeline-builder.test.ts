@@ -85,6 +85,7 @@ function makeCtx() {
     config,
     logger: createLogger(),
     abortFlag: { aborted: false },
+    signal: new AbortController().signal,
     now: () => new Date(),
   };
 }

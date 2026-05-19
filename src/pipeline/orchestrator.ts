@@ -1,7 +1,11 @@
 import type { Stage, PipelineContext } from './stage.ts';
 import { PipelinePauseError, PipelineRejectError } from './stage.ts';
-import type { PipelineState, StageHistoryEntry } from '../types/index.ts';
+import type { PipelineState, StageHistoryEntry, PipelineCostInfo } from '../types/index.ts';
+import { CostExceededError, StageTimeoutError } from '../types/index.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
+
+/** Fallback per-stage timeout for stages not in config.stageTimeoutMs (e.g. revision-loop). */
+const DEFAULT_STAGE_TIMEOUT_MS = 120_000;
 
 export interface RunPipelineOptions {
   stages: Stage[];
@@ -49,7 +53,36 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
     state.currentStage = stages[0]?.name ?? null;
   }
 
-  while (state.currentStage != null && !context.abortFlag.aborted) {
+  while (state.currentStage != null) {
+    // Pre-stage gate 1: external abort BEFORE the stage starts.
+    if (context.abortFlag.aborted) {
+      state.cancelled = true;
+      store.save(state);
+      return state;
+    }
+
+    // Pre-stage gate 2: cost cap accumulated from prior stages.
+    const cost = state.outputs.cost as PipelineCostInfo | undefined;
+    const totalCost = cost?.total ?? 0;
+    if (totalCost > context.config.maxCostUsdPerWi) {
+      const stageName = state.currentStage;
+      const costErr = new CostExceededError(totalCost, context.config.maxCostUsdPerWi, stageName);
+      state.terminalError = {
+        stage: stageName,
+        message: costErr.message,
+        at: context.now().toISOString(),
+      };
+      appendHistory(state, {
+        stage: stageName,
+        startedAt: context.now().toISOString(),
+        endedAt: context.now().toISOString(),
+        outcome: 'failure',
+        message: costErr.message,
+      });
+      store.save(state);
+      throw costErr;
+    }
+
     const idx = findStageIndex(stages, state.currentStage);
     if (idx < 0) {
       throw new StageNotFoundError(
@@ -71,8 +104,26 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       continue;
     }
 
+    // Per-stage AbortController: external abort + per-stage timeout.
+    const ctrl = new AbortController();
+    const timeoutMs = context.config.stageTimeoutMs[stage.name] ?? DEFAULT_STAGE_TIMEOUT_MS;
+    // Poll abortFlag at 100ms. Implementer may swap for direct event coupling
+    // if AbortFlag is later promoted to wrap an AbortController.
+    const abortFlagWatcher = setInterval(() => {
+      if (context.abortFlag.aborted && !ctrl.signal.aborted) {
+        ctrl.abort('external');
+      }
+    }, 100);
+    const timer = setTimeout(() => {
+      if (!ctrl.signal.aborted) ctrl.abort('timeout');
+    }, timeoutMs);
+
+    const stageCtx: PipelineContext = { ...context, signal: ctrl.signal };
+
     try {
-      state = await stage.execute(state, context);
+      state = await stage.execute(state, stageCtx);
+      clearTimeout(timer);
+      clearInterval(abortFlagWatcher);
       const endedAt = context.now().toISOString();
       if (state.currentStage === stage.name) {
         state.currentStage = stages[idx + 1]?.name ?? null;
@@ -86,7 +137,35 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       state.attempts[stage.name] = (state.attempts[stage.name] ?? 0) + 1;
       store.save(state);
     } catch (err) {
+      clearTimeout(timer);
+      clearInterval(abortFlagWatcher);
       const endedAt = context.now().toISOString();
+
+      // Plan 6: distinguish timeout vs external abort BEFORE existing branches.
+      if (ctrl.signal.aborted) {
+        const reason = ctrl.signal.reason as unknown;
+        if (reason === 'timeout') {
+          const timeoutErr = new StageTimeoutError(stage.name, timeoutMs);
+          state.terminalError = { stage: stage.name, message: timeoutErr.message, at: endedAt };
+          appendHistory(state, {
+            stage: stage.name,
+            startedAt,
+            endedAt,
+            outcome: 'failure',
+            message: timeoutErr.message,
+          });
+          store.save(state);
+          throw timeoutErr;
+        }
+        if (reason === 'external') {
+          // SIGINT / external shutdown: mark cancelled, return cleanly (no throw).
+          state.cancelled = true;
+          store.save(state);
+          return state;
+        }
+        // Other abort reasons fall through to existing branches.
+      }
+
       if (err instanceof PipelinePauseError) {
         appendHistory(state, {
           stage: stage.name,
