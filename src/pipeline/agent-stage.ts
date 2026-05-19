@@ -20,10 +20,18 @@ export interface AgentRunArgs<T> {
   systemPromptAppend?: string;
   settingSources?: SettingSource[];
   canUseTool?: CanUseToolFn;
+  /** Optional AbortSignal. When aborted, the runner throws an AbortError. */
+  signal?: AbortSignal;
+}
+
+export interface AgentRunResult<T> {
+  value: T;
+  /** Cumulative cost (USD) reported by the SDK for this single run. May be 0 if the SDK didn't return a cost (e.g., during a failure or a non-result message). */
+  costUsd: number;
 }
 
 export interface AgentRunner {
-  run<T>(args: AgentRunArgs<T>): Promise<T>;
+  run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>>;
 }
 
 export interface AgentStageConfig<T> {
@@ -51,7 +59,7 @@ export function agentStage<T>(
     canRun: cfg.canRun ?? (() => true),
     async execute(state, ctx) {
       const prompt = cfg.buildPrompt(state, ctx);
-      const output = await runner.run<T>({
+      const { value: output } = await runner.run<T>({
         prompt,
         schema: cfg.schema,
         tools: cfg.tools,

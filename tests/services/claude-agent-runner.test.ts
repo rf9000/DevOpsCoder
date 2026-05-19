@@ -1,10 +1,85 @@
-import { describe, it, expect } from 'bun:test';
-import { extractJson, buildQueryOptions, STRUCTURED_OUTPUT_INSTRUCTION } from '../../src/services/claude-agent-runner.ts';
+import { describe, it, expect, mock } from 'bun:test';
 import { z } from 'zod';
 import type { AgentRunArgs } from '../../src/pipeline/agent-stage.ts';
 import type { AppConfig } from '../../src/types/index.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 
+// ---------------------------------------------------------------------------
+// Module mock — must be declared before the module under test is imported so
+// Bun replaces the binding at load time.  We expose a `setQueryImpl` handle
+// so individual tests can swap the fake implementation.
+// ---------------------------------------------------------------------------
+type QueryMessage =
+  | { type: 'result'; subtype: 'success'; result: string; total_cost_usd?: number; usage: { input_tokens?: number; output_tokens?: number }; num_turns: number }
+  | { type: 'result'; subtype: 'error_max_turns' | 'error_during_generation'; total_cost_usd?: number; usage: { input_tokens?: number; output_tokens?: number }; num_turns: number }
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; tool: string; input: unknown };
+
+let _queryImpl: (opts: unknown) => AsyncGenerator<QueryMessage> = async function* defaultImpl() {
+  yield {
+    type: 'result',
+    subtype: 'success',
+    result: '{"verdict":"proceed"}',
+    total_cost_usd: 0,
+    usage: { input_tokens: 10, output_tokens: 5 },
+    num_turns: 1,
+  };
+};
+
+function setQueryImpl(impl: (opts: unknown) => AsyncGenerator<QueryMessage>): void {
+  _queryImpl = impl;
+}
+
+mock.module('@anthropic-ai/claude-agent-sdk', () => ({
+  query: (opts: unknown) => _queryImpl(opts),
+}));
+
+// Import AFTER mock.module so the mocked binding is used.
+import {
+  extractJson,
+  buildQueryOptions,
+  createClaudeAgentRunner,
+  STRUCTURED_OUTPUT_INSTRUCTION,
+} from '../../src/services/claude-agent-runner.ts';
+
+// ---------------------------------------------------------------------------
+// Shared fixtures
+// ---------------------------------------------------------------------------
+const baseConfig = {
+  org: 'o',
+  orgUrl: 'https://x',
+  project: 'p',
+  pat: 'pat',
+  repositoryName: 'test-repo',
+  targetRepoPath: '/r',
+  worktreeBase: '/w',
+  triggerTag: 'agent implement',
+  blockedTag: 'agent-blocked',
+  needInputTag: 'need-input',
+  pollIntervalMinutes: 5,
+  concurrency: 1,
+  maxRevisions: 3,
+  maxRejectCycles: 3,
+  coderMaxTurns: 80,
+  testAuthorMaxTurns: 50,
+  maxCostUsdPerWi: 5.00,
+  stageTimeoutMs: {},
+  claudeModel: 'claude-opus-4-7',
+  stateDir: '.state',
+  assignedToFilter: [],
+  dryRun: false,
+} satisfies AppConfig;
+
+const deps = { config: baseConfig, logger: createLogger() };
+
+const minimalArgs: AgentRunArgs<unknown> = {
+  prompt: 'hi',
+  schema: z.unknown(),
+};
+
+// ---------------------------------------------------------------------------
+// extractJson
+// ---------------------------------------------------------------------------
 describe('extractJson', () => {
   it('returns input as-is when it is already a bare JSON object', () => {
     expect(extractJson('{"a":1}')).toBe('{"a":1}');
@@ -28,39 +103,10 @@ describe('extractJson', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// buildQueryOptions
+// ---------------------------------------------------------------------------
 describe('buildQueryOptions', () => {
-  const baseConfig = {
-    org: 'o',
-    orgUrl: 'https://x',
-    project: 'p',
-    pat: 'pat',
-    repositoryName: 'test-repo',
-    targetRepoPath: '/r',
-    worktreeBase: '/w',
-    triggerTag: 'agent implement',
-    blockedTag: 'agent-blocked',
-    needInputTag: 'need-input',
-    pollIntervalMinutes: 5,
-    concurrency: 1,
-    maxRevisions: 3,
-    maxRejectCycles: 3,
-    coderMaxTurns: 80,
-    testAuthorMaxTurns: 50,
-    maxCostUsdPerWi: 5.00,
-    stageTimeoutMs: {},
-    claudeModel: 'claude-opus-4-7',
-    stateDir: '.state',
-    assignedToFilter: [],
-    dryRun: false,
-  } satisfies AppConfig;
-
-  const deps = { config: baseConfig, logger: createLogger() };
-
-  const minimalArgs: AgentRunArgs<unknown> = {
-    prompt: 'hi',
-    schema: z.unknown(),
-  };
-
   it('uses deps.config.claudeModel when args.model is omitted', () => {
     const opts = buildQueryOptions(minimalArgs, deps);
     expect(opts.model).toBe('claude-opus-4-7');
@@ -122,5 +168,93 @@ describe('buildQueryOptions', () => {
     expect(opts.cwd).toBe('/repos/continia-banking');
     expect(opts.canUseTool).toBe(canUseTool);
     expect(opts.settingSources).toEqual(['project']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createClaudeAgentRunner — cost and AbortSignal tests
+// ---------------------------------------------------------------------------
+describe('createClaudeAgentRunner', () => {
+  const VerdictSchema = z.object({ verdict: z.enum(['proceed', 'reject']) });
+
+  it('extracts total_cost_usd from a result message', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.42,
+        usage: { input_tokens: 10, output_tokens: 5 },
+        num_turns: 1,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.costUsd).toBe(0.42);
+    expect(res.value).toEqual({ verdict: 'proceed' });
+  });
+
+  it('returns costUsd: 0 when total_cost_usd is absent from the result message', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        // total_cost_usd intentionally omitted
+        usage: { input_tokens: 10, output_tokens: 5 },
+        num_turns: 1,
+      } as QueryMessage;
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.costUsd).toBe(0);
+    expect(res.value).toEqual({ verdict: 'proceed' });
+  });
+
+  it('throws AbortError when the provided signal is already aborted', async () => {
+    setQueryImpl(async function* () {
+      // Yield a few messages before settling so the loop has time to check abort
+      yield { type: 'text', text: 'thinking...' };
+      yield { type: 'text', text: 'still thinking...' };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 5, output_tokens: 3 },
+        num_turns: 2,
+      };
+    });
+
+    const signal = AbortSignal.abort();
+    const runner = createClaudeAgentRunner(deps);
+    let caught: unknown;
+    try {
+      await runner.run({ prompt: 'go', schema: VerdictSchema, signal });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe('AbortError');
+  });
+
+  it('completes successfully when no signal is provided (regression guard)', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"reject"}',
+        total_cost_usd: 0.1,
+        usage: { input_tokens: 8, output_tokens: 4 },
+        num_turns: 1,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.value).toEqual({ verdict: 'reject' });
+    expect(res.costUsd).toBe(0.1);
   });
 });

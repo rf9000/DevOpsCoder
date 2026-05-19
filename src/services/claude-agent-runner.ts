@@ -1,5 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentRunner, AgentRunArgs } from '../pipeline/agent-stage.ts';
+import type { AgentRunner, AgentRunArgs, AgentRunResult } from '../pipeline/agent-stage.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AppConfig } from '../types/index.ts';
 
@@ -63,14 +63,21 @@ export function buildQueryOptions<T>(
   if (args.cwd !== undefined) opts.cwd = args.cwd;
   if (args.canUseTool !== undefined) opts.canUseTool = args.canUseTool;
   if (args.settingSources !== undefined) opts.settingSources = args.settingSources;
+  /**
+   * Pass the AbortSignal to the SDK using the standard `abortSignal` field name.
+   * The SDK MAY honour this natively; if not, the in-loop check in `run()` acts
+   * as a defensive fallback.
+   */
+  if (args.signal !== undefined) opts.abortSignal = args.signal;
 
   return opts;
 }
 
 export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunner {
   return {
-    async run<T>(args: AgentRunArgs<T>): Promise<T> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       let result: string | undefined;
+      let costUsd = 0;
 
       const options = buildQueryOptions(args, deps);
 
@@ -78,9 +85,18 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
         prompt: args.prompt,
         options: options as Parameters<typeof query>[0]['options'],
       })) {
+        // Defensive in-loop abort check — belt-and-suspenders fallback in case
+        // the SDK does not honour the abortSignal option natively.
+        if (args.signal?.aborted) {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          throw err;
+        }
+
         if (message.type === 'result') {
+          costUsd = (message.total_cost_usd as number | undefined) ?? 0;
           deps.logger.info(
-            `agent: $${message.total_cost_usd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns`,
+            `agent: $${costUsd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns`,
           );
           if (message.subtype === 'success') {
             result = message.result;
@@ -111,7 +127,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           `Schema validation failed: ${issues}`,
         );
       }
-      return validated.data;
+      return { value: validated.data, costUsd };
     },
   };
 }
