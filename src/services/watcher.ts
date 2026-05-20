@@ -46,15 +46,15 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
       switch (outcome.kind) {
         case 'completed':
           stats.completed++;
-          logger.info(`WI ${id}: completed`);
+          logger.info(`WI ${id}: completed (cost: $${outcome.costUsd.toFixed(2)})`);
           break;
         case 'paused':
           stats.paused++;
-          logger.info(`WI ${id}: paused at ${outcome.stage}`);
+          logger.info(`WI ${id}: paused at ${outcome.stage} (cost: $${outcome.costUsd.toFixed(2)})`);
           break;
         case 'failed':
           stats.failed++;
-          logger.error(`WI ${id}: failed at ${outcome.error.stage}: ${outcome.error.message}`);
+          logger.error(`WI ${id}: failed at ${outcome.error.stage}: ${outcome.error.message} (cost: $${outcome.costUsd.toFixed(2)})`);
           break;
         case 'skipped':
           stats.skipped++;
@@ -63,7 +63,7 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
         case 'rejected':
           stats.rejected++;
           logger.info(
-            `WI ${id}: rejected (${outcome.severity}, count=${outcome.rejectCount})`,
+            `WI ${id}: rejected (${outcome.severity}, count=${outcome.rejectCount}, cost: $${outcome.costUsd.toFixed(2)})`,
           );
           break;
       }
