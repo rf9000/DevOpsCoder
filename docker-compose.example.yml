@@ -1,0 +1,43 @@
+# Example docker-compose for DevopsCoder.
+#
+# Copy this file into your deploy host under ~/teams/<team-name>/docker-compose.yml
+# (or merge the service block into an existing team compose file alongside the
+# read-only sibling agents). Edit the placeholders below before running.
+#
+# Deploy flow on the VM:
+#   cd ~/teams/<team-name>/DevOpsCoder
+#   git pull
+#   cd ..
+#   docker compose build --no-cache devops-coder
+#   docker compose up -d devops-coder
+#   docker compose logs -f devops-coder
+
+services:
+  devops-coder:
+    build:
+      context: ./DevOpsCoder
+    env_file:
+      - .env.devops-coder
+    # restart: unless-stopped   # Suggested for production; not enforced — matches siblings.
+    volumes:
+      # OAuth credentials (shared with the read-only sibling agents on the same host)
+      - ${HOME}/.claude:/home/claude/.claude
+
+      # Target repo — MUST be :rw. The draft-PR creator stage runs `git worktree add`
+      # which writes into the parent repo's .git/worktrees/ directory; a read-only
+      # mount fails. (Siblings can use :ro here; DevopsCoder cannot.)
+      - ${HOME}/repos/<target-repo>:/repos/<target-repo>:rw
+
+      # Worktree base — MUST be :rw and MUST persist across container restarts.
+      # A WI paused mid-pipeline resumes against the existing worktree on the next
+      # poll cycle; if this mount is reset on restart, paused WIs fail to resume.
+      - ${HOME}/repos/.worktrees:/repos/.worktrees:rw
+
+      # Optional dependency repos (read-only is fine for these — same as siblings)
+      # - ${HOME}/repos/<dep-repo>:/repos/<dep-repo>:ro
+
+      # State (per-WI JSON files)
+      - devops-coder-state:/app/.state
+
+volumes:
+  devops-coder-state:
