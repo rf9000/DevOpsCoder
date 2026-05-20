@@ -204,7 +204,7 @@ If the pipeline starts failing with "Claude Code process exited with code 1", th
    docker compose restart devops-coder
    ```
 
-The entrypoint `chown -R claude:claude /home/claude/.claude` inside the container on startup, so credentials remain accessible to both host and container.
+The entrypoint runs `chown -R claude:claude /home/claude/.claude` inside the container on startup, so credentials remain accessible to both host and container.
 
 ### Troubleshooting
 
