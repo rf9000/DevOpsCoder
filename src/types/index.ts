@@ -174,15 +174,16 @@ export interface WorkItemComment {
 }
 
 export type ProcessOutcome =
-  | { kind: 'completed'; workItemId: number }
-  | { kind: 'paused'; workItemId: number; stage: string }
-  | { kind: 'failed'; workItemId: number; error: PipelineTerminalError }
+  | { kind: 'completed'; workItemId: number; costUsd: number }
+  | { kind: 'paused'; workItemId: number; stage: string; costUsd: number }
+  | { kind: 'failed'; workItemId: number; error: PipelineTerminalError; costUsd: number }
   | { kind: 'skipped'; workItemId: number; reason: string }
   | {
       kind: 'rejected';
       workItemId: number;
       severity: 'reject' | 'blocked';
       rejectCount: number;
+      costUsd: number;
     };
 
 export interface CycleStats {

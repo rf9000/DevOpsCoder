@@ -311,6 +311,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       workItemId: state.workItemId,
       severity,
       rejectCount: newCount,
+      costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
     };
   }
 
@@ -398,7 +399,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           if (!config.dryRun) {
             await ado.removeTagFromWorkItem(workItemId, config.triggerTag);
           }
-          return { kind: 'completed', workItemId };
+          return { kind: 'completed', workItemId, costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0 };
         }
 
         // Paused path
@@ -407,7 +408,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           last?.outcome === 'pause'
             ? last.stage
             : (final.currentStage ?? 'unknown');
-        return { kind: 'paused', workItemId, stage: pausedStage };
+        return { kind: 'paused', workItemId, stage: pausedStage, costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0 };
       } catch (err) {
         const persisted = store.load(workItemId);
 
@@ -453,7 +454,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             () => ado.addTagToWorkItem(workItemId, config.blockedTag),
           );
         }
-        return { kind: 'failed', workItemId, error: terminalError };
+        return { kind: 'failed', workItemId, error: terminalError, costUsd: (persisted?.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0 };
       }
     },
   };

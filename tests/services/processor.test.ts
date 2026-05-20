@@ -150,7 +150,7 @@ describe('createProcessor', () => {
       abortFlag: { aborted: false },
     });
     const outcome = await proc.processWorkItem(101);
-    expect(outcome).toEqual({ kind: 'paused', workItemId: 101, stage: 'await-human' });
+    expect(outcome).toEqual({ kind: 'paused', workItemId: 101, stage: 'await-human', costUsd: 0 });
     expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
@@ -225,6 +225,7 @@ describe('createProcessor', () => {
       workItemId: 101,
       severity: 'reject',
       rejectCount: 1,
+      costUsd: 0,
     });
     const saved = store.load(101)!;
     expect(saved.rejectCount).toBe(1);
@@ -840,6 +841,198 @@ describe('createProcessor', () => {
     expect(outcome.kind).toBe('failed');
     expect(ado.addWorkItemComment).not.toHaveBeenCalled();
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
+  });
+
+  // ── Plan 7 task-01: costUsd on ProcessOutcome ────────────────────────────
+
+  it('completed outcome carries costUsd from state.outputs.cost.total', async () => {
+    // Pre-seed state with cost info
+    store.save({
+      workItemId: 101,
+      slug: 'fix-login',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      attempts: {},
+      outputs: {
+        cost: { total: 0.42, perStage: { coder: 0.40, reviewer: 0.02 } },
+      },
+    });
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [], // empty pipeline → immediate completion
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.costUsd).toBe(0.42);
+    }
+  });
+
+  it('paused outcome carries costUsd from state.outputs.cost.total', async () => {
+    // Pre-seed state with cost info
+    store.save({
+      workItemId: 101,
+      slug: 'fix-login',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      attempts: {},
+      outputs: {
+        cost: { total: 0.15, perStage: { coder: 0.15 } },
+      },
+    });
+
+    const pauseStage: Stage = {
+      name: 'await-human',
+      canRun: () => true,
+      execute: async (state) => {
+        state.currentStage = 'await-human';
+        throw new PipelinePauseError('waiting for human input');
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [pauseStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('paused');
+    if (outcome.kind === 'paused') {
+      expect(outcome.costUsd).toBe(0.15);
+    }
+  });
+
+  it('failed outcome carries costUsd from persisted state.outputs.cost.total', async () => {
+    const boomStage: Stage = {
+      name: 'coder',
+      canRun: () => true,
+      execute: async (state) => {
+        // Simulate cost accumulated before failure
+        state.outputs.cost = { total: 0.77, perStage: { coder: 0.77 } };
+        throw new Error('coder exploded');
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind === 'failed') {
+      expect(outcome.costUsd).toBe(0.77);
+    }
+  });
+
+  it('rejected outcome (fresh dispatch) carries costUsd from state.outputs.cost.total', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.cost = { total: 0.05, perStage: { analyzer: 0.05 } };
+        throw new PipelineRejectError({
+          reasons: ['insufficient AC'],
+          summary: 'WI is not ready',
+        });
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.costUsd).toBe(0.05);
+    }
+  });
+
+  it('rejected outcome (recovery dispatch) carries costUsd from pre-existing state.outputs.cost.total', async () => {
+    // Pre-seed state as if a previous cycle crashed mid-dispatch with cost accumulated
+    store.save({
+      workItemId: 101,
+      slug: 'wi',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: 'analyzer',
+      history: [],
+      attempts: {},
+      outputs: {
+        cost: { total: 0.08, perStage: { analyzer: 0.08 } },
+      },
+      rejectCount: 1,
+      rejection: {
+        reasons: ['vague'],
+        summary: 'WI is not ready',
+        stage: 'analyzer',
+        at: '2026-01-01T00:00:00Z',
+        // dispatched intentionally OMITTED — signals a crashed dispatch
+      },
+    });
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.costUsd).toBe(0.08);
+    }
+  });
+
+  it('missing-cost fallback: outcome.costUsd === 0 when state.outputs.cost is undefined', async () => {
+    // No cost seeded — state.outputs.cost will be undefined
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [], // empty pipeline → immediate completion
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.costUsd).toBe(0);
+    }
   });
 
 });
