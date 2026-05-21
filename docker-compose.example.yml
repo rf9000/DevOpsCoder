@@ -23,7 +23,7 @@ services:
       # OAuth credentials (shared with the read-only sibling agents on the same host)
       - ${HOME}/.claude:/home/claude/.claude
 
-      # Target repo — MUST be :rw. The draft-PR creator stage runs `git worktree add`
+      # Target repo — MUST be :rw. The worktree-setup stage runs `git worktree add`
       # which writes into the parent repo's .git/worktrees/ directory; a read-only
       # mount fails. (Siblings can use :ro here; DevopsCoder cannot.)
       - ${HOME}/repos/<target-repo>:/repos/<target-repo>:rw
