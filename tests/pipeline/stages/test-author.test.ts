@@ -112,6 +112,7 @@ interface RecordingRunner extends AgentRunner {
 function makeRunner(
   result: TestAuthorOutput | ((call: number) => Promise<TestAuthorOutput>),
   costUsd = 0.42,
+  toolUsage: Record<string, number> = {},
 ): RecordingRunner {
   const calls: AgentRunArgs<unknown>[] = [];
   let i = 0;
@@ -120,7 +121,7 @@ function makeRunner(
     async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result(i++) : result;
-      return { value: out as unknown as T, costUsd, toolUsage: {} };
+      return { value: out as unknown as T, costUsd, toolUsage };
     },
   };
 }
@@ -149,7 +150,7 @@ describe('buildTestAuthorUserPrompt', () => {
 
 describe('createTestAuthorStage', () => {
   it('happy path: stores TestAuthorOutput in state.outputs.testAuthor', async () => {
-    const runner = makeRunner(successOutput);
+    const runner = makeRunner(successOutput, 0.42, { Write: 2, Bash: 1 });
     const stage = createTestAuthorStage({
       config: baseConfig,
       runner,
@@ -163,6 +164,8 @@ describe('createTestAuthorStage', () => {
     // Cost tracking: test-author records costUsd returned by the runner
     expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
     expect((result.outputs.cost as PipelineCostInfo).perStage['test-author']).toBeCloseTo(0.42, 4);
+    // Tool-usage tracking: test-author records toolUsage returned by the runner
+    expect(result.outputs.toolUsage).toEqual({ Write: 2, Bash: 1 });
   });
 
   it('throws when state.outputs.coder is missing', async () => {

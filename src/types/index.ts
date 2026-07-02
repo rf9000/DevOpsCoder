@@ -72,7 +72,9 @@ export interface PipelineState {
   attempts: Record<string, number>;
   /**
    * Per-stage outputs keyed by `Stage.name`. Reserved keys: `cost` carries
-   * `PipelineCostInfo` (managed by createCostTracker, see src/utils/cost-tracker.ts).
+   * `PipelineCostInfo` (managed by createCostTracker, see src/utils/cost-tracker.ts);
+   * `toolUsage` carries a cumulative per-tool call-count map (managed by
+   * createToolUsageTracker, see src/utils/tool-usage-tracker.ts).
    */
   outputs: Record<string, unknown>;
 }
