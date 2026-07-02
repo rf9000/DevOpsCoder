@@ -103,7 +103,7 @@ function makeRecordingRunner(
     calls,
     async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
-      return { value: responder(args as AgentRunArgs<unknown>) as unknown as T, costUsd: 0 };
+      return { value: responder(args as AgentRunArgs<unknown>) as unknown as T, costUsd: 0, toolUsage: {} };
     },
   };
 }

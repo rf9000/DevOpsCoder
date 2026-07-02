@@ -105,7 +105,7 @@ function makeStagedRunner(
       calls.push(args as AgentRunArgs<unknown>);
       const out = responder(args as AgentRunArgs<unknown>, i++);
       const value = out instanceof Promise ? ((await out) as unknown as T) : (out as unknown as T);
-      return { value, costUsd: 0 };
+      return { value, costUsd: 0, toolUsage: {} };
     },
   };
 }

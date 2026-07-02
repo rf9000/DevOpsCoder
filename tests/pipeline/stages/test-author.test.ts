@@ -117,10 +117,10 @@ function makeRunner(
   let i = 0;
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number }> {
+    async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result(i++) : result;
-      return { value: out as unknown as T, costUsd };
+      return { value: out as unknown as T, costUsd, toolUsage: {} };
     },
   };
 }

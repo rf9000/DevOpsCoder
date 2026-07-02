@@ -57,13 +57,13 @@ describe('orchestrator end-to-end (mock stages)', () => {
     const ctx = makeContext();
 
     const analyzerRunner: AgentRunner = {
-      run: mock(async () => ({ value: { verdict: 'proceed', taskSummary: 'add a button' }, costUsd: 0 })) as unknown as AgentRunner['run'],
+      run: mock(async () => ({ value: { verdict: 'proceed', taskSummary: 'add a button' }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
     };
     const coderRunner: AgentRunner = {
-      run: mock(async () => ({ value: { branch: 'agent/wi-101-add-button', commitsAhead: 1 }, costUsd: 0 })) as unknown as AgentRunner['run'],
+      run: mock(async () => ({ value: { branch: 'agent/wi-101-add-button', commitsAhead: 1 }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
     };
     const reviewerRunner: AgentRunner = {
-      run: mock(async () => ({ value: { verdict: 'approve' }, costUsd: 0 })) as unknown as AgentRunner['run'],
+      run: mock(async () => ({ value: { verdict: 'approve' }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
     };
 
     const analyzer = agentStage(

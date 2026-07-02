@@ -168,14 +168,14 @@ describe('cost-cap e2e', () => {
     const runner = makeStagedRunner((args) => {
       const sys = args.systemPromptAppend ?? '';
       if (sys === 'A') {
-        return { value: { verdict: 'proceed', summary: 'go', reasons: [] }, costUsd: 0.10 };
+        return { value: { verdict: 'proceed', summary: 'go', reasons: [] }, costUsd: 0.10, toolUsage: {} };
       }
       if (sys === 'C') {
-        return { value: { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] }, costUsd: 0.45 };
+        return { value: { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] }, costUsd: 0.45, toolUsage: {} };
       }
       if (sys.startsWith('R\n\n')) {
         // Reviewer axis: return clean findings with zero cost.
-        return { value: { findings: [] }, costUsd: 0 };
+        return { value: { findings: [] }, costUsd: 0, toolUsage: {} };
       }
       throw new Error(`unexpected stage prompt: ${sys}`);
     });

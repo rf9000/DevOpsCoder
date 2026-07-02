@@ -51,7 +51,7 @@ function makeRecordingRunner(): AgentRunner {
       else if (i === 1) value = { summary: 'ok', filesChanged: [], commits: [] };
       else if (i >= 2 && i <= 7) value = { findings: [] };
       else value = { summary: 'ok', testFilesChanged: [], commits: [] };
-      return { value: value as unknown as T, costUsd: 0 };
+      return { value: value as unknown as T, costUsd: 0, toolUsage: {} };
     },
   };
 }

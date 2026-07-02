@@ -162,7 +162,7 @@ function makeRunner(
     run: mock(async (args: AgentRunArgs<unknown>) => {
       calls.push(args);
       const value = resultFn ? await resultFn(args) : { findings: [] };
-      return { value, costUsd: costUsdPerCall };
+      return { value, costUsd: costUsdPerCall, toolUsage: {} };
     }) as AgentRunner['run'],
   };
 }

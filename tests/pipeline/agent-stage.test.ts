@@ -51,7 +51,7 @@ describe('agentStage', () => {
     const runner: AgentRunner = {
       run: mock(async (args) => {
         seenArgs.push(args as { prompt: string; schema: unknown; tools?: string[]; model?: string; signal?: AbortSignal });
-        return { value: { verdict: 'proceed', taskSummary: 'do x' }, costUsd: 0.42 };
+        return { value: { verdict: 'proceed', taskSummary: 'do x' }, costUsd: 0.42, toolUsage: {} };
       }) as AgentRunner['run'],
     };
     const stage = agentStage(
@@ -80,7 +80,7 @@ describe('agentStage', () => {
   });
 
   it('uses canRun option when provided, defaulting to always-true', async () => {
-    const runner: AgentRunner = { run: mock(async () => ({ value: { verdict: 'proceed' }, costUsd: 0 })) as AgentRunner['run'] };
+    const runner: AgentRunner = { run: mock(async () => ({ value: { verdict: 'proceed' }, costUsd: 0, toolUsage: {} })) as AgentRunner['run'] };
     const restricted = agentStage(
       {
         name: 'restricted',
@@ -106,7 +106,7 @@ describe('agentStage', () => {
   });
 
   it('exposes the configured stage name', () => {
-    const runner: AgentRunner = { run: mock(async () => ({ value: { verdict: 'proceed' }, costUsd: 0 })) as AgentRunner['run'] };
+    const runner: AgentRunner = { run: mock(async () => ({ value: { verdict: 'proceed' }, costUsd: 0, toolUsage: {} })) as AgentRunner['run'] };
     const stage = agentStage(
       {
         name: 'analyzer',
