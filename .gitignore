@@ -8,3 +8,6 @@ coverage/
 .DS_Store
 .claude/settings*
 .claude/todos*
+.claude/
+.mcp.json
+.tools/
