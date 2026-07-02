@@ -28,6 +28,8 @@ export interface AgentRunResult<T> {
   value: T;
   /** Cumulative cost (USD) reported by the SDK for this single run. May be 0 if the SDK didn't return a cost (e.g., during a failure or a non-result message). */
   costUsd: number;
+  /** Tally of tool invocations by tool name. Maps tool name (e.g., 'Edit', 'Bash') to the count of tool_use blocks in assistant messages. */
+  toolUsage: Record<string, number>;
 }
 
 export interface AgentRunner {

@@ -73,6 +73,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
     async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       let result: string | undefined;
       let costUsd = 0;
+      const toolUsage: Record<string, number> = {};
 
       const options = buildQueryOptions(args, deps);
 
@@ -101,6 +102,14 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
             result = message.result;
           }
         }
+
+        if (message.type === 'assistant') {
+          for (const block of message.message.content) {
+            if (block.type === 'tool_use') {
+              toolUsage[block.name] = (toolUsage[block.name] ?? 0) + 1;
+            }
+          }
+        }
       }
 
       if (result === undefined) {
@@ -126,7 +135,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           `Schema validation failed: ${issues}`,
         );
       }
-      return { value: validated.data, costUsd };
+      return { value: validated.data, costUsd, toolUsage };
     },
   };
 }

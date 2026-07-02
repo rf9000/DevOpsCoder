@@ -13,7 +13,8 @@ type QueryMessage =
   | { type: 'result'; subtype: 'success'; result: string; total_cost_usd?: number; usage: { input_tokens?: number; output_tokens?: number }; num_turns: number }
   | { type: 'result'; subtype: 'error_max_turns' | 'error_during_generation'; total_cost_usd?: number; usage: { input_tokens?: number; output_tokens?: number }; num_turns: number }
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; tool: string; input: unknown };
+  | { type: 'tool_use'; tool: string; input: unknown }
+  | { type: 'assistant'; message: { content: Array<{ type: 'tool_use'; id: string; name: string; input: unknown } | { type: 'text'; text: string }> } };
 
 let _queryImpl: (opts: unknown) => AsyncGenerator<QueryMessage> = async function* defaultImpl() {
   yield {
@@ -264,5 +265,54 @@ describe('createClaudeAgentRunner', () => {
       { config: baseConfig, logger: createLogger() },
     );
     expect(opts['abortSignal']).toBe(ctrl.signal);
+  });
+
+  it('tallies tool_use blocks from assistant messages', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: '1', name: 'Edit', input: {} },
+            { type: 'tool_use', id: '2', name: 'Bash', input: {} },
+          ],
+        },
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 10, output_tokens: 5 },
+        num_turns: 1,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.toolUsage).toEqual({ Edit: 1, Bash: 1 });
+  });
+
+  it('returns empty toolUsage when no tool_use blocks are present', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'thinking...' }],
+        },
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 10, output_tokens: 5 },
+        num_turns: 1,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.toolUsage).toEqual({});
   });
 });
