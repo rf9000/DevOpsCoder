@@ -90,14 +90,15 @@ describe('runPollCycle', () => {
   it('aggregates outcomes across all candidate WIs', async () => {
     const ado = makeAdo([101, 102, 103, 104]);
     const proc = makeProcessor(async (id) => {
-      if (id === 101) return { kind: 'completed', workItemId: id, costUsd: 0 };
-      if (id === 102) return { kind: 'paused', workItemId: id, stage: 'await-human', costUsd: 0 };
+      if (id === 101) return { kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} };
+      if (id === 102) return { kind: 'paused', workItemId: id, stage: 'await-human', costUsd: 0, toolUsage: {} };
       if (id === 103)
         return {
           kind: 'failed',
           workItemId: id,
           error: { stage: 'x', message: 'boom', at: 'now' },
           costUsd: 0,
+          toolUsage: {},
         };
       return { kind: 'skipped', workItemId: id, reason: 'closed-state' };
     });
@@ -121,7 +122,7 @@ describe('runPollCycle', () => {
 
   it('queries ADO with the configured trigger tag', async () => {
     const ado = makeAdo([]);
-    const proc = makeProcessor(async (id) => ({ kind: 'completed', workItemId: id, costUsd: 0 }));
+    const proc = makeProcessor(async (id) => ({ kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} }));
     await runPollCycle({
       config: { ...baseConfig, triggerTag: 'custom-tag' },
       logger: createLogger(),
@@ -148,7 +149,7 @@ describe('runPollCycle', () => {
     const seen: number[] = [];
     const proc = makeProcessor(async (id) => {
       seen.push(id);
-      return { kind: 'completed', workItemId: id, costUsd: 0 };
+      return { kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} };
     });
     const stats = await runPollCycle({
       config: baseConfig,
@@ -170,7 +171,7 @@ describe('runPollCycle', () => {
       peak = Math.max(peak, active);
       await new Promise((r) => setTimeout(r, 5));
       active--;
-      return { kind: 'completed', workItemId: id, costUsd: 0 };
+      return { kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} };
     });
     const ado = makeAdo([1, 2, 3, 4, 5, 6, 7, 8]);
     await runPollCycle({
@@ -188,7 +189,7 @@ describe('runPollCycle', () => {
   it('counts processor exceptions as failed without aborting the cycle', async () => {
     const proc = makeProcessor(async (id) => {
       if (id === 2) throw new Error('processor blew up');
-      return { kind: 'completed', workItemId: id, costUsd: 0 };
+      return { kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} };
     });
     const ado = makeAdo([1, 2, 3]);
     const stats = await runPollCycle({
@@ -205,7 +206,7 @@ describe('runPollCycle', () => {
   });
 
   it('returns zero stats and does not call the processor when no candidates', async () => {
-    const proc = makeProcessor(async (id) => ({ kind: 'completed', workItemId: id, costUsd: 0 }));
+    const proc = makeProcessor(async (id) => ({ kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} }));
     const ado = makeAdo([]);
     const stats = await runPollCycle({
       config: baseConfig,
@@ -232,7 +233,7 @@ describe('runPollCycle', () => {
     const proc = makeProcessor(async (id) => {
       processed++;
       if (processed === 1) abortFlag.aborted = true;
-      return { kind: 'completed', workItemId: id, costUsd: 0 };
+      return { kind: 'completed', workItemId: id, costUsd: 0, toolUsage: {} };
     });
     const ado = makeAdo([1, 2, 3, 4, 5]);
     const stats = await runPollCycle({
@@ -263,6 +264,7 @@ describe('runPollCycle', () => {
           severity: 'reject',
           rejectCount: 1,
           costUsd: 0,
+          toolUsage: {},
         };
       return {
         kind: 'rejected',
@@ -270,6 +272,7 @@ describe('runPollCycle', () => {
         severity: 'blocked',
         rejectCount: 3,
         costUsd: 0,
+        toolUsage: {},
       };
     });
     const stats = await runPollCycle({
@@ -292,6 +295,7 @@ describe('runPollCycle', () => {
       kind: 'completed',
       workItemId: id,
       costUsd: 0.42,
+      toolUsage: {},
     }));
     await runPollCycle({
       config: baseConfig,
@@ -304,6 +308,28 @@ describe('runPollCycle', () => {
     expect(captured.infoLines.some((l) => l.includes('(cost: $0.42)'))).toBe(true);
   });
 
+  it('completed outcome log includes tool-usage suffix after the cost segment', async () => {
+    const captured = makeCaptureLogger();
+    const ado = makeAdo([411]);
+    const proc = makeProcessor(async (id) => ({
+      kind: 'completed',
+      workItemId: id,
+      costUsd: 0.42,
+      toolUsage: { Edit: 5, Bash: 2 },
+    }));
+    await runPollCycle({
+      config: baseConfig,
+      logger: captured,
+      ado,
+      store,
+      processor: proc,
+      abortFlag: createAbortFlag(),
+    });
+    const line = captured.infoLines.find((l) => l.includes('completed'));
+    expect(line).toBeDefined();
+    expect(line).toContain('(cost: $0.42, tools: Edit×5, Bash×2)');
+  });
+
   it('paused outcome log includes cost suffix and stage', async () => {
     const captured = makeCaptureLogger();
     const ado = makeAdo([402]);
@@ -312,6 +338,7 @@ describe('runPollCycle', () => {
       workItemId: id,
       stage: 'await-human',
       costUsd: 0.10,
+      toolUsage: {},
     }));
     await runPollCycle({
       config: baseConfig,
@@ -327,6 +354,30 @@ describe('runPollCycle', () => {
     expect(line).toContain('(cost: $0.10)');
   });
 
+  it('paused outcome log includes tool-usage suffix', async () => {
+    const captured = makeCaptureLogger();
+    const ado = makeAdo([412]);
+    const proc = makeProcessor(async (id) => ({
+      kind: 'paused',
+      workItemId: id,
+      stage: 'await-human',
+      costUsd: 0.10,
+      toolUsage: { Write: 1 },
+    }));
+    await runPollCycle({
+      config: baseConfig,
+      logger: captured,
+      ado,
+      store,
+      processor: proc,
+      abortFlag: createAbortFlag(),
+    });
+    const line = captured.infoLines.find((l) => l.includes('paused'));
+    expect(line).toBeDefined();
+    expect(line).toContain('await-human');
+    expect(line).toContain('(cost: $0.10, tools: Write×1)');
+  });
+
   it('failed outcome error log includes cost suffix and stage + message', async () => {
     const captured = makeCaptureLogger();
     const ado = makeAdo([403]);
@@ -335,6 +386,7 @@ describe('runPollCycle', () => {
       workItemId: id,
       error: { stage: 'coder', message: 'oops', at: 'now' },
       costUsd: 1.23,
+      toolUsage: {},
     }));
     await runPollCycle({
       config: baseConfig,
@@ -351,6 +403,31 @@ describe('runPollCycle', () => {
     expect(line).toContain('(cost: $1.23)');
   });
 
+  it('failed outcome error log includes tool-usage suffix', async () => {
+    const captured = makeCaptureLogger();
+    const ado = makeAdo([413]);
+    const proc = makeProcessor(async (id) => ({
+      kind: 'failed',
+      workItemId: id,
+      error: { stage: 'coder', message: 'oops', at: 'now' },
+      costUsd: 1.23,
+      toolUsage: { Bash: 3 },
+    }));
+    await runPollCycle({
+      config: baseConfig,
+      logger: captured,
+      ado,
+      store,
+      processor: proc,
+      abortFlag: createAbortFlag(),
+    });
+    const line = captured.errorLines.find((l) => l.includes('failed'));
+    expect(line).toBeDefined();
+    expect(line).toContain('coder');
+    expect(line).toContain('oops');
+    expect(line).toContain('(cost: $1.23, tools: Bash×3)');
+  });
+
   it('rejected outcome log includes cost suffix and severity + count', async () => {
     const captured = makeCaptureLogger();
     const ado = makeAdo([404]);
@@ -360,6 +437,7 @@ describe('runPollCycle', () => {
       severity: 'reject',
       rejectCount: 2,
       costUsd: 0.05,
+      toolUsage: {},
     }));
     await runPollCycle({
       config: baseConfig,
@@ -374,6 +452,31 @@ describe('runPollCycle', () => {
     expect(line).toContain('reject');
     expect(line).toContain('count=2');
     expect(line).toContain('cost: $0.05');
+  });
+
+  it('rejected outcome log has no tools fragment when toolUsage is empty', async () => {
+    const captured = makeCaptureLogger();
+    const ado = makeAdo([414]);
+    const proc = makeProcessor(async (id) => ({
+      kind: 'rejected',
+      workItemId: id,
+      severity: 'reject',
+      rejectCount: 2,
+      costUsd: 0.05,
+      toolUsage: {},
+    }));
+    await runPollCycle({
+      config: baseConfig,
+      logger: captured,
+      ado,
+      store,
+      processor: proc,
+      abortFlag: createAbortFlag(),
+    });
+    const line = captured.infoLines.find((l) => l.includes('rejected'));
+    expect(line).toBeDefined();
+    expect(line).toContain('cost: $0.05');
+    expect(line).not.toContain('tools:');
   });
 
   it('skipped outcome log does NOT include cost suffix', async () => {

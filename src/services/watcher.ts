@@ -5,6 +5,7 @@ import type { Logger } from '../utils/logger.ts';
 import type { Processor } from './processor.ts';
 import type { AbortFlag } from '../pipeline/stage.ts';
 import { runPool } from '../utils/pool.ts';
+import { formatToolUsage } from '../utils/tool-usage-tracker.ts';
 
 export interface WatcherDeps {
   config: AppConfig;
@@ -46,15 +47,15 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
       switch (outcome.kind) {
         case 'completed':
           stats.completed++;
-          logger.info(`WI ${id}: completed (cost: $${outcome.costUsd.toFixed(2)})`);
+          logger.info(`WI ${id}: completed (cost: $${outcome.costUsd.toFixed(2)}${formatToolUsage(outcome.toolUsage)})`);
           break;
         case 'paused':
           stats.paused++;
-          logger.info(`WI ${id}: paused at ${outcome.stage} (cost: $${outcome.costUsd.toFixed(2)})`);
+          logger.info(`WI ${id}: paused at ${outcome.stage} (cost: $${outcome.costUsd.toFixed(2)}${formatToolUsage(outcome.toolUsage)})`);
           break;
         case 'failed':
           stats.failed++;
-          logger.error(`WI ${id}: failed at ${outcome.error.stage}: ${outcome.error.message} (cost: $${outcome.costUsd.toFixed(2)})`);
+          logger.error(`WI ${id}: failed at ${outcome.error.stage}: ${outcome.error.message} (cost: $${outcome.costUsd.toFixed(2)}${formatToolUsage(outcome.toolUsage)})`);
           break;
         case 'skipped':
           stats.skipped++;
@@ -63,7 +64,7 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
         case 'rejected':
           stats.rejected++;
           logger.info(
-            `WI ${id}: rejected (${outcome.severity}, count=${outcome.rejectCount}, cost: $${outcome.costUsd.toFixed(2)})`,
+            `WI ${id}: rejected (${outcome.severity}, count=${outcome.rejectCount}, cost: $${outcome.costUsd.toFixed(2)}${formatToolUsage(outcome.toolUsage)})`,
           );
           break;
       }
