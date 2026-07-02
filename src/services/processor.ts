@@ -312,6 +312,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       severity,
       rejectCount: newCount,
       costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+      toolUsage: (state.outputs.toolUsage as Record<string, number> | undefined) ?? {},
     };
   }
 
@@ -399,7 +400,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           if (!config.dryRun) {
             await ado.removeTagFromWorkItem(workItemId, config.triggerTag);
           }
-          return { kind: 'completed', workItemId, costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0 };
+          return {
+            kind: 'completed',
+            workItemId,
+            costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+            toolUsage: (final.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+          };
         }
 
         // Paused path
@@ -408,7 +414,13 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           last?.outcome === 'pause'
             ? last.stage
             : (final.currentStage ?? 'unknown');
-        return { kind: 'paused', workItemId, stage: pausedStage, costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0 };
+        return {
+          kind: 'paused',
+          workItemId,
+          stage: pausedStage,
+          costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+          toolUsage: (final.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+        };
       } catch (err) {
         const persisted = store.load(workItemId);
 
@@ -454,7 +466,13 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             () => ado.addTagToWorkItem(workItemId, config.blockedTag),
           );
         }
-        return { kind: 'failed', workItemId, error: terminalError, costUsd: (persisted?.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0 };
+        return {
+          kind: 'failed',
+          workItemId,
+          error: terminalError,
+          costUsd: (persisted?.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+          toolUsage: (persisted?.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+        };
       }
     },
   };

@@ -150,7 +150,13 @@ describe('createProcessor', () => {
       abortFlag: { aborted: false },
     });
     const outcome = await proc.processWorkItem(101);
-    expect(outcome).toEqual({ kind: 'paused', workItemId: 101, stage: 'await-human', costUsd: 0 });
+    expect(outcome).toEqual({
+      kind: 'paused',
+      workItemId: 101,
+      stage: 'await-human',
+      costUsd: 0,
+      toolUsage: {},
+    });
     expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
@@ -226,6 +232,7 @@ describe('createProcessor', () => {
       severity: 'reject',
       rejectCount: 1,
       costUsd: 0,
+      toolUsage: {},
     });
     const saved = store.load(101)!;
     expect(saved.rejectCount).toBe(1);
@@ -1032,6 +1039,158 @@ describe('createProcessor', () => {
     expect(outcome.kind).toBe('completed');
     if (outcome.kind === 'completed') {
       expect(outcome.costUsd).toBe(0);
+    }
+  });
+
+  // ── Plan 8 task-05: toolUsage on ProcessOutcome ──────────────────────────
+
+  it('completed outcome carries toolUsage from state.outputs.toolUsage', async () => {
+    // Pre-seed state with tool-usage info
+    store.save({
+      workItemId: 101,
+      slug: 'fix-login',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      attempts: {},
+      outputs: {
+        toolUsage: { Edit: 3, Bash: 1 },
+      },
+    });
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [], // empty pipeline → immediate completion
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.toolUsage).toEqual({ Edit: 3, Bash: 1 });
+    }
+  });
+
+  it('paused outcome carries toolUsage from state.outputs.toolUsage', async () => {
+    // Pre-seed state with tool-usage info
+    store.save({
+      workItemId: 101,
+      slug: 'fix-login',
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      attempts: {},
+      outputs: {
+        toolUsage: { Edit: 3, Bash: 1 },
+      },
+    });
+
+    const pauseStage: Stage = {
+      name: 'await-human',
+      canRun: () => true,
+      execute: async (state) => {
+        state.currentStage = 'await-human';
+        throw new PipelinePauseError('waiting for human input');
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [pauseStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('paused');
+    if (outcome.kind === 'paused') {
+      expect(outcome.toolUsage).toEqual({ Edit: 3, Bash: 1 });
+    }
+  });
+
+  it('failed outcome carries toolUsage from persisted state.outputs.toolUsage', async () => {
+    const boomStage: Stage = {
+      name: 'coder',
+      canRun: () => true,
+      execute: async (state) => {
+        // Simulate tool usage accumulated before failure
+        state.outputs.toolUsage = { Edit: 3, Bash: 1 };
+        throw new Error('coder exploded');
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind === 'failed') {
+      expect(outcome.toolUsage).toEqual({ Edit: 3, Bash: 1 });
+    }
+  });
+
+  it('rejected outcome (fresh dispatch) carries toolUsage from state.outputs.toolUsage', async () => {
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.toolUsage = { Edit: 3, Bash: 1 };
+        throw new PipelineRejectError({
+          reasons: ['insufficient AC'],
+          summary: 'WI is not ready',
+        });
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('rejected');
+    if (outcome.kind === 'rejected') {
+      expect(outcome.toolUsage).toEqual({ Edit: 3, Bash: 1 });
+    }
+  });
+
+  it('missing-toolUsage fallback: outcome.toolUsage === {} when state.outputs.toolUsage is undefined', async () => {
+    // No toolUsage seeded — state.outputs.toolUsage will be undefined
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [], // empty pipeline → immediate completion
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.toolUsage).toEqual({});
     }
   });
 
