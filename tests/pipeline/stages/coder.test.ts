@@ -107,6 +107,7 @@ interface RecordingRunner extends AgentRunner {
 function makeRunner(
   result: CoderOutput | ((call: number) => Promise<CoderOutput>),
   costUsd = 0.42,
+  toolUsage: Record<string, number> = {},
 ): RecordingRunner {
   const calls: AgentRunArgs<unknown>[] = [];
   let i = 0;
@@ -115,7 +116,7 @@ function makeRunner(
     async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result(i++) : result;
-      return { value: out as unknown as T, costUsd, toolUsage: {} };
+      return { value: out as unknown as T, costUsd, toolUsage };
     },
   };
 }
@@ -242,7 +243,7 @@ describe('buildCoderUserPrompt', () => {
 
 describe('createCoderStage', () => {
   it('happy path: stores CoderOutput in state.outputs.coder and returns state', async () => {
-    const runner = makeRunner(successOutput);
+    const runner = makeRunner(successOutput, 0.42, { Edit: 2, Bash: 1 });
     const stage = createCoderStage({
       config: baseConfig,
       runner,
@@ -257,6 +258,8 @@ describe('createCoderStage', () => {
     // Cost tracking: coder records costUsd returned by the runner
     expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
     expect((result.outputs.cost as PipelineCostInfo).perStage['coder']).toBeCloseTo(0.42, 4);
+    // Tool-usage tracking: coder records toolUsage returned by the runner
+    expect(result.outputs.toolUsage).toEqual({ Edit: 2, Bash: 1 });
   });
 
   it('throws if upstream outputs missing (analyzer/wiContext/worktree)', async () => {

@@ -70,6 +70,7 @@ interface RecordingRunner extends AgentRunner {
 function makeRunner(
   result: AnalyzerOutput | (() => Promise<AnalyzerOutput>),
   costUsd = 0.42,
+  toolUsage: Record<string, number> = {},
 ): RecordingRunner {
   const calls: AgentRunArgs<unknown>[] = [];
   return {
@@ -77,7 +78,7 @@ function makeRunner(
     async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result() : result;
-      return { value: out as unknown as T, costUsd, toolUsage: {} };
+      return { value: out as unknown as T, costUsd, toolUsage };
     },
   };
 }
@@ -156,11 +157,15 @@ describe('buildAnalyzerUserPrompt', () => {
 
 describe('createAnalyzerStage', () => {
   it('proceed: stores AnalyzerOutput in state.outputs.analyzer and returns state', async () => {
-    const runner = makeRunner({
-      verdict: 'proceed',
-      summary: 'WI is ready',
-      reasons: [],
-    });
+    const runner = makeRunner(
+      {
+        verdict: 'proceed',
+        summary: 'WI is ready',
+        reasons: [],
+      },
+      0.42,
+      { Edit: 2, Bash: 1 },
+    );
     const stage = createAnalyzerStage({
       config: baseConfig,
       ado: makeMockAdo(),
@@ -178,6 +183,8 @@ describe('createAnalyzerStage', () => {
     // Cost tracking: analyzer records costUsd returned by the runner
     expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
     expect((result.outputs.cost as PipelineCostInfo).perStage['analyzer']).toBeCloseTo(0.42, 4);
+    // Tool-usage tracking: analyzer records toolUsage returned by the runner
+    expect(result.outputs.toolUsage).toEqual({ Edit: 2, Bash: 1 });
   });
 
   it('reject: throws PipelineRejectError carrying reasons + summary + questions', async () => {

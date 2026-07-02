@@ -20,6 +20,7 @@ import {
   defaultResetWorktree,
 } from './_stage-helpers.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
+import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
 export { MAX_TRANSIENT_RETRIES } from './_stage-helpers.ts';
 
@@ -188,7 +189,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         try {
-          const { value: output, costUsd } = await deps.runner.run<TestAuthorOutput>({
+          const { value: output, costUsd, toolUsage } = await deps.runner.run<TestAuthorOutput>({
             prompt,
             schema: testAuthorOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
@@ -202,6 +203,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
           });
           // Only record cost on success (failed attempts threw before this line).
           createCostTracker(state).add('test-author', costUsd);
+          createToolUsageTracker(state).add('test-author', toolUsage);
           state.outputs.testAuthor = output;
           return state;
         } catch (err) {

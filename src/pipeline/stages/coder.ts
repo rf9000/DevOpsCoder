@@ -21,6 +21,7 @@ import {
   defaultResetWorktree,
 } from './_stage-helpers.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
+import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
 export { MAX_TRANSIENT_RETRIES } from './_stage-helpers.ts';
 
@@ -220,7 +221,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         try {
-          const { value: output, costUsd } = await deps.runner.run<CoderOutput>({
+          const { value: output, costUsd, toolUsage } = await deps.runner.run<CoderOutput>({
             prompt,
             schema: coderOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
@@ -234,6 +235,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
           });
           // Only record cost on success (failed attempts threw before this line).
           createCostTracker(state).add('coder', costUsd);
+          createToolUsageTracker(state).add('coder', toolUsage);
           state.outputs.coder = output;
           return state;
         } catch (err) {
