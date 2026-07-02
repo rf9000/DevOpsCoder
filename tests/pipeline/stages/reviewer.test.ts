@@ -14,6 +14,7 @@
  * T10 — attempts counter increments (1 on first run, 2 on second)
  * T11 — Promise.all fail-fast: throws if any axis runner.run rejects
  * T12 — buildReviewerUserPrompt renders expected sections; test-author absent when undefined
+ * T13 — toolUsage from all 6 axes is merged into state.outputs.toolUsage
  */
 import { describe, it, expect, mock } from 'bun:test';
 import {
@@ -151,18 +152,21 @@ function makeDeps(
   };
 }
 
-/** A runner that returns empty findings for every axis call (wrapped in {value, costUsd}). */
+/** A runner that returns empty findings for every axis call (wrapped in {value, costUsd, toolUsage}). */
 function makeRunner(
   resultFn?: (args: AgentRunArgs<unknown>) => Promise<unknown>,
   costUsdPerCall = 0.10,
+  toolUsagePerCall?: Record<string, number>[],
 ): AgentRunner & { calls: AgentRunArgs<unknown>[] } {
   const calls: AgentRunArgs<unknown>[] = [];
+  let callIdx = 0;
   return {
     calls,
     run: mock(async (args: AgentRunArgs<unknown>) => {
+      const idx = callIdx++;
       calls.push(args);
       const value = resultFn ? await resultFn(args) : { findings: [] };
-      return { value, costUsd: costUsdPerCall, toolUsage: {} };
+      return { value, costUsd: costUsdPerCall, toolUsage: toolUsagePerCall?.[idx] ?? {} };
     }) as AgentRunner['run'],
   };
 }
@@ -472,5 +476,23 @@ describe('createReviewerStage', () => {
     expect(prompt).toContain('## Test-author summary');
     expect(prompt).toContain('Added login tests.');
     expect(prompt).toContain('tests/login.test.ts');
+  });
+
+  // -------------------------------------------------------------------------
+  // T13 — toolUsage merge across the 6 axis calls
+  // -------------------------------------------------------------------------
+
+  it('T13: merges toolUsage across all 6 axis calls into state.outputs.toolUsage', async () => {
+    const runner = makeRunner(undefined, 0.10, [
+      { Read: 1 },
+      { Read: 1 },
+      { Read: 1 },
+      { Grep: 1 },
+      { Grep: 1 },
+      { Grep: 1 },
+    ]);
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    expect(result.outputs.toolUsage).toEqual({ Read: 3, Grep: 3 });
   });
 });

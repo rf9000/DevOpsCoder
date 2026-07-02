@@ -14,6 +14,7 @@ import type { AnalyzerOutput } from './analyzer.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { composeCanUseTool, aggregateReviewerFindings } from './_stage-helpers.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
+import { createToolUsageTracker, mergeToolUsage } from '../../utils/tool-usage-tracker.ts';
 
 // ---------------------------------------------------------------------------
 // Review axes
@@ -248,6 +249,9 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       // Sum costUsd from all 6 axis runs and record as a single per-stage entry.
       const totalCostUsd = axisResults.reduce((sum, r) => sum + r.costUsd, 0);
       createCostTracker(state).add('reviewer', totalCostUsd);
+
+      const mergedToolUsage = mergeToolUsage(axisResults.map((r) => r.toolUsage));
+      createToolUsageTracker(state).add('reviewer', mergedToolUsage);
 
       const flat = axisResults.flatMap((r) => r.value.findings);
       const findings = aggregateReviewerFindings(flat);
