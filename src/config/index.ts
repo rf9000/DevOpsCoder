@@ -31,6 +31,7 @@ const envSchema = z.object({
   CONTINIA_APP_PATHS: z.string().min(1, 'CONTINIA_APP_PATHS is required'),
   CONTINIA_TEST_APP_PATHS: z.string().optional(),
   MAX_TEST_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
+  CONTINIA_TEST_TIMEOUT_S: z.coerce.number().int().positive().default(600),
   STAGE_TIMEOUT_MS_TEST_AUTHOR: z.coerce.number().int().positive().default(1_200_000),
   STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR: z.coerce.number().int().positive().default(120_000),
   STAGE_TIMEOUT_MS_WORKTREE_SETUP: z.coerce.number().int().positive().default(60_000),
@@ -121,6 +122,7 @@ export function loadConfig(
     continiaAppPaths,
     continiaTestAppPaths,
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
+    continiaTestTimeoutS: p.CONTINIA_TEST_TIMEOUT_S,
     dryRun: false,
   };
 }

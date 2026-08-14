@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+﻿import { describe, it, expect, mock } from 'bun:test';
 import { revisionLoop } from '../../src/pipeline/revision-loop.ts';
 import type { Stage, PipelineContext } from '../../src/pipeline/stage.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
@@ -14,7 +14,7 @@ function mockContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
   };
   return {
     config,
@@ -170,3 +170,4 @@ describe('revisionLoop', () => {
     expect(stage.name).toBe('rl');
   });
 });
+

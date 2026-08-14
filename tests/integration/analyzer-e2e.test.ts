@@ -1,4 +1,4 @@
-import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
+﻿import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -42,7 +42,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 };
 
 function makeAdo(tagged: number[]): AdoClient {
@@ -128,7 +128,7 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('cycle 1: analyzer rejects a fresh WI → reject outcome with rejectCount=1, need-input tag added', async () => {
+  it('cycle 1: analyzer rejects a fresh WI â†’ reject outcome with rejectCount=1, need-input tag added', async () => {
     const ado = makeAdo([301]);
     const runner = makeRunner(async () => ({
       verdict: 'reject',
@@ -286,3 +286,4 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     expect(runner.calls).toHaveLength(9);
   });
 });
+

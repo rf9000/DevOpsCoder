@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+﻿import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -26,7 +26,7 @@ function makeContext(): PipelineContext {
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'claude-opus-4-7', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+    claudeModel: 'claude-opus-4-7', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
   };
   return {
     config,
@@ -74,7 +74,7 @@ function runnerStage<T>(
 }
 
 describe('orchestrator end-to-end (mock stages)', () => {
-  it('analyzer (proceed) → coder → revisionLoop(coder, reviewer approve) → finalizer', async () => {
+  it('analyzer (proceed) â†’ coder â†’ revisionLoop(coder, reviewer approve) â†’ finalizer', async () => {
     const dir = tmpStateDir();
     const store = new PipelineStateStore(dir);
     const ctx = makeContext();
@@ -171,3 +171,4 @@ describe('orchestrator end-to-end (mock stages)', () => {
     expect(resumed.outputs.tailRan).toBe(true);
   });
 });
+

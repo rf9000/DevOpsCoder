@@ -238,5 +238,15 @@ describe('loadConfig', () => {
       const config = loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_BUILD_AND_TEST: '7200000' });
       expect(config.stageTimeoutMs['build-and-test']).toBe(7_200_000);
     });
+
+    it('defaults continiaTestTimeoutS to 600 seconds', () => {
+      const config = loadConfig(validEnv);
+      expect(config.continiaTestTimeoutS).toBe(600);
+    });
+
+    it('CONTINIA_TEST_TIMEOUT_S overrides the per-test-run timeout', () => {
+      const config = loadConfig({ ...validEnv, CONTINIA_TEST_TIMEOUT_S: '900' });
+      expect(config.continiaTestTimeoutS).toBe(900);
+    });
   });
 });

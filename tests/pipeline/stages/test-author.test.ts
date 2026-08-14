@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+﻿import { describe, it, expect } from 'bun:test';
 import {
   createTestAuthorStage,
   buildTestAuthorUserPrompt,
@@ -42,7 +42,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 };
 
 const sampleAnalyzer: AnalyzerOutput = {
@@ -246,3 +246,4 @@ describe('createTestAuthorStage', () => {
     expect((await canUseTool('Bash', { command: 'rm src/login.ts' })).behavior).toBe('deny');
   });
 });
+

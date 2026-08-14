@@ -243,7 +243,10 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         if (compiled) {
           // Strictly sequential — BC forbids parallel test jobs on one env.
           for (const cu of codeunits) {
-            const run = await deps.continiaCli.runTests(env.envId, cu.id, callOpts);
+            const run = await deps.continiaCli.runTests(env.envId, cu.id, {
+              ...callOpts,
+              timeoutSeconds: config.continiaTestTimeoutS,
+            });
             testRuns.push({
               attempt,
               codeunitId: cu.id,

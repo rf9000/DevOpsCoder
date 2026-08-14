@@ -1,11 +1,11 @@
-/**
+﻿/**
  * Tests for createWorktreeTeardownStage (Plan 5 task-10).
  *
  * Coverage map:
- *  T1 — happy path: removeWorktree called once with correct args; state returned unchanged
- *  T2 — best-effort on failure: removeWorktree throws; stage does NOT rethrow; logger.warn called; state unchanged
- *  T3 — no-op when state.outputs.worktree is undefined: removeWorktree NOT called; no log; state unchanged
- *  T4 — returns state unchanged on error (deep-equal input vs output when removeWorktree throws)
+ *  T1 â€” happy path: removeWorktree called once with correct args; state returned unchanged
+ *  T2 â€” best-effort on failure: removeWorktree throws; stage does NOT rethrow; logger.warn called; state unchanged
+ *  T3 â€” no-op when state.outputs.worktree is undefined: removeWorktree NOT called; no log; state unchanged
+ *  T4 â€” returns state unchanged on error (deep-equal input vs output when removeWorktree throws)
  */
 import { describe, it, expect, mock } from 'bun:test';
 import { createWorktreeTeardownStage } from '../../../src/pipeline/stages/worktree-teardown.ts';
@@ -59,7 +59,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 };
 
 function makeCtx() {
@@ -93,7 +93,7 @@ function makeWorktreeManager(overrides: Partial<WorktreeManager> = {}): Worktree
 // ---------------------------------------------------------------------------
 
 describe('createWorktreeTeardownStage', () => {
-  // T1 — happy path
+  // T1 â€” happy path
   it('T1: calls removeWorktree once with correct args and returns state unchanged', async () => {
     const mgr = makeWorktreeManager();
     const logger = makeLogger();
@@ -118,7 +118,7 @@ describe('createWorktreeTeardownStage', () => {
     expect(result.outputs.worktree).toEqual(sampleWorktree);
   });
 
-  // T2 — best-effort on failure
+  // T2 â€” best-effort on failure
   it('T2: does NOT rethrow when removeWorktree throws; logs warn; returns state unchanged', async () => {
     const removeError = new Error('permission denied');
     const mgr = makeWorktreeManager({
@@ -148,7 +148,7 @@ describe('createWorktreeTeardownStage', () => {
     expect(result).toBe(inputState);
   });
 
-  // T3 — no-op when state.outputs.worktree is undefined
+  // T3 â€” no-op when state.outputs.worktree is undefined
   it('T3: no-ops silently when state.outputs.worktree is undefined', async () => {
     const mgr = makeWorktreeManager();
     const logger = makeLogger();
@@ -171,7 +171,7 @@ describe('createWorktreeTeardownStage', () => {
     expect(result.outputs.worktree).toBeUndefined();
   });
 
-  // T4 — deep-equal state on error path
+  // T4 â€” deep-equal state on error path
   it('T4: state is deep-equal to input state when removeWorktree throws', async () => {
     const mgr = makeWorktreeManager({
       removeWorktree: mock(async () => {
@@ -197,3 +197,4 @@ describe('createWorktreeTeardownStage', () => {
     expect(result).toEqual(snapshot);
   });
 });
+

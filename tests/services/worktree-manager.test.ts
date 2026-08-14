@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+﻿import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -88,7 +88,7 @@ function makeConfig(targetRepoPath: string, worktreeBase: string): AppConfig {
     claudeModel: 'claude-opus-4-7',
     stateDir: '.state',
     assignedToFilter: [],
-    continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+    continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
   };
 }
 
@@ -96,7 +96,7 @@ describe('createWorktreeManager', () => {
   let sandbox: Awaited<ReturnType<typeof setupTestRepo>>;
 
   // setupTestRepo runs ~9 sequential `git` subprocess calls (~9s on Windows).
-  // Bun's default hook timeout is 5s — bump to 30s for these tests.
+  // Bun's default hook timeout is 5s â€” bump to 30s for these tests.
   beforeEach(async () => {
     sandbox = await setupTestRepo();
   }, 30000);
@@ -204,7 +204,7 @@ describe('createWorktreeManager', () => {
     const mgr = createWorktreeManager({
       config: makeConfig(sandbox.targetRepoPath, sandbox.worktreeBase),
     });
-    // No worktree was ever created — remove should not throw
+    // No worktree was ever created â€” remove should not throw
     await expect(
       mgr.removeWorktree({ workItemId: 999, slug: 'nonexistent' }),
     ).resolves.toBeUndefined();
@@ -230,3 +230,4 @@ describe('createWorktreeManager', () => {
     }
   }, 30000);
 });
+

@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+﻿import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -28,7 +28,7 @@ function makeContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
   };
   const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}) };
   return {
@@ -434,7 +434,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { foo: 500 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
       },
     });
     // Stage resolves in 50ms, timeout is 500ms
@@ -460,7 +460,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { slow: 50 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
       },
     });
 
@@ -485,7 +485,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     expect(savedState.terminalError?.stage).toBe('slow');
   });
 
-  // T6: Timer cleared on normal completion — no spurious abort after stage finishes
+  // T6: Timer cleared on normal completion â€” no spurious abort after stage finishes
   it('timer cleared on success: signal stays unaborted after stage completes', async () => {
     const store = makeMockStore();
     const state = createInitialState(101, 'wi');
@@ -497,7 +497,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { fast: 200 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
       },
     });
 
@@ -587,3 +587,4 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     expect(failureEntries.length).toBe(0);
   });
 });
+

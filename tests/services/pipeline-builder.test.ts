@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+﻿import { describe, it, expect, mock } from 'bun:test';
 import { buildPipeline } from '../../src/services/pipeline-builder.ts';
 import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { createLogger } from '../../src/utils/logger.ts';
@@ -37,7 +37,7 @@ const config: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 };
 
 const sampleWorktree: WorktreeContext = {
@@ -129,7 +129,7 @@ function makeRecordingRunner(
 }
 
 describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
-  it('returns the 8-stage pipeline in order: analyzer → worktree-setup → env-provision → revision-loop → test-author → build-and-test → draft-pr-creator → worktree-teardown', () => {
+  it('returns the 8-stage pipeline in order: analyzer â†’ worktree-setup â†’ env-provision â†’ revision-loop â†’ test-author â†’ build-and-test â†’ draft-pr-creator â†’ worktree-teardown', () => {
     const stages = buildPipeline({
       config,
       logger: createLogger(),
@@ -158,7 +158,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
     ]);
   });
 
-  it('end-to-end happy path: analyzer proceeds → coder commits → reviewer approves → test-author commits → draft-pr-creator → worktree-teardown', async () => {
+  it('end-to-end happy path: analyzer proceeds â†’ coder commits â†’ reviewer approves â†’ test-author commits â†’ draft-pr-creator â†’ worktree-teardown', async () => {
     const runner = makeRecordingRunner((args) => {
       const sysPrompt = args.systemPromptAppend ?? '';
       if (sysPrompt === 'A') {
@@ -410,3 +410,4 @@ describe('buildPipeline (Plan 5 full chain)', () => {
     expect(state.outputs.draftPr).toMatchObject({ id: 42, url: 'https://example.com/pr/42' });
   });
 });
+

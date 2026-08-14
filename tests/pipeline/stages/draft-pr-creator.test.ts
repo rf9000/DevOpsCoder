@@ -1,13 +1,13 @@
-/**
+﻿/**
  * Tests for createDraftPrCreatorStage (Plan 5 task-09).
  *
  * Coverage map:
- *  T1 — happy path: pushBranch called once, createPullRequest called once, state.outputs.draftPr set
- *  T2 — PR description has all sections when all upstream outputs are present
- *  T3 — test-author section is omitted when state.outputs.testAuthor is absent
- *  T4 — reviewer note is "Approved with no findings." when reviewer is undefined or approved with empty findings
- *  T5 — throws on push failure; createPullRequest NOT called
- *  T6 — throws on ADO API failure; state.outputs.draftPr NOT set
+ *  T1 â€” happy path: pushBranch called once, createPullRequest called once, state.outputs.draftPr set
+ *  T2 â€” PR description has all sections when all upstream outputs are present
+ *  T3 â€” test-author section is omitted when state.outputs.testAuthor is absent
+ *  T4 â€” reviewer note is "Approved with no findings." when reviewer is undefined or approved with empty findings
+ *  T5 â€” throws on push failure; createPullRequest NOT called
+ *  T6 â€” throws on ADO API failure; state.outputs.draftPr NOT set
  */
 import { describe, it, expect, mock } from 'bun:test';
 import {
@@ -55,7 +55,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 };
 
 const sampleWiCtx: WorkItemContext = {
@@ -162,7 +162,7 @@ function makeAdoClient(overrides: Partial<AdoClient> = {}): AdoClient {
 }
 
 // ---------------------------------------------------------------------------
-// T1 — happy path
+// T1 â€” happy path
 // ---------------------------------------------------------------------------
 
 describe('createDraftPrCreatorStage', () => {
@@ -211,7 +211,7 @@ describe('createDraftPrCreatorStage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // T2 — PR description has all sections
+  // T2 â€” PR description has all sections
   // -------------------------------------------------------------------------
 
   it('T2: PR description has all sections when all upstream outputs are present', async () => {
@@ -267,7 +267,7 @@ describe('createDraftPrCreatorStage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // T3 — test-author section omitted when testAuthor is absent
+  // T3 â€” test-author section omitted when testAuthor is absent
   // -------------------------------------------------------------------------
 
   it('T3: test-author section omitted when testAuthor output is absent', async () => {
@@ -311,7 +311,7 @@ describe('createDraftPrCreatorStage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // T4 — reviewer note "Approved with no findings." for undefined and no-findings
+  // T4 â€” reviewer note "Approved with no findings." for undefined and no-findings
   // -------------------------------------------------------------------------
 
   it('T4: reviewer note is "Approved with no findings." when reviewer is undefined or approved with empty findings', () => {
@@ -383,7 +383,7 @@ describe('createDraftPrCreatorStage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // T5 — throws on push failure; createPullRequest NOT called
+  // T5 â€” throws on push failure; createPullRequest NOT called
   // -------------------------------------------------------------------------
 
   it('T5: throws on push failure; createPullRequest is NOT called', async () => {
@@ -406,7 +406,7 @@ describe('createDraftPrCreatorStage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // T6 — throws on ADO API failure; state.outputs.draftPr NOT set
+  // T6 â€” throws on ADO API failure; state.outputs.draftPr NOT set
   // -------------------------------------------------------------------------
 
   it('T6: throws on ADO API failure; state.outputs.draftPr is NOT set', async () => {
@@ -431,3 +431,4 @@ describe('createDraftPrCreatorStage', () => {
     expect(state.outputs.draftPr).toBeUndefined();
   });
 });
+

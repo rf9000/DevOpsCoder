@@ -1,4 +1,4 @@
-import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
+﻿import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -42,7 +42,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 };
 
 const sampleWorktree: WorktreeContext = {
@@ -143,7 +143,7 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('happy path: analyzer→worktree→coder→reviewer→test-author → completed', async () => {
+  it('happy path: analyzerâ†’worktreeâ†’coderâ†’reviewerâ†’test-author â†’ completed', async () => {
     const runner = makeStagedRunner((args) => {
       const sys = args.systemPromptAppend ?? '';
       if (sys === 'A') return { verdict: 'proceed', summary: 'ready', reasons: [] };
@@ -252,7 +252,7 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
     expect(runner.calls).toHaveLength(11);
   });
 
-  it('coder fails terminally (hard error) → terminal failure + blockedTag added', async () => {
+  it('coder fails terminally (hard error) â†’ terminal failure + blockedTag added', async () => {
     const runner = makeStagedRunner((args) => {
       const sys = args.systemPromptAppend ?? '';
       if (sys === 'A') return { verdict: 'proceed', summary: 'ready', reasons: [] };
@@ -296,3 +296,4 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
     expect(runner.calls).toHaveLength(2);
   });
 });
+

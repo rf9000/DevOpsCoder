@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+﻿import { describe, it, expect, mock } from 'bun:test';
 import { createWorktreeSetupStage } from '../../../src/pipeline/stages/worktree-setup.ts';
 import type {
   WorktreeManager,
@@ -46,7 +46,7 @@ function makeCtx(config: Partial<AppConfig> = {}) {
     claudeModel: 'claude-opus-4-7',
     stateDir: '.state',
     assignedToFilter: [],
-    continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+    continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
     ...config,
   };
   return {
@@ -87,7 +87,7 @@ describe('createWorktreeSetupStage', () => {
     expect(stage.canRun(makeState())).toBe(true);
   });
 
-  it('first-time setup: no persisted worktree → ensureWorktree called without persistedWorktree', async () => {
+  it('first-time setup: no persisted worktree â†’ ensureWorktree called without persistedWorktree', async () => {
     const mgr = makeMgr(sampleCtx);
     const stage = createWorktreeSetupStage({ worktreeManager: mgr });
     const state = await stage.execute(makeState(), makeCtx());
@@ -98,7 +98,7 @@ describe('createWorktreeSetupStage', () => {
     expect(state.outputs.worktree).toEqual(sampleCtx);
   });
 
-  it('re-entry: state.outputs.worktree present → forwarded as persistedWorktree', async () => {
+  it('re-entry: state.outputs.worktree present â†’ forwarded as persistedWorktree', async () => {
     const mgr = makeMgr(sampleCtx);
     const stage = createWorktreeSetupStage({ worktreeManager: mgr });
     const stateWithPrior = makeState({
@@ -139,3 +139,4 @@ describe('createWorktreeSetupStage', () => {
     );
   });
 });
+

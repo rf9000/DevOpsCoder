@@ -138,6 +138,7 @@ const baseConfig: AppConfig = {
   continiaAppPaths: ['Core/Cloud', 'Banking/Cloud'],
   continiaTestAppPaths: ['Banking/Test'],
   maxTestFixAttempts: 2,
+  continiaTestTimeoutS: 600,
   dryRun: false,
 };
 
@@ -165,6 +166,7 @@ interface StageHarness {
   callOrder: string[];
   runnerCalls: AgentRunArgs<unknown>[];
   resets: string[];
+  testOpts: Array<number | undefined>;
 }
 
 function makeHarness(opts: {
@@ -176,6 +178,7 @@ function makeHarness(opts: {
   const callOrder: string[] = [];
   const deployQueue = [...(opts.deployQueue ?? [greenDeploy])];
   const testQueue = [...(opts.testQueue ?? [])];
+  const testOpts: Array<number | undefined> = [];
   const cli: ContiniaCli = {
     createEnvironment: mock(async () => ({ id: 'env-9', status: 'Draft' })),
     startEnvironment: mock(async () => {}),
@@ -198,8 +201,9 @@ function makeHarness(opts: {
       callOrder.push(`deploy:${app}`);
       return deployQueue.length > 1 ? deployQueue.shift()! : deployQueue[0]!;
     }),
-    runTests: mock(async (_e: string, codeunitId: number) => {
+    runTests: mock(async (_e: string, codeunitId: number, o: { timeoutSeconds?: number }) => {
       callOrder.push(`test:${codeunitId}`);
+      testOpts.push(o.timeoutSeconds);
       if (testQueue.length === 0) return greenRun;
       return testQueue.length > 1 ? testQueue.shift()! : testQueue[0]!;
     }),
@@ -239,7 +243,7 @@ function makeHarness(opts: {
       ],
   });
 
-  return { stage, cli, callOrder, runnerCalls, resets };
+  return { stage, cli, callOrder, runnerCalls, resets, testOpts };
 }
 
 function makeStageState(): PipelineState {
@@ -394,5 +398,11 @@ describe('createBuildAndTestStage', () => {
     const state = makeStageState();
     delete state.outputs.environment;
     await expect(stage.execute(state, makeStageCtx())).rejects.toThrow(/environment/);
+  });
+
+  it('forwards config.continiaTestTimeoutS to every runTests call', async () => {
+    const { stage, testOpts } = makeHarness();
+    await stage.execute(makeStageState(), makeStageCtx());
+    expect(testOpts).toEqual([600, 600]);
   });
 });

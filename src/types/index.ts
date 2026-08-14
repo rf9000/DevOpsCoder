@@ -31,6 +31,8 @@ export interface AppConfig {
   continiaTestAppPaths: string[];
   /** Max coder fix attempts when the deploy/test verification is red. */
   maxTestFixAttempts: number;
+  /** `--timeout` (seconds) passed to each `continia test run`. */
+  continiaTestTimeoutS: number;
   dryRun: boolean;
 }
 

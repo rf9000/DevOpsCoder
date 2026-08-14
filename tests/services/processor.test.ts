@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+﻿import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -33,7 +33,7 @@ const baseConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
 } satisfies AppConfig;
 
 function makeAdo(overrides: Partial<AdoClient> = {}): AdoClient {
@@ -342,7 +342,7 @@ describe('createProcessor', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline: () => [], // empty pipeline → immediate completion
+      buildPipeline: () => [], // empty pipeline â†’ immediate completion
       abortFlag: { aborted: false },
     });
     const outcome = await proc.processWorkItem(101);
@@ -511,7 +511,7 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
   });
 
-  it('dry run: terminal error with reviewer findings — neither comment nor tag is posted', async () => {
+  it('dry run: terminal error with reviewer findings â€” neither comment nor tag is posted', async () => {
     const reviewerOutput: ReviewerOutput = {
       approved: false,
       findings: [
@@ -552,7 +552,7 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
 
-  it('crash-recovery: state.rejection set without dispatched flag → retry tag ops, no new comment, no pipeline run', async () => {
+  it('crash-recovery: state.rejection set without dispatched flag â†’ retry tag ops, no new comment, no pipeline run', async () => {
     // Pre-seed the state as if a previous cycle crashed AFTER the rejectCount
     // was incremented and saved, but BEFORE the comment-post and tag-swap
     // finished (or after the comment but before the tags).
@@ -570,7 +570,7 @@ describe('createProcessor', () => {
         summary: 'WI is not ready',
         stage: 'analyzer',
         at: '2026-01-01T00:00:00Z',
-        // dispatched intentionally OMITTED — signals a crashed dispatch
+        // dispatched intentionally OMITTED â€” signals a crashed dispatch
       },
     });
     const stageRunCount = { n: 0 };
@@ -608,7 +608,7 @@ describe('createProcessor', () => {
     expect(saved.rejection?.dispatched).toBe(true);
   });
 
-  // ── Plan 6 task-08: cancelled-state handling ─────────────────────────────
+  // â”€â”€ Plan 6 task-08: cancelled-state handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('entry-clear: state.cancelled=true is cleared before pipeline runs and outcome is completed', async () => {
     // Pre-populate state with cancelled: true (simulates previous cycle bailed via external abort)
@@ -629,7 +629,7 @@ describe('createProcessor', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline: () => [], // empty pipeline → immediate completion
+      buildPipeline: () => [], // empty pipeline â†’ immediate completion
       abortFlag: { aborted: false },
     });
 
@@ -641,7 +641,7 @@ describe('createProcessor', () => {
     expect(persisted.cancelled).toBe(false);
   });
 
-  it('runPipeline returns cancelled state → outcome skipped/cancelled + zero ADO writes', async () => {
+  it('runPipeline returns cancelled state â†’ outcome skipped/cancelled + zero ADO writes', async () => {
     // Stage that sets state.cancelled = true and returns (simulates what external-abort path produces)
     const cancelStage: Stage = {
       name: 'coder',
@@ -678,7 +678,7 @@ describe('createProcessor', () => {
     expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
   });
 
-  // ── Plan 6 task-09: cost-cap comment routing ─────────────────────────────
+  // â”€â”€ Plan 6 task-09: cost-cap comment routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('cost-cap terminal error: posts comment with cap/total/per-stage HTML and adds blocked tag', async () => {
     let postedHtml = '';
@@ -766,7 +766,7 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
 
-  // ── Plan 6 task-10: stage-timeout comment routing ────────────────────────
+  // â”€â”€ Plan 6 task-10: stage-timeout comment routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('timeout terminal error posts comment with stage name + timeout value in HTML', async () => {
     let postedHtml = '';
@@ -844,7 +844,7 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
 
-  // ── Plan 10: verification-failure comment routing ────────────────────────
+  // â”€â”€ Plan 10: verification-failure comment routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   function makeVerificationFailingStage(overrides: {
     compiled?: boolean;
@@ -960,7 +960,7 @@ describe('createProcessor', () => {
     expect(postedHtml).not.toContain('reviewer rejected');
   });
 
-  // ── Plan 7 task-01: costUsd on ProcessOutcome ────────────────────────────
+  // â”€â”€ Plan 7 task-01: costUsd on ProcessOutcome â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('completed outcome carries costUsd from state.outputs.cost.total', async () => {
     // Pre-seed state with cost info
@@ -982,7 +982,7 @@ describe('createProcessor', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline: () => [], // empty pipeline → immediate completion
+      buildPipeline: () => [], // empty pipeline â†’ immediate completion
       abortFlag: { aborted: false },
     });
 
@@ -1109,7 +1109,7 @@ describe('createProcessor', () => {
         summary: 'WI is not ready',
         stage: 'analyzer',
         at: '2026-01-01T00:00:00Z',
-        // dispatched intentionally OMITTED — signals a crashed dispatch
+        // dispatched intentionally OMITTED â€” signals a crashed dispatch
       },
     });
 
@@ -1131,14 +1131,14 @@ describe('createProcessor', () => {
   });
 
   it('missing-cost fallback: outcome.costUsd === 0 when state.outputs.cost is undefined', async () => {
-    // No cost seeded — state.outputs.cost will be undefined
+    // No cost seeded â€” state.outputs.cost will be undefined
     const ado = makeAdo();
     const proc = createProcessor({
       config: baseConfig,
       logger: createLogger(),
       ado,
       store,
-      buildPipeline: () => [], // empty pipeline → immediate completion
+      buildPipeline: () => [], // empty pipeline â†’ immediate completion
       abortFlag: { aborted: false },
     });
 
@@ -1149,7 +1149,7 @@ describe('createProcessor', () => {
     }
   });
 
-  // ── Plan 8 task-05: toolUsage on ProcessOutcome ──────────────────────────
+  // â”€â”€ Plan 8 task-05: toolUsage on ProcessOutcome â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   it('completed outcome carries toolUsage from state.outputs.toolUsage', async () => {
     // Pre-seed state with tool-usage info
@@ -1171,7 +1171,7 @@ describe('createProcessor', () => {
       logger: createLogger(),
       ado,
       store,
-      buildPipeline: () => [], // empty pipeline → immediate completion
+      buildPipeline: () => [], // empty pipeline â†’ immediate completion
       abortFlag: { aborted: false },
     });
 
@@ -1281,14 +1281,14 @@ describe('createProcessor', () => {
   });
 
   it('missing-toolUsage fallback: outcome.toolUsage === {} when state.outputs.toolUsage is undefined', async () => {
-    // No toolUsage seeded — state.outputs.toolUsage will be undefined
+    // No toolUsage seeded â€” state.outputs.toolUsage will be undefined
     const ado = makeAdo();
     const proc = createProcessor({
       config: baseConfig,
       logger: createLogger(),
       ado,
       store,
-      buildPipeline: () => [], // empty pipeline → immediate completion
+      buildPipeline: () => [], // empty pipeline â†’ immediate completion
       abortFlag: { aborted: false },
     });
 
@@ -1300,3 +1300,4 @@ describe('createProcessor', () => {
   });
 
 });
+

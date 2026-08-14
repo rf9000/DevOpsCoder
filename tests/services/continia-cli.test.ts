@@ -26,6 +26,7 @@ const baseConfig: AppConfig = {
   continiaAppPaths: ['Core/Cloud'],
   continiaTestAppPaths: ['Core/Cloud'],
   maxTestFixAttempts: 2,
+  continiaTestTimeoutS: 600,
   dryRun: false,
 };
 
