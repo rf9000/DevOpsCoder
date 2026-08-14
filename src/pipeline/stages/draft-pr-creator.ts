@@ -43,6 +43,34 @@ async function defaultPushBranch(branch: string, cwd: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// PR description length cap (ADO rejects descriptions over 4000 chars)
+// ---------------------------------------------------------------------------
+
+/** ADO rejects PR descriptions over 4000 chars with a 400 (seen on a real WI). */
+export const MAX_PR_DESCRIPTION_LENGTH = 4000;
+const TRUNCATION_NOTICE = '\n\n_(earlier sections truncated to fit ADO’s 4000-char description limit)_\n';
+const TAIL_MARKER = '\n## Test environment';
+
+/**
+ * Cap the rendered description. Truncation sacrifices the head (summaries) and
+ * preserves everything from the "## Test environment" heading down — the env
+ * URL is the part a human tester cannot reconstruct.
+ */
+export function capPrDescription(full: string): string {
+  if (full.length <= MAX_PR_DESCRIPTION_LENGTH) return full;
+  const idx = full.indexOf(TAIL_MARKER);
+  if (idx === -1) {
+    return full.slice(0, MAX_PR_DESCRIPTION_LENGTH - TRUNCATION_NOTICE.length) + TRUNCATION_NOTICE;
+  }
+  const tail = full.slice(idx);
+  const headBudget = MAX_PR_DESCRIPTION_LENGTH - tail.length - TRUNCATION_NOTICE.length;
+  const capped = full.slice(0, Math.max(0, headBudget)) + TRUNCATION_NOTICE + tail;
+  // Degenerate case: the tail alone exceeds the limit — hard cap, better a
+  // clipped footer than a 400 from ADO.
+  return capped.length <= MAX_PR_DESCRIPTION_LENGTH ? capped : capped.slice(0, MAX_PR_DESCRIPTION_LENGTH);
+}
+
+// ---------------------------------------------------------------------------
 // PR description builder (exported for testability)
 // ---------------------------------------------------------------------------
 
@@ -125,7 +153,7 @@ export function buildPrDescription(args: {
   for (const [placeholder, value] of Object.entries(substitutions)) {
     result = result.replaceAll(placeholder, value);
   }
-  return result;
+  return capPrDescription(result);
 }
 
 // ---------------------------------------------------------------------------

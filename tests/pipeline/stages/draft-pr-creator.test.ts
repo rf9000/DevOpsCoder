@@ -13,6 +13,8 @@ import { describe, it, expect, mock } from 'bun:test';
 import {
   createDraftPrCreatorStage,
   buildPrDescription,
+  capPrDescription,
+  MAX_PR_DESCRIPTION_LENGTH,
 } from '../../../src/pipeline/stages/draft-pr-creator.ts';
 import { AzureDevOpsError } from '../../../src/sdk/azure-devops-client.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
@@ -451,5 +453,47 @@ describe('createDraftPrCreatorStage', () => {
     const ctx = makeCtx();
     await stage.execute(makeState(), ctx);
     expect(capturedOpts?.signal).toBe(ctx.signal);
+  });
+
+  // -------------------------------------------------------------------------
+  // capPrDescription — 4000-char ADO cap
+  // -------------------------------------------------------------------------
+
+  describe('capPrDescription', () => {
+    it('leaves short descriptions unchanged', () => {
+      expect(capPrDescription('short')).toBe('short');
+    });
+
+    it('caps at 4000 chars, drops head content, and preserves the environment section', () => {
+      const head = 'H'.repeat(6000);
+      const tail = '\n## Test environment\n\nenv `env-9` — https://bc/env-9\n';
+      const capped = capPrDescription(head + tail);
+      expect(capped.length).toBeLessThanOrEqual(MAX_PR_DESCRIPTION_LENGTH);
+      expect(capped).toContain('## Test environment');
+      expect(capped).toContain('https://bc/env-9');
+      expect(capped).toContain('truncated');
+    });
+
+    it('hard-caps when there is no environment section', () => {
+      const capped = capPrDescription('X'.repeat(6000));
+      expect(capped.length).toBeLessThanOrEqual(MAX_PR_DESCRIPTION_LENGTH);
+      expect(capped).toContain('truncated');
+    });
+  });
+
+  it('buildPrDescription output never exceeds the ADO limit', () => {
+    const desc = buildPrDescription({
+      wiCtx: sampleWiCtx,
+      analyzer: sampleAnalyzer,
+      coder: { ...sampleCoder, summary: 'S'.repeat(6000) },
+      testAuthor: undefined,
+      reviewer: undefined,
+      worktree: sampleWorktree,
+      template: '{{coder-summary}}\n## Test environment\n{{environment-url}}',
+      environment: { envId: 'env-9', name: 'n', url: 'https://bc/env-9', status: 'Running', createdAt: 'x' },
+      config: baseConfig,
+    });
+    expect(desc.length).toBeLessThanOrEqual(MAX_PR_DESCRIPTION_LENGTH);
+    expect(desc).toContain('https://bc/env-9');
   });
 });
