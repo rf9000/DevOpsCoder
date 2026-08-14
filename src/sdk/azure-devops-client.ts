@@ -212,6 +212,9 @@ export function createAdoClient(
             title: args.title,
             description: args.description,
             isDraft: args.isDraft,
+            ...(args.workItemId !== undefined
+              ? { workItemRefs: [{ id: String(args.workItemId) }] }
+              : {}),
           }),
           signal: opts.signal,
         },

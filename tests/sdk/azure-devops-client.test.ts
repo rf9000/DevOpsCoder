@@ -369,6 +369,34 @@ describe('createAdoClient', () => {
     });
   });
 
+  describe('createPullRequest workItemRefs', () => {
+    it('createPullRequest sends workItemRefs when workItemId is provided', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(201, { pullRequestId: 7, url: 'https://x/pr/7', sourceRefName: 's', targetRefName: 't' }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      await client.createPullRequest({
+        repositoryName: 'r', sourceRefName: 'refs/heads/b', targetRefName: 'refs/heads/main',
+        title: 'T', description: 'D', isDraft: true, workItemId: 101,
+      });
+      const body = JSON.parse(calls[0]!.init?.body as string) as Record<string, unknown>;
+      expect(body.workItemRefs).toEqual([{ id: '101' }]);
+    });
+
+    it('createPullRequest omits workItemRefs when workItemId is absent', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(201, { pullRequestId: 8, url: 'https://x/pr/8', sourceRefName: 's', targetRefName: 't' }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      await client.createPullRequest({
+        repositoryName: 'r', sourceRefName: 'refs/heads/b', targetRefName: 'refs/heads/main',
+        title: 'T', description: 'D', isDraft: true,
+      });
+      const body = JSON.parse(calls[0]!.init?.body as string) as Record<string, unknown>;
+      expect('workItemRefs' in body).toBe(false);
+    });
+  });
+
   describe('signal forwarding', () => {
     it('forwards opts.signal to the underlying fetch call', async () => {
       const controller = new AbortController();

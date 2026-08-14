@@ -136,7 +136,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
   return {
     name: 'draft-pr-creator',
     canRun: () => true,
-    async execute(state, _ctx) {
+    async execute(state, ctx) {
       const wiCtx = state.outputs.wiContext as WorkItemContext | undefined;
       const analyzer = state.outputs.analyzer as AnalyzerOutput | undefined;
       const coder = state.outputs.coder as CoderOutput | undefined;
@@ -172,21 +172,25 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
 
       // 3. Create the PR — let AzureDevOpsError propagate; its message already
       // carries the URL, status, and ADO response body.
-      const prResult = await deps.ado.createPullRequest({
-        repositoryName: deps.config.repositoryName,
-        sourceRefName: `refs/heads/${branch}`,
-        targetRefName: 'refs/heads/main',
-        title: `[Agent] ${wiCtx.title}`,
-        description: prDescription,
-        isDraft: true,
-      });
+      const prResult = await deps.ado.createPullRequest(
+        {
+          repositoryName: deps.config.repositoryName,
+          sourceRefName: `refs/heads/${branch}`,
+          targetRefName: 'refs/heads/main',
+          title: `[Agent] ${wiCtx.title}`,
+          description: prDescription,
+          isDraft: true,
+          workItemId: wiCtx.id,
+        },
+        { signal: ctx.signal },
+      );
 
       // 4. Store output
       const output: DraftPrOutput = {
         id: prResult.id,
         url: prResult.url,
         branch,
-        createdAt: new Date().toISOString(),
+        createdAt: ctx.now().toISOString(),
       };
       state.outputs.draftPr = output;
       return state;

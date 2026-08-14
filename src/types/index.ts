@@ -382,5 +382,7 @@ export interface CreatePullRequestArgs {
   title: string;
   description: string;
   isDraft: boolean;
+  /** WI to link via workItemRefs — ADO then shows the PR on the work item. */
+  workItemId?: number;
 }
 

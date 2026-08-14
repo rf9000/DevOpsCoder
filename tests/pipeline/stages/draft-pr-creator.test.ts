@@ -138,7 +138,7 @@ function makeCtx() {
     logger: createLogger(),
     abortFlag: { aborted: false },
     signal: new AbortController().signal,
-    now: () => new Date(),
+    now: () => new Date('2026-08-14T12:00:00.000Z'),
   };
 }
 
@@ -194,6 +194,7 @@ describe('createDraftPrCreatorStage', () => {
       title: string;
       description: string;
       isDraft: boolean;
+      workItemId: number;
     };
     expect(prCall.repositoryName).toBe('test-repo');
     expect(prCall.sourceRefName).toBe(`refs/heads/${sampleWorktree.branch}`);
@@ -201,13 +202,14 @@ describe('createDraftPrCreatorStage', () => {
     expect(prCall.title).toBe(`[Agent] ${sampleWiCtx.title}`);
     expect(prCall.isDraft).toBe(true);
     expect(prCall.description).toContain('101');
+    expect(prCall.workItemId).toBe(101);
 
     // state.outputs.draftPr is set correctly
     const draftPr = result.outputs.draftPr as DraftPrOutput;
     expect(draftPr.id).toBe(42);
     expect(draftPr.url).toBe('https://dev.azure.com/myorg/my-project/_git/test-repo/pullrequest/42');
     expect(draftPr.branch).toBe(sampleWorktree.branch);
-    expect(draftPr.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(draftPr.createdAt).toBe('2026-08-14T12:00:00.000Z');
   });
 
   // -------------------------------------------------------------------------
@@ -429,5 +431,25 @@ describe('createDraftPrCreatorStage', () => {
     );
 
     expect(state.outputs.draftPr).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Signal forwarding
+  // -------------------------------------------------------------------------
+
+  it('forwards the pipeline abort signal to createPullRequest', async () => {
+    let capturedOpts: { signal?: AbortSignal } | undefined;
+    const ado = makeAdoClient({
+      createPullRequest: mock(async (_args, opts) => {
+        capturedOpts = opts;
+        return { id: 1, url: 'https://x/pr/1', sourceRefName: 's', targetRefName: 't' };
+      }),
+    });
+    const stage = createDraftPrCreatorStage({
+      config: baseConfig, ado, prDescriptionTemplate: MINIMAL_TEMPLATE, pushBranch: mock(async () => {}),
+    });
+    const ctx = makeCtx();
+    await stage.execute(makeState(), ctx);
+    expect(capturedOpts?.signal).toBe(ctx.signal);
   });
 });
