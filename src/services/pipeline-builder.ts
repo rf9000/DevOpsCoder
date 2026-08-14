@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs';
+import { join } from 'path';
 import type { Stage } from '../pipeline/stage.ts';
 import type { AppConfig, PipelineState, ReviewerOutput } from '../types/index.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
@@ -8,6 +9,8 @@ import type { PipelineContext } from '../pipeline/stage.ts';
 import { createClaudeAgentRunner } from './claude-agent-runner.ts';
 import {
   discoverTargetRepoSkills,
+  discoverSkillsIn,
+  mergeSkills,
   type DiscoveredSkill,
 } from './skill-loader.ts';
 import {
@@ -106,7 +109,12 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const continiaCli = deps.continiaCli ?? createContiniaCli({ config: deps.config });
   const discoveredSkills =
     deps.discoveredSkills ??
-    discoverTargetRepoSkills(deps.config.targetRepoPath);
+    mergeSkills(
+      discoverTargetRepoSkills(deps.config.targetRepoPath),
+      deps.config.skillsSourceDir
+        ? discoverSkillsIn(join(deps.config.skillsSourceDir, 'skills'))
+        : [],
+    );
   const analyzerPromptTemplate =
     deps.analyzerPromptTemplate ?? readFileSync(ANALYZER_PROMPT_PATH, 'utf-8');
   const coderPromptTemplate =

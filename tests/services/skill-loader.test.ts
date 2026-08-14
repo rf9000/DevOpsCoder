@@ -5,6 +5,8 @@ import { join } from 'path';
 import {
   extractFrontmatterDescription,
   discoverTargetRepoSkills,
+  discoverSkillsIn,
+  mergeSkills,
 } from '../../src/services/skill-loader.ts';
 
 describe('extractFrontmatterDescription', () => {
@@ -122,5 +124,34 @@ Body content.
     );
     const skills = discoverTargetRepoSkills(dir);
     expect(skills).toEqual([]);
+  });
+});
+
+describe('discoverSkillsIn', () => {
+  it('scans an arbitrary skills root (not just <repo>/.claude/skills)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'skills-'));
+    try {
+      mkdirSync(join(root, 'my-skill'), { recursive: true });
+      writeFileSync(join(root, 'my-skill', 'SKILL.md'), '---\ndescription: Does things.\n---\n', 'utf-8');
+      expect(discoverSkillsIn(root)).toEqual([{ name: 'my-skill', description: 'Does things.' }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('mergeSkills', () => {
+  it('unions the lists; on a name collision the target repo wins', () => {
+    const merged = mergeSkills(
+      [{ name: 'continia-deploy', description: 'repo version' }],
+      [
+        { name: 'continia-deploy', description: 'orchestrator version' },
+        { name: 'continia-test', description: 'orchestrator only' },
+      ],
+    );
+    expect(merged).toEqual([
+      { name: 'continia-deploy', description: 'repo version' },
+      { name: 'continia-test', description: 'orchestrator only' },
+    ]);
   });
 });

@@ -33,13 +33,9 @@ export function extractFrontmatterDescription(content: string): string {
   return '';
 }
 
-/**
- * Scan the target repo's `.claude/skills/` directory for invocable skills.
- * Each subdirectory containing a `SKILL.md` is treated as a discoverable skill.
- * Returns name + description (from YAML frontmatter) for each.
- */
-export function discoverTargetRepoSkills(targetRepoPath: string): DiscoveredSkill[] {
-  const skillsRoot = join(targetRepoPath, '.claude', 'skills');
+/** Scan a skills directory: each subdirectory containing a SKILL.md with a
+ * frontmatter description is one invocable skill. */
+export function discoverSkillsIn(skillsRoot: string): DiscoveredSkill[] {
   if (!existsSync(skillsRoot)) return [];
 
   const entries = readdirSync(skillsRoot);
@@ -63,4 +59,23 @@ export function discoverTargetRepoSkills(targetRepoPath: string): DiscoveredSkil
   }
 
   return discovered;
+}
+
+/**
+ * Scan the target repo's `.claude/skills/` directory for invocable skills.
+ * Each subdirectory containing a `SKILL.md` is treated as a discoverable skill.
+ * Returns name + description (from YAML frontmatter) for each.
+ */
+export function discoverTargetRepoSkills(targetRepoPath: string): DiscoveredSkill[] {
+  return discoverSkillsIn(join(targetRepoPath, '.claude', 'skills'));
+}
+
+/** Union of target-repo and orchestrator-shipped skills; on a name collision
+ * the target repo's skill wins (mirrors the no-clobber symlink rule). */
+export function mergeSkills(
+  targetRepo: DiscoveredSkill[],
+  orchestrator: DiscoveredSkill[],
+): DiscoveredSkill[] {
+  const names = new Set(targetRepo.map((s) => s.name));
+  return [...targetRepo, ...orchestrator.filter((s) => !names.has(s.name))];
 }
