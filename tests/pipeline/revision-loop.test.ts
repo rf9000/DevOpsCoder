@@ -14,7 +14,7 @@ function mockContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
+    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false,
   };
   return {
     config,

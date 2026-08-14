@@ -254,4 +254,36 @@ describe('loadConfig', () => {
     expect(loadConfig(validEnv).skillsSourceDir).toBeUndefined();
     expect(loadConfig({ ...validEnv, SKILLS_SOURCE_DIR: '/app/.claude' }).skillsSourceDir).toBe('/app/.claude');
   });
+
+  describe('SKIP_BUILD_TEST', () => {
+    it('defaults to false and CONTINIA_* stay required', () => {
+      expect(loadConfig(validEnv).skipBuildTest).toBe(false);
+      const env = { ...validEnv };
+      delete env.CONTINIA_API_TOKEN;
+      expect(() => loadConfig(env)).toThrow(/CONTINIA_API_TOKEN/);
+    });
+
+    it('accepts 1/true/yes/on case-insensitively', () => {
+      for (const v of ['1', 'true', 'YES', 'On']) {
+        expect(loadConfig({ ...validEnv, SKIP_BUILD_TEST: v }).skipBuildTest).toBe(true);
+      }
+      expect(loadConfig({ ...validEnv, SKIP_BUILD_TEST: '0' }).skipBuildTest).toBe(false);
+    });
+
+    it('true → the three CONTINIA_* vars become optional (harness smoke tests need no DemoPortal token)', () => {
+      const env: Record<string, string> = { ...validEnv, SKIP_BUILD_TEST: 'true' };
+      delete env.CONTINIA_ENV_PROFILE_ID;
+      delete env.CONTINIA_API_TOKEN;
+      delete env.CONTINIA_APP_PATHS;
+      const config = loadConfig(env);
+      expect(config.skipBuildTest).toBe(true);
+      expect(config.continiaAppPaths).toEqual([]);
+    });
+
+    it('false + missing var → error names the var and the bypass', () => {
+      const env = { ...validEnv };
+      delete env.CONTINIA_ENV_PROFILE_ID;
+      expect(() => loadConfig(env)).toThrow(/CONTINIA_ENV_PROFILE_ID.*SKIP_BUILD_TEST/);
+    });
+  });
 });

@@ -1,6 +1,16 @@
 import { z } from 'zod';
 import type { AppConfig } from '../types/index.ts';
 
+/** '1' | 'true' | 'yes' | 'on' (case-insensitive) → true; blank/unset → default. */
+const boolFlag = (defaultValue: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === undefined || v.trim() === '') return defaultValue;
+      return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
+    });
+
 const envSchema = z.object({
   AZURE_DEVOPS_PAT: z.string().min(1, 'AZURE_DEVOPS_PAT is required'),
   AZURE_DEVOPS_ORG: z.string().min(1, 'AZURE_DEVOPS_ORG is required'),
@@ -26,10 +36,11 @@ const envSchema = z.object({
   STAGE_TIMEOUT_MS_VERIFY_PASS: z.coerce.number().int().positive().default(900_000),
   STAGE_TIMEOUT_MS_BUILD_AND_TEST: z.coerce.number().int().positive().optional(),
   CONTINIA_CLI_PATH: z.string().default('.tools/continia.exe'),
-  CONTINIA_ENV_PROFILE_ID: z.string().min(1, 'CONTINIA_ENV_PROFILE_ID is required'),
-  CONTINIA_API_TOKEN: z.string().min(1, 'CONTINIA_API_TOKEN is required'),
-  CONTINIA_APP_PATHS: z.string().min(1, 'CONTINIA_APP_PATHS is required'),
+  CONTINIA_ENV_PROFILE_ID: z.string().default(''),
+  CONTINIA_API_TOKEN: z.string().default(''),
+  CONTINIA_APP_PATHS: z.string().default(''),
   CONTINIA_TEST_APP_PATHS: z.string().optional(),
+  SKIP_BUILD_TEST: boolFlag(false),
   MAX_TEST_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
   CONTINIA_TEST_TIMEOUT_S: z.coerce.number().int().positive().default(600),
   STAGE_TIMEOUT_MS_TEST_AUTHOR: z.coerce.number().int().positive().default(1_200_000),
@@ -54,6 +65,25 @@ export function loadConfig(
   }
   const p = result.data;
 
+  // A harness smoke test should not need a DemoPortal token — the Continia
+  // config is only required when the verification gate actually runs.
+  if (!p.SKIP_BUILD_TEST) {
+    const missing = (
+      [
+        ['CONTINIA_ENV_PROFILE_ID', p.CONTINIA_ENV_PROFILE_ID],
+        ['CONTINIA_API_TOKEN', p.CONTINIA_API_TOKEN],
+        ['CONTINIA_APP_PATHS', p.CONTINIA_APP_PATHS],
+      ] as const
+    ).filter(([, v]) => v.trim() === '');
+    if (missing.length > 0) {
+      throw new Error(
+        `Invalid configuration:\n${missing
+          .map(([k]) => `  - ${k}: required unless SKIP_BUILD_TEST=true (the verification gate uses the Continia CLI)`)
+          .join('\n')}`,
+      );
+    }
+  }
+
   const assignedToFilter = p.ASSIGNED_TO_FILTER
     ? p.ASSIGNED_TO_FILTER.split(',')
         .map((s) => s.trim())
@@ -67,7 +97,7 @@ export function loadConfig(
       .filter((s) => s.length > 0);
 
   const continiaAppPaths = splitPaths(p.CONTINIA_APP_PATHS);
-  if (continiaAppPaths.length === 0) {
+  if (!p.SKIP_BUILD_TEST && continiaAppPaths.length === 0) {
     throw new Error(
       'Invalid configuration:\n  - CONTINIA_APP_PATHS: must contain at least one app path',
     );
@@ -125,6 +155,7 @@ export function loadConfig(
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
     continiaTestTimeoutS: p.CONTINIA_TEST_TIMEOUT_S,
     skillsSourceDir: p.SKILLS_SOURCE_DIR,
+    skipBuildTest: p.SKIP_BUILD_TEST,
     dryRun: false,
   };
 }

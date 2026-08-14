@@ -21,6 +21,7 @@ const baseConfig: AppConfig = {
   maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600,
   dryRun: false,
+  skipBuildTest: false,
 };
 
 const FIXED_NOW = new Date('2026-07-07T10:00:00.000Z');

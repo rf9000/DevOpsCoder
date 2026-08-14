@@ -37,7 +37,7 @@ const config: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false,
 };
 
 const sampleWorktree: WorktreeContext = {
@@ -408,5 +408,33 @@ describe('buildPipeline (Plan 5 full chain)', () => {
     expect(capturedDescriptions[0]).toContain('101');
     expect(capturedDescriptions[0]).toContain('env-9');
     expect(state.outputs.draftPr).toMatchObject({ id: 42, url: 'https://example.com/pr/42' });
+  });
+});
+
+describe('buildPipeline (Task 11 — SKIP_BUILD_TEST smoke bypass)', () => {
+  it('omits env-provision and build-and-test when skipBuildTest is set', () => {
+    const stages = buildPipeline({
+      config: { ...config, skipBuildTest: true },
+      logger: createLogger(),
+      ado: makeAdo(),
+      runner: makeRecordingRunner(() => ({})),
+      worktreeManager: makeWorktreeManager(),
+      continiaCli: makeGreenContiniaCli(),
+      discoveredSkills: [],
+      analyzerPromptTemplate: 'A',
+      coderPromptTemplate: 'C',
+      testAuthorPromptTemplate: 'T',
+      testFixerPromptTemplate: 'F',
+      prDescriptionTemplate: 'D',
+      pushBranch: mock(async () => {}),
+    });
+    expect(stages.map((s) => s.name)).toEqual([
+      'analyzer',
+      'worktree-setup',
+      'revision-loop',
+      'test-author',
+      'draft-pr-creator',
+      'worktree-teardown',
+    ]);
   });
 });

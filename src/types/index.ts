@@ -37,6 +37,8 @@ export interface AppConfig {
    * When set, worktree-setup symlinks each skill into the worktree's .claude/.
    * Unset → only the target repo's own committed skills are available. */
   skillsSourceDir?: string;
+  /** Skip env-provision + build-and-test (harness smoke tests). */
+  skipBuildTest: boolean;
   dryRun: boolean;
 }
 

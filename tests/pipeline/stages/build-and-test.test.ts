@@ -151,6 +151,7 @@ const baseConfig: AppConfig = {
   maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600,
   dryRun: false,
+  skipBuildTest: false,
 };
 
 const greenDeploy: DeployAppResult[] = [{ app: 'A', compiled: true, published: true }];

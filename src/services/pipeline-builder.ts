@@ -165,11 +165,15 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       canUseTool: deps.canUseTool,
     }),
     createWorktreeSetupStage({ worktreeManager, config: deps.config }),
-    createEnvProvisionStage({
-      config: deps.config,
-      continiaCli,
-      logger: deps.logger,
-    }),
+    ...(deps.config.skipBuildTest
+      ? []
+      : [
+          createEnvProvisionStage({
+            config: deps.config,
+            continiaCli,
+            logger: deps.logger,
+          }),
+        ]),
     revisionLoop({
       name: 'revision-loop',
       producer: coder,
@@ -191,17 +195,21 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       getCurrentHeadSha: deps.getCurrentHeadSha,
       resetWorktree: deps.resetWorktree,
     }),
-    createBuildAndTestStage({
-      config: deps.config,
-      continiaCli,
-      runner,
-      logger: deps.logger,
-      fixerPromptTemplate: testFixerPromptTemplate,
-      discoveredSkills,
-      getCurrentHeadSha: deps.getCurrentHeadSha,
-      resetWorktree: deps.resetWorktree,
-      discoverTestCodeunits: deps.discoverTestCodeunits,
-    }),
+    ...(deps.config.skipBuildTest
+      ? []
+      : [
+          createBuildAndTestStage({
+            config: deps.config,
+            continiaCli,
+            runner,
+            logger: deps.logger,
+            fixerPromptTemplate: testFixerPromptTemplate,
+            discoveredSkills,
+            getCurrentHeadSha: deps.getCurrentHeadSha,
+            resetWorktree: deps.resetWorktree,
+            discoverTestCodeunits: deps.discoverTestCodeunits,
+          }),
+        ]),
     createDraftPrCreatorStage({
       config: deps.config,
       ado: deps.ado,

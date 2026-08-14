@@ -28,6 +28,7 @@ const baseConfig: AppConfig = {
   maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600,
   dryRun: false,
+  skipBuildTest: false,
 };
 
 const WORKTREE = resolve('/repos/.worktrees/wi-101-fix');

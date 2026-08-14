@@ -50,6 +50,7 @@ const baseConfig: AppConfig = {
   maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600,
   dryRun: false,
+  skipBuildTest: false,
 };
 
 const sampleWorktree: WorktreeContext = {
