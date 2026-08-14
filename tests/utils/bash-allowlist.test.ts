@@ -150,6 +150,23 @@ describe('createBashAllowlist', () => {
       expect((await filter('Bash', { command: 'cat < foo.txt' })).behavior).toBe('deny');
     });
 
+    it('denies newline composition (second command on a new line)', async () => {
+      const result = await filter('Bash', {
+        command: 'git status\ngit push origin main',
+      });
+      expect(result.behavior).toBe('deny');
+      if (result.behavior === 'deny') {
+        expect(result.message).toContain('shell composition');
+      }
+    });
+
+    it('denies carriage-return composition', async () => {
+      const result = await filter('Bash', {
+        command: 'git status\r\ngit push origin main',
+      });
+      expect(result.behavior).toBe('deny');
+    });
+
     it('still allows simple commands without composition', async () => {
       expect((await filter('Bash', { command: 'git status' })).behavior).toBe('allow');
       expect((await filter('Bash', { command: 'ls' })).behavior).toBe('allow');

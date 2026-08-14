@@ -21,6 +21,16 @@ const envSchema = z.object({
   STAGE_TIMEOUT_MS_ANALYZER: z.coerce.number().int().positive().default(300_000),
   STAGE_TIMEOUT_MS_CODER: z.coerce.number().int().positive().default(1_800_000),
   STAGE_TIMEOUT_MS_REVIEWER: z.coerce.number().int().positive().default(900_000),
+  STAGE_TIMEOUT_MS_REVISION_LOOP: z.coerce.number().int().positive().optional(),
+  STAGE_TIMEOUT_MS_ENV_PROVISION: z.coerce.number().int().positive().default(300_000),
+  STAGE_TIMEOUT_MS_VERIFY_PASS: z.coerce.number().int().positive().default(900_000),
+  STAGE_TIMEOUT_MS_BUILD_AND_TEST: z.coerce.number().int().positive().optional(),
+  CONTINIA_CLI_PATH: z.string().default('.tools/continia.exe'),
+  CONTINIA_ENV_PROFILE_ID: z.string().min(1, 'CONTINIA_ENV_PROFILE_ID is required'),
+  CONTINIA_API_TOKEN: z.string().min(1, 'CONTINIA_API_TOKEN is required'),
+  CONTINIA_APP_PATHS: z.string().min(1, 'CONTINIA_APP_PATHS is required'),
+  CONTINIA_TEST_APP_PATHS: z.string().optional(),
+  MAX_TEST_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
   STAGE_TIMEOUT_MS_TEST_AUTHOR: z.coerce.number().int().positive().default(1_200_000),
   STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR: z.coerce.number().int().positive().default(120_000),
   STAGE_TIMEOUT_MS_WORKTREE_SETUP: z.coerce.number().int().positive().default(60_000),
@@ -48,8 +58,23 @@ export function loadConfig(
         .filter((s) => s.length > 0)
     : [];
 
+  const splitPaths = (raw: string): string[] =>
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+  const continiaAppPaths = splitPaths(p.CONTINIA_APP_PATHS);
+  if (continiaAppPaths.length === 0) {
+    throw new Error(
+      'Invalid configuration:\n  - CONTINIA_APP_PATHS: must contain at least one app path',
+    );
+  }
+  const continiaTestAppPaths = p.CONTINIA_TEST_APP_PATHS
+    ? splitPaths(p.CONTINIA_TEST_APP_PATHS)
+    : continiaAppPaths;
+
   return {
-    org: p.AZURE_DEVOPS_ORG,
     orgUrl: `https://dev.azure.com/${p.AZURE_DEVOPS_ORG}`,
     project: p.AZURE_DEVOPS_PROJECT,
     pat: p.AZURE_DEVOPS_PAT,
@@ -69,8 +94,20 @@ export function loadConfig(
     stageTimeoutMs: {
       'analyzer': p.STAGE_TIMEOUT_MS_ANALYZER,
       'worktree-setup': p.STAGE_TIMEOUT_MS_WORKTREE_SETUP,
-      'coder': p.STAGE_TIMEOUT_MS_CODER,
-      'reviewer': p.STAGE_TIMEOUT_MS_REVIEWER,
+      // 'coder' and 'reviewer' run nested inside the top-level 'revision-loop'
+      // stage, which is the unit the orchestrator actually times. Their env
+      // vars act as per-iteration budgets that size the loop's default.
+      'revision-loop':
+        p.STAGE_TIMEOUT_MS_REVISION_LOOP ??
+        p.MAX_REVISIONS * (p.STAGE_TIMEOUT_MS_CODER + p.STAGE_TIMEOUT_MS_REVIEWER),
+      'env-provision': p.STAGE_TIMEOUT_MS_ENV_PROVISION,
+      // The build-and-test stage runs up to (fixAttempts+1) deterministic
+      // deploy+test passes (VERIFY_PASS budget each) interleaved with up to
+      // fixAttempts coder fix calls (CODER budget each).
+      'build-and-test':
+        p.STAGE_TIMEOUT_MS_BUILD_AND_TEST ??
+        (p.MAX_TEST_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
+          p.MAX_TEST_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER,
       'test-author': p.STAGE_TIMEOUT_MS_TEST_AUTHOR,
       'draft-pr-creator': p.STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR,
       'worktree-teardown': p.STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN,
@@ -78,6 +115,12 @@ export function loadConfig(
     claudeModel: p.CLAUDE_MODEL,
     stateDir: p.STATE_DIR,
     assignedToFilter,
+    continiaCliPath: p.CONTINIA_CLI_PATH,
+    continiaEnvProfileId: p.CONTINIA_ENV_PROFILE_ID,
+    continiaApiToken: p.CONTINIA_API_TOKEN,
+    continiaAppPaths,
+    continiaTestAppPaths,
+    maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
     dryRun: false,
   };
 }

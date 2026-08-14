@@ -9,11 +9,10 @@ import { createLogger } from '../../src/utils/logger.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
-import { CostExceededError, StageTimeoutError } from '../../src/types/index.ts';
+import { CostExceededError, StageTimeoutError, VerificationFailedError } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
 
 const baseConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -34,7 +33,7 @@ const baseConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 } satisfies AppConfig;
 
 function makeAdo(overrides: Partial<AdoClient> = {}): AdoClient {
@@ -250,7 +249,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: 'analyzer',
       history: [],
-      attempts: {},
       outputs: {},
       rejectCount: 2,
     });
@@ -291,7 +289,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: 'analyzer',
       history: [],
-      attempts: {},
       outputs: {},
       rejectCount: 1,
       rejection: {
@@ -336,7 +333,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: null,
       history: [],
-      attempts: {},
       outputs: {},
       rejectCount: 2,
     });
@@ -567,7 +563,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: 'analyzer',
       history: [],
-      attempts: {},
       outputs: {},
       rejectCount: 1,
       rejection: {
@@ -624,7 +619,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: null,
       history: [],
-      attempts: {},
       outputs: {},
       cancelled: true,
     });
@@ -850,6 +844,122 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
   });
 
+  // ── Plan 10: verification-failure comment routing ────────────────────────
+
+  function makeVerificationFailingStage(overrides: {
+    compiled?: boolean;
+    withReviewerFindings?: boolean;
+  } = {}): Stage {
+    const compiled = overrides.compiled ?? true;
+    return {
+      name: 'build-and-test',
+      canRun: () => true,
+      execute: async (s) => {
+        s.outputs.environment = {
+          envId: 'env-9',
+          name: 'wi-101',
+          url: 'https://bc/env-9',
+          status: 'Running',
+          createdAt: '2026-07-07T10:00:00Z',
+        };
+        if (overrides.withReviewerFindings) {
+          s.outputs.reviewer = {
+            approved: true,
+            findings: [
+              { severity: 'minor', file: 'a.al', title: 'nit', description: 'd', axis: 'naming-style' },
+            ],
+            attempts: 1,
+          };
+        }
+        s.outputs.verification = {
+          attempts: 2,
+          compiled,
+          deploy: compiled
+            ? [{ app: 'Continia Banking', compiled: true, published: true }]
+            : [{ app: 'Continia Banking', compiled: false, published: false, error: 'AL0118: missing symbol Foo' }],
+          testRuns: compiled
+            ? [{
+                attempt: 2, codeunitId: 148001, codeunitName: 'CDO Setup Tests', passed: false,
+                summary: { total: 3, passed: 2, failed: 1, skipped: 0 },
+                tests: [
+                  { name: 'GreenTest', result: 'Pass' },
+                  { name: 'RedTest', result: 'Fail', errorMessage: 'Expected 1, got 0', stackTrace: '"CDO Feature"(Codeunit 70001).Calculate line 12' },
+                ],
+              }]
+            : [],
+          passed: false,
+        };
+        throw new VerificationFailedError(2, compiled, compiled ? '1 failing test(s) in codeunit(s) 148001' : 'app Continia Banking failed to compile/publish');
+      },
+    };
+  }
+
+  it('verification failure posts a comment with failing test, stack fragment, and env id', async () => {
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => { postedHtml = html; }),
+    });
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [makeVerificationFailingStage()],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+    expect(postedHtml).toContain('verification failed');
+    expect(postedHtml).toContain('RedTest');
+    expect(postedHtml).toContain('Expected 1, got 0');
+    expect(postedHtml).toContain('Codeunit 70001');
+    expect(postedHtml).toContain('env-9');
+    expect(postedHtml).toContain('reset-state 101');
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+  });
+
+  it('verification failure with compile errors renders the app and error detail', async () => {
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => { postedHtml = html; }),
+    });
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [makeVerificationFailingStage({ compiled: false })],
+      abortFlag: { aborted: false },
+    });
+
+    await proc.processWorkItem(101);
+    expect(postedHtml).toContain('Compile / deploy errors');
+    expect(postedHtml).toContain('Continia Banking');
+    expect(postedHtml).toContain('AL0118');
+  });
+
+  it('verification failure wins over reviewer findings in comment routing (regression guard)', async () => {
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => { postedHtml = html; }),
+    });
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [makeVerificationFailingStage({ withReviewerFindings: true })],
+      abortFlag: { aborted: false },
+    });
+
+    await proc.processWorkItem(101);
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+    expect(postedHtml).toContain('verification failed');
+    expect(postedHtml).not.toContain('reviewer rejected');
+  });
+
   // ── Plan 7 task-01: costUsd on ProcessOutcome ────────────────────────────
 
   it('completed outcome carries costUsd from state.outputs.cost.total', async () => {
@@ -861,7 +971,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: null,
       history: [],
-      attempts: {},
       outputs: {
         cost: { total: 0.42, perStage: { coder: 0.40, reviewer: 0.02 } },
       },
@@ -893,7 +1002,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: null,
       history: [],
-      attempts: {},
       outputs: {
         cost: { total: 0.15, perStage: { coder: 0.15 } },
       },
@@ -992,7 +1100,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: 'analyzer',
       history: [],
-      attempts: {},
       outputs: {
         cost: { total: 0.08, perStage: { analyzer: 0.08 } },
       },
@@ -1053,7 +1160,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: null,
       history: [],
-      attempts: {},
       outputs: {
         toolUsage: { Edit: 3, Bash: 1 },
       },
@@ -1085,7 +1191,6 @@ describe('createProcessor', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: null,
       history: [],
-      attempts: {},
       outputs: {
         toolUsage: { Edit: 3, Bash: 1 },
       },

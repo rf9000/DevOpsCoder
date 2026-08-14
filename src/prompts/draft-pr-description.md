@@ -24,6 +24,11 @@ The `code-review` label is intentionally NOT applied — that's a human action t
 
 {{test-author-section}}
 
+## Test environment
+
+All apps were deployed and all tests passed on Business Central environment `{{environment-id}}`.
+Manual testing: {{environment-url}} (the environment auto-deletes ~10 days after creation).
+
 ## Reviewer note
 
 {{reviewer-note}}

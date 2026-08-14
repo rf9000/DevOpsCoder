@@ -18,7 +18,6 @@ function makeState(workItemId: number, overrides: Partial<PipelineState> = {}): 
     updatedAt: ts,
     currentStage: 'analyzer',
     history: [],
-    attempts: {},
     outputs: {},
     ...overrides,
   };

@@ -3,6 +3,7 @@ import type {
   AppConfig,
   CoderOutput,
   DraftPrOutput,
+  EnvironmentOutput,
   TestAuthorOutput,
   WorktreeContext,
   ReviewerOutput,
@@ -52,10 +53,12 @@ export function buildPrDescription(args: {
   testAuthor: TestAuthorOutput | undefined;
   reviewer: ReviewerOutput | undefined;
   worktree: WorktreeContext;
+  /** The per-WI BC environment the verification ran on (defensive-optional). */
+  environment?: EnvironmentOutput;
   template: string;
   config: AppConfig;
 }): string {
-  const { wiCtx, analyzer, coder, testAuthor, reviewer, worktree, template, config } = args;
+  const { wiCtx, analyzer, coder, testAuthor, reviewer, worktree, environment, template, config } = args;
 
   // Build the WI URL
   const wiUrl = `${config.orgUrl}/${encodeURIComponent(config.project)}/_workitems/edit/${wiCtx.id}`;
@@ -114,6 +117,8 @@ export function buildPrDescription(args: {
     '{{reviewer-note}}': reviewerNote,
     '{{branch}}': worktree.branch,
     '{{base-sha}}': worktree.baseSha,
+    '{{environment-id}}': environment?.envId ?? '(none)',
+    '{{environment-url}}': environment?.url ?? '(not available)',
   };
 
   let result = template;
@@ -138,6 +143,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
       const worktree = state.outputs.worktree as WorktreeContext | undefined;
       const testAuthor = state.outputs.testAuthor as TestAuthorOutput | undefined;
       const reviewer = state.outputs.reviewer as ReviewerOutput | undefined;
+      const environment = state.outputs.environment as EnvironmentOutput | undefined;
 
       if (!wiCtx) throw new Error('draft-pr-creator requires state.outputs.wiContext to be populated');
       if (!analyzer) throw new Error('draft-pr-creator requires state.outputs.analyzer to be populated');
@@ -159,6 +165,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         testAuthor,
         reviewer,
         worktree,
+        environment,
         template: deps.prDescriptionTemplate,
         config: deps.config,
       });

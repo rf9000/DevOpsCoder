@@ -32,7 +32,6 @@ function makeCaptureLogger(): CapturedLogger {
 }
 
 const baseConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -53,7 +52,7 @@ const baseConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 } satisfies AppConfig;
 
 function makeAdo(ids: number[]): AdoClient {
@@ -142,7 +141,6 @@ describe('runPollCycle', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       currentStage: 'something',
       history: [],
-      attempts: {},
       outputs: {},
     });
     const ado = makeAdo([101, 999]);

@@ -1,3 +1,4 @@
+import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -20,7 +21,6 @@ import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
 
 const baseConfig: AppConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -41,7 +41,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 };
 
 const sampleWorktree: WorktreeContext = {
@@ -121,6 +121,9 @@ function makeBuildPipelineWrapper(
     buildPipeline({
       ...deps,
       runner,
+      continiaCli: makeGreenContiniaCli(),
+      testFixerPromptTemplate: 'F',
+      discoverTestCodeunits: greenCodeunits,
       worktreeManager,
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',

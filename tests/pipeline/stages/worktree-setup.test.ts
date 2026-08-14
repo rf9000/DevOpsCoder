@@ -19,7 +19,6 @@ function makeState(overrides: Partial<PipelineState> = {}): PipelineState {
     updatedAt: '2026-01-01T00:00:00Z',
     currentStage: 'worktree-setup',
     history: [],
-    attempts: {},
     outputs: {},
     ...overrides,
   };
@@ -27,7 +26,6 @@ function makeState(overrides: Partial<PipelineState> = {}): PipelineState {
 
 function makeCtx(config: Partial<AppConfig> = {}) {
   const base: AppConfig = {
-    org: 'o',
     orgUrl: 'https://x',
     project: 'p',
     pat: 'pat',
@@ -48,7 +46,7 @@ function makeCtx(config: Partial<AppConfig> = {}) {
     claudeModel: 'claude-opus-4-7',
     stateDir: '.state',
     assignedToFilter: [],
-    dryRun: false,
+    continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
     ...config,
   };
   return {

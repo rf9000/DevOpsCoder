@@ -4,10 +4,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { z } from 'zod';
 import { runPipeline, createInitialState } from '../../src/pipeline/orchestrator.ts';
-import { agentStage } from '../../src/pipeline/agent-stage.ts';
-import type { AgentRunner, AgentRunResult } from '../../src/pipeline/agent-stage.ts';
+import type { AgentRunner } from '../../src/pipeline/agent-stage.ts';
 import { revisionLoop } from '../../src/pipeline/revision-loop.ts';
-import { checkpoint } from '../../src/pipeline/checkpoint.ts';
+import { PipelinePauseError } from '../../src/pipeline/stage.ts';
 import type { PipelineContext, Stage } from '../../src/pipeline/stage.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
@@ -20,14 +19,14 @@ function tmpStateDir(): string {
 
 function makeContext(): PipelineContext {
   const config: AppConfig = {
-    org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+    orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
     repositoryName: 'test-repo',
     targetRepoPath: '/r', worktreeBase: '/w',
     triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'claude-opus-4-7', stateDir: '.state', assignedToFilter: [], dryRun: false,
+    claudeModel: 'claude-opus-4-7', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
   };
   return {
     config,
@@ -50,6 +49,30 @@ const ReviewerSchema = z.object({
   verdict: z.enum(['approve', 'revise']),
 });
 
+/**
+ * Minimal runner-backed stage for exercising the orchestrator: builds a prompt,
+ * calls the runner, stores the parsed value under `outputs[name]`.
+ */
+function runnerStage<T>(
+  name: string,
+  runner: AgentRunner,
+  schema: z.ZodSchema<T>,
+  buildPrompt: (s: PipelineState) => string,
+): Stage {
+  return {
+    name,
+    canRun: () => true,
+    async execute(state, ctx) {
+      const { value } = await runner.run<T>({
+        prompt: buildPrompt(state),
+        schema,
+        signal: ctx.signal,
+      });
+      return { ...state, outputs: { ...state.outputs, [name]: value } };
+    },
+  };
+}
+
 describe('orchestrator end-to-end (mock stages)', () => {
   it('analyzer (proceed) → coder → revisionLoop(coder, reviewer approve) → finalizer', async () => {
     const dir = tmpStateDir();
@@ -66,35 +89,9 @@ describe('orchestrator end-to-end (mock stages)', () => {
       run: mock(async () => ({ value: { verdict: 'approve' }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
     };
 
-    const analyzer = agentStage(
-      {
-        name: 'analyzer',
-        buildPrompt: (s) => `analyze wi=${s.workItemId}`,
-        schema: AnalyzerSchema,
-        applyOutput: (s, out) => ({ ...s, outputs: { ...s.outputs, analyzer: out } }),
-      },
-      analyzerRunner,
-    );
-
-    const coder = agentStage(
-      {
-        name: 'coder',
-        buildPrompt: (s) => `implement wi=${s.workItemId}`,
-        schema: CoderSchema,
-        applyOutput: (s, out) => ({ ...s, outputs: { ...s.outputs, coder: out } }),
-      },
-      coderRunner,
-    );
-
-    const reviewer = agentStage(
-      {
-        name: 'reviewer',
-        buildPrompt: () => 'review',
-        schema: ReviewerSchema,
-        applyOutput: (s, out) => ({ ...s, outputs: { ...s.outputs, reviewer: out } }),
-      },
-      reviewerRunner,
-    );
+    const analyzer = runnerStage('analyzer', analyzerRunner, AnalyzerSchema, (s) => `analyze wi=${s.workItemId}`);
+    const coder = runnerStage('coder', coderRunner, CoderSchema, (s) => `implement wi=${s.workItemId}`);
+    const reviewer = runnerStage('reviewer', reviewerRunner, ReviewerSchema, () => 'review');
 
     const reviewLoop = revisionLoop({
       name: 'review-loop',
@@ -131,16 +128,22 @@ describe('orchestrator end-to-end (mock stages)', () => {
     expect(persisted.completedAt).toBe(FIXED_NOW.toISOString());
   });
 
-  it('checkpoint stage pauses pipeline; second run with cleared checkpoint completes it', async () => {
+  it('pausing stage halts pipeline; second run with cleared gate completes it', async () => {
     const dir = tmpStateDir();
     const store = new PipelineStateStore(dir);
     const ctx = makeContext();
 
     let approvalGranted = false;
-    const approval = checkpoint({
+    const approval: Stage = {
       name: 'human-approval',
-      detect: async () => approvalGranted,
-    });
+      canRun: () => true,
+      execute: async (s) => {
+        if (!approvalGranted) {
+          throw new PipelinePauseError('waiting for human approval');
+        }
+        return s;
+      },
+    };
     const tail: Stage = {
       name: 'tail',
       canRun: () => true,

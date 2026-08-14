@@ -5,7 +5,6 @@ import { join } from 'path';
 export interface DiscoveredSkill {
   name: string;
   description: string;
-  skillDir: string;
 }
 
 /**
@@ -60,7 +59,6 @@ export function discoverTargetRepoSkills(targetRepoPath: string): DiscoveredSkil
     discovered.push({
       name: entry,
       description,
-      skillDir: entryPath,
     });
   }
 

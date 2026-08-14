@@ -24,13 +24,13 @@ A `Stage` is `{ name, canRun(state), execute(state, ctx) }`. `PipelineContext` c
 
 **File:** `src/pipeline/orchestrator.ts`
 
-`runPipeline({ stages, state, context, store })` iterates stages in order. After each `execute()` it appends a history entry, increments `attempts[stage.name]`, and persists state via the store. `PipelinePauseError` is caught and turned into a `pause` outcome that exits cleanly — no terminal error. Other thrown errors become a terminal-error record and re-throw.
+`runPipeline({ stages, state, context, store })` iterates stages in order. After each `execute()` it appends a history entry and persists state via the store. `PipelinePauseError` is caught and turned into a `pause` outcome that exits cleanly — no terminal error. Other thrown errors become a terminal-error record and re-throw.
 
-## agentStage Factory
+## AgentRunner interface
 
 **File:** `src/pipeline/agent-stage.ts`
 
-Wraps a Claude SDK call into a `Stage`. The factory is parameterised by an `AgentRunner` interface (`run<T>({ prompt, schema, tools?, model? })`), keeping the Claude SDK boundary thin and tests trivial — pass a mock runner that returns the parsed shape.
+The `AgentRunner` interface (`run<T>(args) → { value, costUsd, toolUsage }`) keeps the Claude SDK boundary thin and tests trivial — stages depend on the interface, tests pass a mock runner that returns the parsed shape. All stages are hand-rolled `Stage` objects that call the runner directly (there is no generic agent-stage factory — every real stage needed bespoke flow: branching, retries, or fan-out).
 
 ## Production AgentRunner (Claude SDK wrapper)
 
@@ -43,12 +43,6 @@ Wraps a Claude SDK call into a `Stage`. The factory is parameterised by an `Agen
 **File:** `src/pipeline/revision-loop.ts`
 
 Pairs a producer stage with a reviewer stage and loops up to `maxAttempts`. `isApproved(state)` is the success predicate. Optional `onExhausted` hook lets the caller post a comment / set a tag when the loop runs out of attempts.
-
-## checkpoint Factory
-
-**File:** `src/pipeline/checkpoint.ts`
-
-A `Stage` whose `detect()` returns whether a human-action gate has cleared. If not cleared, throws `PipelinePauseError` to halt the pipeline; on the next run the orchestrator resumes from the same checkpoint and re-runs `detect()`.
 
 ## Logger
 
@@ -101,15 +95,15 @@ A `Stage` whose `detect()` returns whether a human-action gate has cleared. If n
 
 **File:** `src/services/pipeline-builder.ts`
 
-`buildPipeline(deps)` returns the full Plan 5 stage chain: `[analyzer, worktree-setup, revisionLoop(coder, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]`. On revision-loop exhaustion (`onExhausted`) the hook throws, the orchestrator records `terminalError`, and the processor catches it — posting reviewer findings as a WI comment and adding the blocked tag. On all failure paths (analyzer reject, coder/test-author error, reviewer exhaustion, draft-PR creation failure), `worktree-teardown` is intentionally NOT run; humans inspect what was left behind.
+`buildPipeline(deps)` returns the full stage chain: `[analyzer, worktree-setup, env-provision, revisionLoop(coder, reviewer, onExhausted), test-author, build-and-test, draft-pr-creator, worktree-teardown]`. On revision-loop exhaustion (`onExhausted`) the hook throws, the orchestrator records `terminalError`, and the processor catches it — posting reviewer findings as a WI comment and adding the blocked tag. On all failure paths (analyzer reject, coder/test-author error, reviewer exhaustion, draft-PR creation failure), `worktree-teardown` is intentionally NOT run; humans inspect what was left behind.
 
-Production injection points: `runner`, `worktreeManager`, `discoveredSkills`, `analyzerPromptTemplate`, `coderPromptTemplate`, `testAuthorPromptTemplate`, `reviewerSharedPromptTemplate`, `reviewerAxisPromptTemplates`, `prDescriptionTemplate`, `pushBranch`, `getCurrentHeadSha`, `resetWorktree`, `canUseTool`. All default to real implementations; tests inject mocks so they don't hit Claude, git, or the filesystem.
+Production injection points: `runner`, `worktreeManager`, `continiaCli`, `discoveredSkills`, `analyzerPromptTemplate`, `coderPromptTemplate`, `testAuthorPromptTemplate`, `testFixerPromptTemplate`, `reviewerSharedPromptTemplate`, `reviewerAxisPromptTemplates`, `prDescriptionTemplate`, `pushBranch`, `getCurrentHeadSha`, `resetWorktree`, `discoverTestCodeunits`, `canUseTool`. All default to real implementations; tests inject mocks so they don't hit Claude, git, continia.exe, or the filesystem.
 
 ## Analyzer stage (readiness gate)
 
 **File:** `src/pipeline/stages/analyzer.ts`
 
-Hand-rolled Stage (intentionally NOT via `agentStage` factory) because of its branching flow. Fetches WI context via `fetchWiContext`, builds a markdown user prompt with the description / AC / repro / comments / images / skills sections, calls the runner with `cwd: targetRepoPath`, `tools: [Read, Grep, Glob, Bash, Skill]`, `disallowedTools: [Edit, Write, NotebookEdit]`, `settingSources: ['project']`, `maxTurns: 20`, `systemPromptAppend: <analyzer.md>`. The Zod schema is `{ verdict: 'proceed' | 'reject', summary, reasons[], questions? }`. On `proceed` the output goes into `state.outputs.analyzer`; on `reject` the stage throws `PipelineRejectError`, which the orchestrator catches to populate `state.rejection`. Blocked escalation is the processor's concern, not the analyzer's.
+Hand-rolled Stage because of its branching flow. Fetches WI context via `fetchWiContext`, builds a markdown user prompt with the description / AC / repro / comments / images / skills sections, calls the runner with `cwd: targetRepoPath`, `tools: [Read, Grep, Glob, Bash, Skill]`, `disallowedTools: [Edit, Write, NotebookEdit]`, `settingSources: ['project']`, `maxTurns: 20`, `systemPromptAppend: <analyzer.md>`, and a read-only Bash allowlist (`canUseTool` default — git inspection + `ls`/`cat`/`head`/`tail`/`wc`/`pwd` only). The Zod schema is `{ verdict: 'proceed' | 'reject', summary, reasons[], questions? }`. On `proceed` the output goes into `state.outputs.analyzer`; on `reject` the stage throws `PipelineRejectError`, which the orchestrator catches to populate `state.rejection`. Blocked escalation is the processor's concern, not the analyzer's.
 
 ## WI-context fetcher
 
@@ -121,7 +115,7 @@ Hand-rolled Stage (intentionally NOT via `agentStage` factory) because of its br
 
 **File:** `src/services/skill-loader.ts`
 
-Verbatim port from the sibling `DevOpsInvestigateWorkItems` repo. `discoverTargetRepoSkills(targetRepoPath)` scans `.claude/skills/` and returns `{ name, description, skillDir }[]`, extracting the `description` from each `SKILL.md`'s YAML frontmatter. Returns `[]` if `.claude/skills` doesn't exist (target repos without skills are perfectly valid). Skills are surfaced to the analyzer as an "Available Invocable Skills" bullet list in the user prompt — the analyzer's `Skill` tool can then invoke them.
+Verbatim port from the sibling `DevOpsInvestigateWorkItems` repo. `discoverTargetRepoSkills(targetRepoPath)` scans `.claude/skills/` and returns `{ name, description }[]`, extracting the `description` from each `SKILL.md`'s YAML frontmatter. Returns `[]` if `.claude/skills` doesn't exist (target repos without skills are perfectly valid). Skills are surfaced to the analyzer as an "Available Invocable Skills" bullet list in the user prompt — the analyzer's `Skill` tool can then invoke them.
 
 ## HTML helpers
 
@@ -145,7 +139,7 @@ Thin Stage wrapping `worktreeManager.ensureWorktree`. On entry, reads `state.out
 
 **File:** `src/pipeline/stages/coder.ts`
 
-Hand-rolled Stage (intentionally NOT via `agentStage` factory) because of retry-on-transient + baseline-reset semantics. Reads `state.outputs.analyzer` / `.wiContext` / `.worktree` (throws if any missing). Records the current HEAD SHA via `Bun.spawn('git', ['rev-parse', 'HEAD'])` at the top of `execute` as the per-attempt baseline. Calls the runner with `cwd: worktree.path`, `tools: [Read, Grep, Glob, Bash, Skill, Edit, Write]`, `disallowedTools: [NotebookEdit]`, `maxTurns: config.coderMaxTurns`, `systemPromptAppend: <coder.md>`, `canUseTool: composeCanUseTool([bashAllowlist, pathEscapeFilter])`. The bash allowlist permits `git commit`, `git add <specific-path>`, `git status`, `bun run typecheck/build/lint` and similar; denies `git push`, `git checkout`, `git reset`, `git rebase`, `git merge`, `git stash drop`, `git clean -f`, `git commit --amend`, `rm`, `cd`, `bun add`, `npm install`. The path-escape filter rejects `Edit`/`Write` calls outside the worktree. On `AgentOutputParseError`: reset worktree (`git reset --hard ${baselineSha}` + `git clean -fd`) + retry up to `MAX_TRANSIENT_RETRIES` (=2). On any other throw: reset + re-throw immediately (no retry). Output schema: `{ summary, filesChanged: string[], commits: string[] }`. Stored in `state.outputs.coder`.
+Hand-rolled Stage because of retry-on-transient + baseline-reset semantics. Reads `state.outputs.analyzer` / `.wiContext` / `.worktree` (throws if any missing). Records the current HEAD SHA via `Bun.spawn('git', ['rev-parse', 'HEAD'])` at the top of `execute` as the per-attempt baseline. Calls the runner with `cwd: worktree.path`, `tools: [Read, Grep, Glob, Bash, Skill, Edit, Write]`, `disallowedTools: [NotebookEdit]`, `maxTurns: config.coderMaxTurns`, `systemPromptAppend: <coder.md>`, `canUseTool: composeCanUseTool([bashAllowlist, pathEscapeFilter])`. The bash allowlist permits `git commit`, `git add <specific-path>`, `git status`, `bun run typecheck/build/lint` and similar; denies `git push`, `git checkout`, `git reset`, `git rebase`, `git merge`, `git stash drop`, `git clean -f`, `git commit --amend`, `rm`, `cd`, `bun add`, `npm install`. The path-escape filter rejects `Edit`/`Write` calls outside the worktree. On `AgentOutputParseError`: reset worktree (`git reset --hard ${baselineSha}` + `git clean -fd`) + retry up to `MAX_TRANSIENT_RETRIES` (=2). On any other throw: reset + re-throw immediately (no retry). Output schema: `{ summary, filesChanged: string[], commits: string[] }`. Stored in `state.outputs.coder`.
 
 ## Test-author stage
 
@@ -193,11 +187,11 @@ When the revision loop reaches `maxRevisions` without approval, `onExhausted` th
 
 `createPathEscapeFilter(cwd)` returns a `CanUseToolFn` that rejects `Edit`/`Write`/`NotebookEdit` calls whose `file_path` resolves outside `cwd`. Belt-and-suspenders against a runaway agent writing to the host's DevopsCoder source or system files (the SDK's `cwd` alone doesn't enforce this — `permissionMode: 'bypassPermissions'` is set in the runner). Compose with `createBashAllowlist` via the local `composeCanUseTool` helper in the coder/test-author stages.
 
-## AgentRunner.run\<T\> returns {value, costUsd} (Plan 6)
+## AgentRunner.run\<T\> returns {value, costUsd, toolUsage} (Plans 6+8)
 
 **File:** `src/pipeline/agent-stage.ts`
 
-`AgentRunner.run<T>` returns `AgentRunResult<T> = { value: T; costUsd: number }`. Cost is first-class — callers destructure `{ value, costUsd }` and forward `costUsd` to the cost tracker. `costUsd` may be `0` if the SDK did not report a cost (e.g., on a transient failure). The optional `signal?: AbortSignal` field was also added to `AgentRunArgs` so callers can thread the per-stage abort signal through.
+`AgentRunner.run<T>` returns `AgentRunResult<T> = { value: T; costUsd: number; toolUsage: Record<string, number> }`. Cost and tool usage are first-class — callers destructure all three and forward `costUsd` to the cost tracker and `toolUsage` to the tool-usage tracker. `costUsd` may be `0` (and `toolUsage` empty) if the SDK did not report them (e.g., on a transient failure). The optional `signal?: AbortSignal` field on `AgentRunArgs` threads the per-stage abort signal through.
 
 ## createCostTracker helper (Plan 6)
 
@@ -209,7 +203,7 @@ When the revision loop reaches `maxRevisions` without approval, `onExhausted` th
 
 **File:** `src/pipeline/orchestrator.ts`
 
-Before running each stage, the orchestrator creates an `AbortController`, fires `setTimeout(() => ctrl.abort('timeout'), timeoutMs)`, and polls `abortFlag` at 100 ms intervals to also fire on external abort. The per-stage timeout is `config.stageTimeoutMs[stage.name] ?? DEFAULT_STAGE_TIMEOUT_MS` (exported constant: `120_000` ms). The 7 named stages have individual overrides configurable via `STAGE_TIMEOUT_MS_<STAGE_NAME>` env vars (see `.env.example`). On timeout the orchestrator throws `StageTimeoutError`, records `state.terminalError`, and re-throws.
+Before running each stage, the orchestrator creates an `AbortController`, fires `setTimeout(() => ctrl.abort('timeout'), timeoutMs)`, and polls `abortFlag` at 100 ms intervals to also fire on external abort. The per-stage timeout is `config.stageTimeoutMs[stage.name] ?? DEFAULT_STAGE_TIMEOUT_MS` (exported constant: `120_000` ms). Each top-level stage has an override configurable via `STAGE_TIMEOUT_MS_<STAGE_NAME>` env vars (see `.env.example`). The `revision-loop` stage (which nests coder + reviewer) defaults to `MAX_REVISIONS × (STAGE_TIMEOUT_MS_CODER + STAGE_TIMEOUT_MS_REVIEWER)` and can be pinned with `STAGE_TIMEOUT_MS_REVISION_LOOP`. On timeout the orchestrator throws `StageTimeoutError`, records `state.terminalError`, and re-throws.
 
 ## Cost-cap pre-stage check (Plan 6)
 
@@ -230,10 +224,28 @@ Two distinct terminal states — not interchangeable:
 
 **File:** `src/services/processor.ts`
 
-Two pure renderers for the Plan 6 terminal paths. Routing in the processor's catch block uses regex matches on `terminalError.message`: `/cost cap/i` → `renderCostExhaustionMarkdown`; `/timeout/i` → `renderStageTimeoutMarkdown`. Precedence: reviewer findings (check first) > cost cap > timeout. `renderCostExhaustionMarkdown` includes a per-stage spend table from `state.outputs.cost`. `renderStageTimeoutMarkdown` reports the configured timeout and the env var name the operator can adjust.
+Pure renderers for terminal paths. Routing in the processor's catch block uses regex matches on `terminalError.message`: `/verification failed/i` → `renderVerificationFailureMarkdown` (checked FIRST — by the time build-and-test fails, the reviewer has usually approved with non-blocking findings that would otherwise hijack the comment); reviewer findings; `/cost cap/i` → `renderCostExhaustionMarkdown`; `/timeout/i` → `renderStageTimeoutMarkdown`. `renderCostExhaustionMarkdown` includes a per-stage spend table from `state.outputs.cost`. `renderStageTimeoutMarkdown` reports the configured timeout and the env var name the operator can adjust. `renderVerificationFailureMarkdown` reports the env id/url, compile errors per app or failing tests with trimmed stack traces.
 
 ## AbortSignal threading (Plan 6)
 
 **Files:** `src/pipeline/stage.ts`, `src/pipeline/orchestrator.ts`
 
 `PipelineContext.signal: AbortSignal` is a required field. The orchestrator creates a fresh `AbortController` per stage iteration and assigns `ctrl.signal` to `stageCtx.signal`. Stages pass `ctx.signal` to `runner.run({ ..., signal })` and to ADO client calls that accept a signal. The per-stage controller fires on timeout (`reason === 'timeout'`) or external abort (`reason === 'external'`); the orchestrator inspects `ctrl.signal.reason` in the catch block to distinguish the two cases before falling through to `PipelinePauseError` / `PipelineRejectError` handling.
+
+## ContiniaCli service (Plan 10)
+
+**File:** `src/services/continia-cli.ts`
+
+`createContiniaCli({ config, exec?, sleep? })` wraps `.tools/continia.exe` behind the injectable `ContiniaCli` interface (env create/start/get/waitForRunning, deps install/download, deployApp, runTests). Mirrors the worktree-manager spawn pattern: injectable `ExecFn` for tests, `ContiniaCliError{command, exitCode, stdout, stderr}` on failure. Sharp edges encoded here: relative `CONTINIA_CLI_PATH` resolves against the per-WI worktree; the API token is forwarded via the `CONTINIA_TOKEN_ENV_VAR` process env var (single const to change once the CLI's real var name is confirmed); `deployApp` runs from the app's PARENT dir with a relative app arg (absolute paths fail) and always `--with-deps`, never `--all`; `runTests` parses stdout JSON BEFORE checking the exit code (the CLI exits 1 on red tests — a red run is a result, not an error) and derives `passed` from `summary.failed === 0`; CLI JSON is parsed with lenient `.passthrough()` Zod schemas.
+
+## env-provision stage (Plan 10)
+
+**File:** `src/pipeline/stages/env-provision.ts`
+
+Fire-and-forget per-WI BC environment: `env create --name wi-<id>-<slug>` (truncated to 40 chars) + `env start`, persisted to `state.outputs.environment` — intentionally NO polling; the 1-3 min boot overlaps the revision loop, and `build-and-test` does the `waitForRunning`. Persisted-reuse mirrors worktree-setup: a persisted envId is validated via `env get` and reused (started when Draft/Stopped); a stale envId falls through to fresh creation. Environments are NEVER torn down — DemoPortal auto-deletes them ~10 days after creation; the env URL is substituted into the PR description (`{{environment-id}}`, `{{environment-url}}`) for manual testing.
+
+## build-and-test stage (Plan 10)
+
+**File:** `src/pipeline/stages/build-and-test.ts`
+
+The verification gate. `waitForRunning` → `deps install` per `continiaAppPaths` entry (in order) → discover AL test codeunits (`src/utils/al-test-discovery.ts`, `Subtype = Test` + codeunit-id regex; zero discovered = verification failure) → loop up to `maxTestFixAttempts + 1` rounds: [coder fix call when round > 0 → `deps download` per app (re-run every round because the fix call's reset path `git clean -fd`s away untracked `.alpackages`) → deploy per app → run every test codeunit strictly sequentially (BC forbids parallel test jobs on one env)]. `state.outputs.verification` is persisted after every round so a mid-loop timeout leaves diagnosable state. Fix calls reuse the coder machinery verbatim (exported `CODER_BASH_ALLOW`/`CODER_BASH_DENY`, `coderOutputSchema`, path-escape filter, per-attempt baseline reset + `AgentOutputParseError` retry, `test-fixer.md` system prompt, `buildFixPrompt` pure helper); cost/toolUsage tracked under `'build-and-test'`. Still red after all attempts → `VerificationFailedError` (message contains `verification failed` for processor routing). Stage timeout defaults to `(MAX_TEST_FIX_ATTEMPTS+1) × STAGE_TIMEOUT_MS_VERIFY_PASS + MAX_TEST_FIX_ATTEMPTS × STAGE_TIMEOUT_MS_CODER`.

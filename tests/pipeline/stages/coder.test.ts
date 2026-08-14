@@ -24,7 +24,6 @@ import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
 import type { AnalyzerOutput } from '../../../src/pipeline/stages/analyzer.ts';
 
 const baseConfig: AppConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -45,7 +44,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 };
 
 const sampleAnalyzer: AnalyzerOutput = {
@@ -80,7 +79,6 @@ function makeState(overrides: Partial<PipelineState> = {}): PipelineState {
     updatedAt: '2026-01-01T00:00:00Z',
     currentStage: 'coder',
     history: [],
-    attempts: {},
     outputs: {
       analyzer: sampleAnalyzer,
       wiContext: sampleWiCtx,
@@ -147,7 +145,7 @@ describe('buildCoderUserPrompt', () => {
 
   it('includes skill list when discoveredSkills is non-empty', () => {
     const skills: DiscoveredSkill[] = [
-      { name: 'al-formatter', description: 'Formats AL', skillDir: '/x' },
+      { name: 'al-formatter', description: 'Formats AL' },
     ];
     const prompt = buildCoderUserPrompt(
       sampleAnalyzer,

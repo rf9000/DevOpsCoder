@@ -9,13 +9,15 @@ const validEnv: Record<string, string> = {
   TARGET_REPO_PATH: '/repos/continia-banking',
   WORKTREE_BASE: '/repos/.worktrees',
   MAX_COST_USD_PER_WI: '5.00',
+  CONTINIA_ENV_PROFILE_ID: 'profile-123',
+  CONTINIA_API_TOKEN: 'tok-abc',
+  CONTINIA_APP_PATHS: 'Core/Cloud,Banking/Cloud',
 };
 
 describe('loadConfig', () => {
   it('returns AppConfig for a valid env', () => {
     const config = loadConfig(validEnv);
     expect(config.pat).toBe('test-pat');
-    expect(config.org).toBe('my-org');
     expect(config.orgUrl).toBe('https://dev.azure.com/my-org');
     expect(config.project).toBe('my-project');
     expect(config.targetRepoPath).toBe('/repos/continia-banking');
@@ -129,14 +131,112 @@ describe('loadConfig', () => {
     expect(config.maxCostUsdPerWi).toBe(5);
   });
 
-  it('defaults all seven STAGE_TIMEOUT_MS_* when env vars are absent', () => {
+  it('defaults all STAGE_TIMEOUT_MS_* when env vars are absent', () => {
     const config = loadConfig(validEnv);
     expect(config.stageTimeoutMs['analyzer']).toBe(300_000);
     expect(config.stageTimeoutMs['worktree-setup']).toBe(60_000);
-    expect(config.stageTimeoutMs['coder']).toBe(1_800_000);
-    expect(config.stageTimeoutMs['reviewer']).toBe(900_000);
     expect(config.stageTimeoutMs['test-author']).toBe(1_200_000);
     expect(config.stageTimeoutMs['draft-pr-creator']).toBe(120_000);
     expect(config.stageTimeoutMs['worktree-teardown']).toBe(60_000);
+  });
+
+  it('derives the revision-loop timeout from maxRevisions × (coder + reviewer) budgets', () => {
+    const config = loadConfig(validEnv);
+    // Default: 3 revisions × (30 min coder + 15 min reviewer) = 135 min.
+    expect(config.stageTimeoutMs['revision-loop']).toBe(3 * (1_800_000 + 900_000));
+  });
+
+  it('derived revision-loop timeout follows overridden budgets', () => {
+    const config = loadConfig({
+      ...validEnv,
+      MAX_REVISIONS: '2',
+      STAGE_TIMEOUT_MS_CODER: '600000',
+      STAGE_TIMEOUT_MS_REVIEWER: '300000',
+    });
+    expect(config.stageTimeoutMs['revision-loop']).toBe(2 * (600_000 + 300_000));
+  });
+
+  it('STAGE_TIMEOUT_MS_REVISION_LOOP overrides the derived default', () => {
+    const config = loadConfig({
+      ...validEnv,
+      STAGE_TIMEOUT_MS_REVISION_LOOP: '4200000',
+    });
+    expect(config.stageTimeoutMs['revision-loop']).toBe(4_200_000);
+  });
+
+  it('does not expose never-enforced coder/reviewer keys in stageTimeoutMs', () => {
+    // The orchestrator only times top-level stages; 'coder' and 'reviewer'
+    // run nested inside 'revision-loop' and their keys were dead config.
+    const config = loadConfig(validEnv);
+    expect(config.stageTimeoutMs['coder']).toBeUndefined();
+    expect(config.stageTimeoutMs['reviewer']).toBeUndefined();
+  });
+
+  describe('Plan 10 — verification gate config', () => {
+    it('throws when CONTINIA_ENV_PROFILE_ID / CONTINIA_API_TOKEN / CONTINIA_APP_PATHS are missing', () => {
+      for (const key of ['CONTINIA_ENV_PROFILE_ID', 'CONTINIA_API_TOKEN', 'CONTINIA_APP_PATHS']) {
+        const env = { ...validEnv };
+        delete env[key];
+        expect(() => loadConfig(env)).toThrow(new RegExp(key));
+      }
+    });
+
+    it('parses CONTINIA_APP_PATHS as ordered, trimmed list', () => {
+      const config = loadConfig({
+        ...validEnv,
+        CONTINIA_APP_PATHS: ' Core/Cloud , Banking/Cloud ,Banking/Test ',
+      });
+      expect(config.continiaAppPaths).toEqual(['Core/Cloud', 'Banking/Cloud', 'Banking/Test']);
+    });
+
+    it('throws when CONTINIA_APP_PATHS is empty after trimming', () => {
+      expect(() => loadConfig({ ...validEnv, CONTINIA_APP_PATHS: ' , ' })).toThrow(
+        /CONTINIA_APP_PATHS/,
+      );
+    });
+
+    it('CONTINIA_TEST_APP_PATHS falls back to continiaAppPaths when absent', () => {
+      const config = loadConfig(validEnv);
+      expect(config.continiaTestAppPaths).toEqual(config.continiaAppPaths);
+    });
+
+    it('CONTINIA_TEST_APP_PATHS overrides when set', () => {
+      const config = loadConfig({ ...validEnv, CONTINIA_TEST_APP_PATHS: 'Banking/Test' });
+      expect(config.continiaTestAppPaths).toEqual(['Banking/Test']);
+    });
+
+    it('defaults continiaCliPath and maxTestFixAttempts', () => {
+      const config = loadConfig(validEnv);
+      expect(config.continiaCliPath).toBe('.tools/continia.exe');
+      expect(config.maxTestFixAttempts).toBe(2);
+      expect(config.continiaEnvProfileId).toBe('profile-123');
+      expect(config.continiaApiToken).toBe('tok-abc');
+    });
+
+    it('defaults the env-provision timeout to 5 minutes', () => {
+      const config = loadConfig(validEnv);
+      expect(config.stageTimeoutMs['env-provision']).toBe(300_000);
+    });
+
+    it('derives the build-and-test timeout from (fixAttempts+1)×verifyPass + fixAttempts×coder', () => {
+      const config = loadConfig(validEnv);
+      // Defaults: (2+1)×15min + 2×30min = 105 min.
+      expect(config.stageTimeoutMs['build-and-test']).toBe(3 * 900_000 + 2 * 1_800_000);
+    });
+
+    it('derived build-and-test timeout follows overridden budgets', () => {
+      const config = loadConfig({
+        ...validEnv,
+        MAX_TEST_FIX_ATTEMPTS: '1',
+        STAGE_TIMEOUT_MS_VERIFY_PASS: '600000',
+        STAGE_TIMEOUT_MS_CODER: '1200000',
+      });
+      expect(config.stageTimeoutMs['build-and-test']).toBe(2 * 600_000 + 1 * 1_200_000);
+    });
+
+    it('STAGE_TIMEOUT_MS_BUILD_AND_TEST overrides the derived default', () => {
+      const config = loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_BUILD_AND_TEST: '7200000' });
+      expect(config.stageTimeoutMs['build-and-test']).toBe(7_200_000);
+    });
   });
 });

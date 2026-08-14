@@ -21,14 +21,14 @@ const FIXED_NOW = new Date('2026-05-04T12:00:00.000Z');
 
 function makeContext(overrides: Partial<PipelineContext> = {}): PipelineContext {
   const config: AppConfig = {
-    org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+    orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
     repositoryName: 'test-repo',
     targetRepoPath: '/r', worktreeBase: '/w',
     triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
   };
   const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}) };
   return {
@@ -71,7 +71,6 @@ describe('createInitialState', () => {
     expect(state.updatedAt).toBe(FIXED_NOW.toISOString());
     expect(state.currentStage).toBeNull();
     expect(state.history).toEqual([]);
-    expect(state.attempts).toEqual({});
     expect(state.outputs).toEqual({});
     expect(state.completedAt).toBeUndefined();
   });
@@ -97,7 +96,6 @@ describe('runPipeline', () => {
     expect(final.currentStage).toBeNull();
     expect(final.history.map((h) => h.stage)).toEqual(['a', 'b', 'c']);
     expect(final.history.every((h) => h.outcome === 'success')).toBe(true);
-    expect(final.attempts).toEqual({ a: 1, b: 1, c: 1 });
   });
 
   it('persists state after each stage', async () => {
@@ -430,13 +428,13 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     const state = createInitialState(101, 'wi');
     const ctx = makeContext({
       config: {
-        org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+        orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
         repositoryName: 'test-repo', targetRepoPath: '/r', worktreeBase: '/w',
         triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { foo: 500 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
       },
     });
     // Stage resolves in 50ms, timeout is 500ms
@@ -456,13 +454,13 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     const state = createInitialState(101, 'wi');
     const ctx = makeContext({
       config: {
-        org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+        orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
         repositoryName: 'test-repo', targetRepoPath: '/r', worktreeBase: '/w',
         triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { slow: 50 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
       },
     });
 
@@ -493,13 +491,13 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     const state = createInitialState(101, 'wi');
     const ctx = makeContext({
       config: {
-        org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+        orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
         repositoryName: 'test-repo', targetRepoPath: '/r', worktreeBase: '/w',
         triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { fast: 200 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
       },
     });
 

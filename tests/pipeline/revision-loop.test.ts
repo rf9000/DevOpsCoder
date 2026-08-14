@@ -7,14 +7,14 @@ const FIXED_NOW = new Date('2026-05-04T12:00:00.000Z');
 
 function mockContext(overrides: Partial<PipelineContext> = {}): PipelineContext {
   const config: AppConfig = {
-    org: 'o', orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
+    orgUrl: 'https://dev.azure.com/o', project: 'p', pat: 't',
     repositoryName: 'test-repo',
     targetRepoPath: '/r', worktreeBase: '/w',
     triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], dryRun: false,
+    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
   };
   return {
     config,
@@ -34,7 +34,6 @@ function mockState(): PipelineState {
     updatedAt: FIXED_NOW.toISOString(),
     currentStage: null,
     history: [],
-    attempts: {},
     outputs: {},
   };
 }

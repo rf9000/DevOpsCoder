@@ -79,7 +79,6 @@ Body content.
     expect(skills).toHaveLength(1);
     expect(skills[0]?.name).toBe('al-formatter');
     expect(skills[0]?.description).toBe('Formats AL code per Continia style');
-    expect(skills[0]?.skillDir).toBe(skillPath);
   });
 
   it('discovers multiple skills, alphabetically by directory entry order', () => {

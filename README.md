@@ -2,11 +2,15 @@
 
 The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo and opens draft PRs. DevopsCoder picks up work items tagged `agent implement`, runs a full analyzer → coder/reviewer → test-author → draft-PR pipeline against a per-WI git worktree, then tears down the worktree on success.
 
-The repo is at the **milestone-7 stage** (Plans 1-7 done): full end-to-end pipeline with cost and safety rails, operationally observable. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
+The repo is at the **milestone-10 stage** (Plans 1-8 + 10 done): full end-to-end pipeline with cost and safety rails, operationally observable, gated by real deploy-and-test verification. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
 
 Plan 6 adds safety rails: a per-WI cumulative cost cap (`MAX_COST_USD_PER_WI`), per-stage wall-clock timeouts (7 configurable `STAGE_TIMEOUT_MS_*` env vars), and mid-stage abort propagation via `AbortSignal` threaded through `PipelineContext`. Exceeding the cost cap or a stage timeout records a `terminalError`, posts a formatted WI comment, and adds the blocked tag. An external abort (SIGINT) sets `state.cancelled` instead — resumable, no blocked tag.
 
 Plan 7 makes per-WI cost operationally visible: every non-skipped watcher outcome log line now ends with `(cost: $X.XX)`, so an operator tailing `docker compose logs -f` can see spend without opening state JSON. Ships with `docker-compose.example.yml` and a full `## VM Deployment (Docker)` section below.
+
+Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome also reports the tools the agents invoked, e.g. `WI 123: completed (cost: $0.42, tools: Edit×5, Bash×2)`. Usage is tallied per stage (the 6 reviewer axes are merged) and persisted in `state.outputs.toolUsage`.
+
+Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys all configured apps to the environment and runs every AL test codeunit sequentially. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID`, `CONTINIA_API_TOKEN`, and `CONTINIA_APP_PATHS` (see `.env.example`) — config validation fails fast without them.**
 
 ## Tech stack
 
@@ -50,7 +54,7 @@ src/
   utils/           — Logger, slugify, runPool, html helpers, bash-allowlist, path-escape-filter
 tests/             — mirrors src/ layout; integration/ for cross-cutting tests
 docs/
-  superpowers/plans/ — implementation plans (Plans 1–6 done)
+  superpowers/plans/ — implementation plans (Plans 1–8 done)
 ```
 
 ## Local setup
@@ -135,10 +139,18 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
 | `MAX_COST_USD_PER_WI` | **yes** | **none** | Pipeline refuses to start without this; set it consciously |
+| `CONTINIA_ENV_PROFILE_ID` | **yes** | **none** | DemoPortal profile for per-WI env creation |
+| `CONTINIA_API_TOKEN` | **yes** | **none** | Forwarded into the spawned continia.exe |
+| `CONTINIA_APP_PATHS` | **yes** | **none** | Comma-separated app dirs, dependency order, worktree-relative |
+| `CONTINIA_CLI_PATH` | no | `.tools/continia.exe` | Relative → resolved against the worktree; set absolute if the target repo doesn't vendor the CLI |
+| `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
+| `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
+| `STAGE_TIMEOUT_MS_BUILD_AND_TEST` | no | derived (105 min) | `(MAX_TEST_FIX_ATTEMPTS+1) × VERIFY_PASS + MAX_TEST_FIX_ATTEMPTS × CODER` |
 | `STAGE_TIMEOUT_MS_ANALYZER` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_WORKTREE_SETUP` | no | 60000 (1 min) | |
-| `STAGE_TIMEOUT_MS_CODER` | no | 1800000 (30 min) | |
-| `STAGE_TIMEOUT_MS_REVIEWER` | no | 900000 (15 min) | |
+| `STAGE_TIMEOUT_MS_CODER` | no | 1800000 (30 min) | Per revision iteration; sizes the revision-loop default |
+| `STAGE_TIMEOUT_MS_REVIEWER` | no | 900000 (15 min) | Per revision iteration; sizes the revision-loop default |
+| `STAGE_TIMEOUT_MS_REVISION_LOOP` | no | `MAX_REVISIONS × (CODER + REVIEWER)` (135 min) | Wall-clock cap on the whole coder⇄reviewer loop |
 | `STAGE_TIMEOUT_MS_TEST_AUTHOR` | no | 1200000 (20 min) | |
 | `STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR` | no | 120000 (2 min) | |
 | `STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN` | no | 60000 (1 min) | |

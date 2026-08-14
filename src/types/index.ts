@@ -1,5 +1,4 @@
 export interface AppConfig {
-  org: string;
   orgUrl: string;
   project: string;
   pat: string;
@@ -20,6 +19,18 @@ export interface AppConfig {
   claudeModel: string;
   stateDir: string;
   assignedToFilter: string[];
+  /** Path to continia.exe. Absolute, or relative to the per-WI worktree. */
+  continiaCliPath: string;
+  /** DemoPortal profile used for `continia env create --profile`. */
+  continiaEnvProfileId: string;
+  /** DemoPortal API token, forwarded into the spawned CLI's environment. */
+  continiaApiToken: string;
+  /** AL app dirs (worktree-relative, dependency-ordered) to deps-install/deploy. */
+  continiaAppPaths: string[];
+  /** AL app dirs to scan for test codeunits. Defaults to continiaAppPaths. */
+  continiaTestAppPaths: string[];
+  /** Max coder fix attempts when the deploy/test verification is red. */
+  maxTestFixAttempts: number;
   dryRun: boolean;
 }
 
@@ -69,7 +80,6 @@ export interface PipelineState {
   rejectCount?: number;
   currentStage: string | null;
   history: StageHistoryEntry[];
-  attempts: Record<string, number>;
   /**
    * Per-stage outputs keyed by `Stage.name`. Reserved keys: `cost` carries
    * `PipelineCostInfo` (managed by createCostTracker, see src/utils/cost-tracker.ts);
@@ -132,6 +142,88 @@ export class StageTimeoutError extends Error {
     public readonly timeoutMs: number,
   ) {
     super(`stage "${stage}" exceeded timeout of ${formatTimeout(timeoutMs)}`);
+  }
+}
+
+/**
+ * Written to `state.outputs.environment` by the env-provision stage.
+ * Never torn down — DemoPortal environments auto-delete ~10 days after
+ * creation; the URL is surfaced in the draft-PR description for manual tests.
+ */
+export interface EnvironmentOutput {
+  envId: string;
+  /** wi-<id>-<slug>, truncated. */
+  name: string;
+  url?: string;
+  /** Last observed DemoPortal status (Draft/Starting/Running/...). */
+  status: string;
+  createdAt: string;
+}
+
+/** One entry of `continia deploy --json`'s per-app result array. */
+export interface DeployAppResult {
+  app: string;
+  compiled: boolean;
+  published: boolean;
+  error?: string;
+}
+
+/** One test case from `continia test run --json`. */
+export interface TestCaseResult {
+  name: string;
+  fullName?: string;
+  result: string;
+  durationSeconds?: number;
+  errorMessage?: string;
+  stackTrace?: string;
+}
+
+/** Result of one `continia test run` against one test codeunit. */
+export interface TestRunRecord {
+  /** 0 = initial verification, 1..N = after fix attempt N. */
+  attempt: number;
+  codeunitId: number;
+  codeunitName?: string;
+  passed: boolean;
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+    durationSeconds?: number;
+  };
+  tests: TestCaseResult[];
+}
+
+/**
+ * Written to `state.outputs.verification` by the build-and-test stage after
+ * every deploy/test round, so a mid-loop timeout still leaves diagnosable state.
+ */
+export interface VerificationOutput {
+  /** Fix attempts consumed (0..maxTestFixAttempts). */
+  attempts: number;
+  /** Last deploy round: every entry compiled && published. */
+  compiled: boolean;
+  deploy: DeployAppResult[];
+  testRuns: TestRunRecord[];
+  passed: boolean;
+}
+
+/**
+ * Thrown by the build-and-test stage when the deploy/test verification is
+ * still red after all fix attempts. The message intentionally contains the
+ * literal substring `verification failed` (lowercase) so the processor can
+ * route it via `/verification failed/i.test(err.message)` without importing
+ * this class directly.
+ */
+export class VerificationFailedError extends Error {
+  override readonly name = 'VerificationFailedError';
+  constructor(
+    public readonly attempts: number,
+    public readonly compiled: boolean,
+    summaryLine: string,
+  ) {
+    super(`verification failed after ${attempts} fix attempt(s): ${summaryLine}`);
   }
 }
 

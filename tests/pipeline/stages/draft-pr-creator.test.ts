@@ -35,7 +35,6 @@ import type { AdoClient } from '../../../src/sdk/azure-devops-client.ts';
 // ---------------------------------------------------------------------------
 
 const baseConfig: AppConfig = {
-  org: 'o',
   orgUrl: 'https://dev.azure.com/myorg',
   project: 'my project',
   pat: 'pat',
@@ -56,7 +55,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 };
 
 const sampleWiCtx: WorkItemContext = {
@@ -121,7 +120,6 @@ function makeState(overrides: Partial<PipelineState> = {}): PipelineState {
     updatedAt: '2026-01-01T00:00:00Z',
     currentStage: 'draft-pr-creator',
     history: [],
-    attempts: {},
     outputs: {
       wiContext: sampleWiCtx,
       analyzer: sampleAnalyzer,
@@ -347,6 +345,41 @@ describe('createDraftPrCreatorStage', () => {
       config: baseConfig,
     });
     expect(descApprovedEmpty).toBe('Approved with no findings.');
+  });
+
+  it('substitutes {{environment-id}} and {{environment-url}} when the env output is present', () => {
+    const desc = buildPrDescription({
+      wiCtx: sampleWiCtx,
+      analyzer: sampleAnalyzer,
+      coder: sampleCoder,
+      testAuthor: undefined,
+      reviewer: undefined,
+      worktree: sampleWorktree,
+      environment: {
+        envId: 'env-9',
+        name: 'wi-101-fix-login',
+        url: 'https://bc/env-9',
+        status: 'Running',
+        createdAt: '2026-07-07T10:00:00Z',
+      },
+      template: '{{environment-id}} | {{environment-url}}',
+      config: baseConfig,
+    });
+    expect(desc).toBe('env-9 | https://bc/env-9');
+  });
+
+  it('falls back to placeholders text when the env output is missing', () => {
+    const desc = buildPrDescription({
+      wiCtx: sampleWiCtx,
+      analyzer: sampleAnalyzer,
+      coder: sampleCoder,
+      testAuthor: undefined,
+      reviewer: undefined,
+      worktree: sampleWorktree,
+      template: '{{environment-id}} | {{environment-url}}',
+      config: baseConfig,
+    });
+    expect(desc).toBe('(none) | (not available)');
   });
 
   // -------------------------------------------------------------------------

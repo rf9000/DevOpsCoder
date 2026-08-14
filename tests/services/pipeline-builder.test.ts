@@ -14,9 +14,9 @@ import type {
   AgentRunResult,
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
+import type { ContiniaCli } from '../../src/services/continia-cli.ts';
 
 const config: AppConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -37,7 +37,7 @@ const config: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 };
 
 const sampleWorktree: WorktreeContext = {
@@ -68,6 +68,26 @@ function makeWorktreeManager(): WorktreeManager {
   };
 }
 
+/** Fully green fake ContiniaCli: env provisions, deploys compile, tests pass. */
+function makeGreenContiniaCli(): ContiniaCli {
+  return {
+    createEnvironment: mock(async () => ({ id: 'env-9', status: 'Draft', url: 'https://bc/env-9' })),
+    startEnvironment: mock(async () => {}),
+    getEnvironment: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/env-9' })),
+    waitForRunning: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/env-9' })),
+    installDependencies: mock(async () => {}),
+    downloadSymbols: mock(async () => {}),
+    deployApp: mock(async () => [{ app: 'App', compiled: true, published: true }]),
+    runTests: mock(async () => ({
+      status: 'completed', passed: true,
+      summary: { total: 1, passed: 1, failed: 0, skipped: 0 },
+      tests: [{ name: 'T', result: 'Pass' }],
+    })),
+  } as unknown as ContiniaCli;
+}
+
+const greenCodeunits = async () => [{ id: 148001, name: 'Tests', file: 'x.al' }];
+
 function makeState(): PipelineState {
   return {
     workItemId: 101,
@@ -76,7 +96,6 @@ function makeState(): PipelineState {
     updatedAt: '2026-01-01T00:00:00Z',
     currentStage: 'analyzer',
     history: [],
-    attempts: {},
     outputs: {},
   };
 }
@@ -109,26 +128,30 @@ function makeRecordingRunner(
 }
 
 describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
-  it('returns the 6-stage pipeline in order: analyzer → worktree-setup → revision-loop → test-author → draft-pr-creator → worktree-teardown', () => {
+  it('returns the 8-stage pipeline in order: analyzer → worktree-setup → env-provision → revision-loop → test-author → build-and-test → draft-pr-creator → worktree-teardown', () => {
     const stages = buildPipeline({
       config,
       logger: createLogger(),
       ado: makeAdo(),
       runner: makeRecordingRunner(() => ({})),
       worktreeManager: makeWorktreeManager(),
+      continiaCli: makeGreenContiniaCli(),
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      testFixerPromptTemplate: 'F',
       prDescriptionTemplate: 'D',
       pushBranch: mock(async () => {}),
     });
-    expect(stages).toHaveLength(6);
+    expect(stages).toHaveLength(8);
     expect(stages.map((s) => s.name)).toEqual([
       'analyzer',
       'worktree-setup',
+      'env-provision',
       'revision-loop',
       'test-author',
+      'build-and-test',
       'draft-pr-creator',
       'worktree-teardown',
     ]);
@@ -158,16 +181,19 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
     const worktreeManager = makeWorktreeManager();
     const ado = makeAdo();
     const pushBranch = mock(async () => {});
+    const continiaCli = makeGreenContiniaCli();
     const stages = buildPipeline({
       config,
       logger: createLogger(),
       ado,
       runner,
       worktreeManager,
+      continiaCli,
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      testFixerPromptTemplate: 'F',
       reviewerSharedPromptTemplate: 'R',
       reviewerAxisPromptTemplates: Object.fromEntries(
         REVIEW_AXES.map((a) => [a, a]),
@@ -176,16 +202,19 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       pushBranch,
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
+      discoverTestCodeunits: greenCodeunits,
     });
     let state = makeState();
     const ctx = makeCtx();
     for (const stage of stages) {
       state = await stage.execute(state, ctx);
     }
-    // 9 = analyzer + coder + 6 reviewer axes + test-author
+    // 9 = analyzer + coder + 6 reviewer axes + test-author (no fix calls on green)
     expect(runner.calls).toHaveLength(9);
     expect(state.outputs.analyzer).toBeDefined();
     expect(state.outputs.worktree).toEqual(sampleWorktree);
+    expect(state.outputs.environment).toMatchObject({ envId: 'env-9' });
+    expect(state.outputs.verification).toMatchObject({ passed: true, attempts: 0 });
     expect(state.outputs.coder).toEqual({
       summary: 'coded',
       filesChanged: ['x.ts'],
@@ -217,10 +246,12 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       ado: makeAdo(),
       runner,
       worktreeManager: makeWorktreeManager(),
+      continiaCli: makeGreenContiniaCli(),
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      testFixerPromptTemplate: 'F',
       reviewerSharedPromptTemplate: 'R',
       reviewerAxisPromptTemplates: Object.fromEntries(
         REVIEW_AXES.map((a) => [a, a]),
@@ -229,8 +260,9 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       pushBranch: mock(async () => {}),
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
+      discoverTestCodeunits: greenCodeunits,
     });
-    const revisionLoopStage = stages[2]!;
+    const revisionLoopStage = stages[3]!;
     expect(revisionLoopStage.name).toBe('revision-loop');
     const state = makeState();
     state.outputs.analyzer = { verdict: 'proceed', summary: 's', reasons: [] };
@@ -273,10 +305,12 @@ describe('buildPipeline (Plan 5 full chain)', () => {
       ado: makeAdo(),
       runner,
       worktreeManager: makeWorktreeManager(),
+      continiaCli: makeGreenContiniaCli(),
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      testFixerPromptTemplate: 'F',
       reviewerSharedPromptTemplate: 'R',
       reviewerAxisPromptTemplates: Object.fromEntries(
         REVIEW_AXES.map((a) => [a, a]),
@@ -285,8 +319,9 @@ describe('buildPipeline (Plan 5 full chain)', () => {
       pushBranch: mock(async () => {}),
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
+      discoverTestCodeunits: greenCodeunits,
     });
-    const revisionLoopStage = stages[2]!;
+    const revisionLoopStage = stages[3]!;
     expect(revisionLoopStage.name).toBe('revision-loop');
 
     const state = makeState();
@@ -333,18 +368,21 @@ describe('buildPipeline (Plan 5 full chain)', () => {
       ado,
       runner,
       worktreeManager: makeWorktreeManager(),
+      continiaCli: makeGreenContiniaCli(),
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
+      testFixerPromptTemplate: 'F',
       reviewerSharedPromptTemplate: 'R',
       reviewerAxisPromptTemplates: Object.fromEntries(
         REVIEW_AXES.map((a) => [a, a]),
       ) as Record<typeof REVIEW_AXES[number], string>,
-      prDescriptionTemplate: 'CUSTOM_TEMPLATE {{wi-id}}',
+      prDescriptionTemplate: 'CUSTOM_TEMPLATE {{wi-id}} {{environment-id}}',
       pushBranch,
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
+      discoverTestCodeunits: greenCodeunits,
     });
 
     let state = makeState();
@@ -367,6 +405,7 @@ describe('buildPipeline (Plan 5 full chain)', () => {
     expect(capturedDescriptions).toHaveLength(1);
     expect(capturedDescriptions[0]).toContain('CUSTOM_TEMPLATE');
     expect(capturedDescriptions[0]).toContain('101');
+    expect(capturedDescriptions[0]).toContain('env-9');
     expect(state.outputs.draftPr).toMatchObject({ id: 42, url: 'https://example.com/pr/42' });
   });
 });

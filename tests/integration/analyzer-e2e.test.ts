@@ -1,3 +1,4 @@
+import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -21,7 +22,6 @@ import type {
 } from '../../src/services/pipeline-builder.ts';
 
 const baseConfig: AppConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -42,7 +42,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 };
 
 function makeAdo(tagged: number[]): AdoClient {
@@ -90,6 +90,9 @@ function makeBuildPipeline(runner: AgentRunner) {
     buildPipeline({
       ...deps,
       runner,
+      continiaCli: makeGreenContiniaCli(),
+      testFixerPromptTemplate: 'F',
+      discoverTestCodeunits: greenCodeunits,
       worktreeManager: {
         ensureWorktree: async () => ({ path: '/tmp/wt', branch: 'agent/test', baseSha: 'sha' }),
         removeWorktree: async () => {},
@@ -180,7 +183,6 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
       updatedAt: '2026-01-02T00:00:00Z',
       currentStage: 'analyzer',
       history: [],
-      attempts: {},
       outputs: {},
       rejectCount: 2,
     });
@@ -229,7 +231,6 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
       updatedAt: '2026-01-02T00:00:00Z',
       currentStage: 'analyzer',
       history: [],
-      attempts: {},
       outputs: {},
       rejectCount: 1,
       rejection: {

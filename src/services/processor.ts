@@ -1,6 +1,7 @@
 import { marked } from 'marked';
 import type {
   AppConfig,
+  EnvironmentOutput,
   PipelineCostInfo,
   PipelineRejection,
   PipelineState,
@@ -8,6 +9,7 @@ import type {
   ProcessOutcome,
   ReviewerOutput,
   FindingSeverity,
+  VerificationOutput,
 } from '../types/index.ts';
 import { formatTimeout } from '../types/index.ts';
 import type { Logger } from '../utils/logger.ts';
@@ -135,6 +137,85 @@ export function renderCostExhaustionMarkdown(
     lines.push(`| **Total** | **$${cost.total.toFixed(4)}** |`);
   }
 
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+  );
+
+  return lines.join('\n');
+}
+
+const COMMENT_STACK_TRACE_MAX_LINES = 15;
+const COMMENT_STACK_TRACE_MAX_CHARS = 1500;
+
+function trimTraceForComment(trace: string): string {
+  let trimmed = trace.split('\n').slice(0, COMMENT_STACK_TRACE_MAX_LINES).join('\n');
+  if (trimmed.length > COMMENT_STACK_TRACE_MAX_CHARS) {
+    trimmed = trimmed.slice(0, COMMENT_STACK_TRACE_MAX_CHARS);
+  }
+  if (trimmed.length < trace.length) trimmed += '\n... (truncated)';
+  return trimmed;
+}
+
+export function renderVerificationFailureMarkdown(
+  state: PipelineState,
+  config: AppConfig,
+  workItemId: number,
+): string {
+  const verification = state.outputs.verification as VerificationOutput | undefined;
+  const environment = state.outputs.environment as EnvironmentOutput | undefined;
+  const lines: string[] = [];
+
+  lines.push(`## Pipeline blocked: verification failed on the test environment`);
+  lines.push('');
+  lines.push(
+    `The implementation was deployed to a Business Central environment, but verification was still red after ${config.maxTestFixAttempts} fix attempt${config.maxTestFixAttempts === 1 ? '' : 's'}. No draft PR was created.`,
+  );
+  lines.push('');
+  if (environment) {
+    lines.push(
+      `- Environment: \`${environment.envId}\`${environment.url ? ` (${environment.url})` : ''} — auto-deletes ~10 days after creation`,
+    );
+    lines.push('');
+  }
+
+  if (!verification) {
+    lines.push('(no verification details were recorded)');
+  } else if (!verification.compiled) {
+    lines.push(`### Compile / deploy errors`);
+    lines.push('');
+    for (const entry of verification.deploy) {
+      if (entry.compiled && entry.published) continue;
+      lines.push(`- **${entry.app}**: ${entry.error ?? 'compile/publish failed (no error detail)'}`);
+    }
+  } else {
+    lines.push(`### Failing tests`);
+    lines.push('');
+    for (const run of verification.testRuns) {
+      if (run.passed) continue;
+      const name = run.codeunitName ? ` "${run.codeunitName}"` : '';
+      lines.push(
+        `#### Codeunit ${run.codeunitId}${name} — ${run.summary.failed} failed / ${run.summary.total} total`,
+      );
+      lines.push('');
+      for (const test of run.tests) {
+        if (test.result.toLowerCase() !== 'fail') continue;
+        lines.push(`- **${test.name}**${test.errorMessage ? `: ${test.errorMessage}` : ''}`);
+        if (test.stackTrace) {
+          lines.push('');
+          lines.push('  ```');
+          lines.push(trimTraceForComment(test.stackTrace));
+          lines.push('  ```');
+        }
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push('');
+  lines.push('The worktree is retained for inspection.');
   lines.push('');
   lines.push('---');
   lines.push('');
@@ -440,7 +521,16 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           };
         if (!config.dryRun) {
           const reviewer = persisted?.outputs.reviewer as ReviewerOutput | undefined;
-          if (reviewer && reviewer.findings.length > 0) {
+          // Verification failure must be checked FIRST: by the time build-and-test
+          // fails, the reviewer has usually approved (possibly with non-blocking
+          // findings), and the reviewer-findings branch would hijack the comment.
+          if (persisted && /verification failed/i.test(terminalError.message)) {
+            const markdown = renderVerificationFailureMarkdown(persisted, config, workItemId);
+            const html = await marked(markdown);
+            await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
+              ado.addWorkItemComment(workItemId, html),
+            );
+          } else if (reviewer && reviewer.findings.length > 0) {
             const markdown = renderReviewerFindingsMarkdown(reviewer, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>

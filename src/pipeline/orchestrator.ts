@@ -35,7 +35,6 @@ export function createInitialState(
     updatedAt: ts,
     currentStage: null,
     history: [],
-    attempts: {},
     outputs: {},
   };
 }
@@ -149,7 +148,6 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
         endedAt,
         outcome: 'success',
       });
-      state.attempts[stage.name] = (state.attempts[stage.name] ?? 0) + 1;
       store.save(state);
     } catch (err) {
       const endedAt = context.now().toISOString();

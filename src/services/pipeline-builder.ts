@@ -14,8 +14,12 @@ import {
   createWorktreeManager,
   type WorktreeManager,
 } from './worktree-manager.ts';
+import { createContiniaCli, type ContiniaCli } from './continia-cli.ts';
+import type { DiscoveredTestCodeunit } from '../utils/al-test-discovery.ts';
 import { createAnalyzerStage } from '../pipeline/stages/analyzer.ts';
 import { createWorktreeSetupStage } from '../pipeline/stages/worktree-setup.ts';
+import { createEnvProvisionStage } from '../pipeline/stages/env-provision.ts';
+import { createBuildAndTestStage } from '../pipeline/stages/build-and-test.ts';
 import { createCoderStage } from '../pipeline/stages/coder.ts';
 import { createTestAuthorStage } from '../pipeline/stages/test-author.ts';
 import { createReviewerStage, REVIEW_AXES } from '../pipeline/stages/reviewer.ts';
@@ -26,6 +30,7 @@ import { createWorktreeTeardownStage } from '../pipeline/stages/worktree-teardow
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
 const CODER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder.md`;
 const TEST_AUTHOR_PROMPT_PATH = `${import.meta.dir}/../prompts/test-author.md`;
+const TEST_FIXER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-fixer.md`;
 const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
 const DRAFT_PR_DESCRIPTION_PROMPT_PATH = `${import.meta.dir}/../prompts/draft-pr-description.md`;
 const REVIEWER_AXIS_PROMPT_PATHS: Record<typeof REVIEW_AXES[number], string> = {
@@ -45,6 +50,15 @@ export interface PipelineBuilderDeps {
   runner?: AgentRunner;
   /** Optional worktree-manager override. Defaults to `createWorktreeManager`. */
   worktreeManager?: WorktreeManager;
+  /** Optional ContiniaCli override. Defaults to `createContiniaCli` (real spawns). */
+  continiaCli?: ContiniaCli;
+  /** Optional test-fixer prompt body override. */
+  testFixerPromptTemplate?: string;
+  /** Test override: inject a fake AL test-codeunit discovery so build-and-test doesn't scan disk. */
+  discoverTestCodeunits?: (
+    worktreePath: string,
+    testAppPaths: string[],
+  ) => Promise<DiscoveredTestCodeunit[]>;
   /** Optional skill-list override. Defaults to `discoverTargetRepoSkills(config.targetRepoPath)`. */
   discoveredSkills?: DiscoveredSkill[];
   /** Optional analyzer prompt body override. */
@@ -89,6 +103,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     createClaudeAgentRunner({ config: deps.config, logger: deps.logger });
   const worktreeManager =
     deps.worktreeManager ?? createWorktreeManager({ config: deps.config });
+  const continiaCli = deps.continiaCli ?? createContiniaCli({ config: deps.config });
   const discoveredSkills =
     deps.discoveredSkills ??
     discoverTargetRepoSkills(deps.config.targetRepoPath);
@@ -99,6 +114,8 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const testAuthorPromptTemplate =
     deps.testAuthorPromptTemplate ??
     readFileSync(TEST_AUTHOR_PROMPT_PATH, 'utf-8');
+  const testFixerPromptTemplate =
+    deps.testFixerPromptTemplate ?? readFileSync(TEST_FIXER_PROMPT_PATH, 'utf-8');
   const reviewerSharedPromptTemplate =
     deps.reviewerSharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8');
   // Object.fromEntries types as Record<string, string>; cast is safe because
@@ -140,6 +157,11 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       canUseTool: deps.canUseTool,
     }),
     createWorktreeSetupStage({ worktreeManager }),
+    createEnvProvisionStage({
+      config: deps.config,
+      continiaCli,
+      logger: deps.logger,
+    }),
     revisionLoop({
       name: 'revision-loop',
       producer: coder,
@@ -160,6 +182,16 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       discoveredSkills,
       getCurrentHeadSha: deps.getCurrentHeadSha,
       resetWorktree: deps.resetWorktree,
+    }),
+    createBuildAndTestStage({
+      config: deps.config,
+      continiaCli,
+      runner,
+      fixerPromptTemplate: testFixerPromptTemplate,
+      discoveredSkills,
+      getCurrentHeadSha: deps.getCurrentHeadSha,
+      resetWorktree: deps.resetWorktree,
+      discoverTestCodeunits: deps.discoverTestCodeunits,
     }),
     createDraftPrCreatorStage({
       config: deps.config,

@@ -9,6 +9,7 @@ import {
 } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AppConfig } from '../../types/index.ts';
+import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -20,6 +21,19 @@ export const analyzerOutputSchema = z.object({
 });
 
 export type AnalyzerOutput = z.infer<typeof analyzerOutputSchema>;
+
+// The analyzer is a read-only readiness gate: it may inspect the target repo but
+// must never mutate it. `disallowedTools` already blocks Edit/Write; this allowlist
+// enforces the same contract on Bash instead of trusting the prompt alone.
+const ANALYZER_BASH_ALLOW: RegExp[] = [
+  /^git (status|diff|log|show|blame|grep|ls-files)\b/,
+  /^ls\b/,
+  /^cat\b/,
+  /^head\b/,
+  /^tail\b/,
+  /^wc\b/,
+  /^pwd\b/,
+];
 
 export interface AnalyzerStageDeps {
   config: AppConfig;
@@ -91,13 +105,16 @@ export function buildAnalyzerUserPrompt(
 }
 
 /**
- * Hand-rolled Stage (intentionally NOT via the agentStage factory) — the analyzer's
+ * Hand-rolled Stage — the analyzer's
  * verdict branches into either `state.outputs.analyzer` (proceed) or
  * `throw new PipelineRejectError(...)` (reject), which the orchestrator catches
  * to populate `state.rejection`. The processor then dispatches the reject path.
  */
 export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
   const fetcher = deps.fetchWiContext ?? defaultFetchWiContext;
+  const canUseTool =
+    deps.canUseTool ??
+    createBashAllowlist({ allow: ANALYZER_BASH_ALLOW, deny: [] });
   return {
     name: 'analyzer',
     canRun: () => true,
@@ -114,7 +131,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
         systemPromptAppend: deps.promptTemplate,
         settingSources: ['project'],
         maxTurns: 20,
-        canUseTool: deps.canUseTool,
+        canUseTool,
         signal: ctx.signal,
       });
 

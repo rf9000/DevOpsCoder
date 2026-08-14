@@ -53,7 +53,7 @@ The WI's comment history may contain a previous analyzer comment if you (or a pr
 
 ## Image Attachments
 
-Image URLs from the WI's HTML fields are surfaced in the user prompt as `Attached images:` references. Use the `Read` tool to fetch them if they're material to your decision (e.g. mockups that define acceptance). Don't fetch them if they're decorative. Don't refuse to decide just because a screenshot is hard to interpret — describe the gap in `reasons` instead.
+Image URLs from the WI's HTML fields are surfaced in the user prompt as `Attached images:` references. You cannot fetch these URLs — treat them as signals that visual context exists. If an image is clearly material to the decision (e.g. a mockup that defines acceptance) and the surrounding text doesn't describe it well enough to act on, that is a legitimate `reject` reason: ask the human to describe the image's content in the WI text.
 
 ## Using Available Skills
 
@@ -62,7 +62,7 @@ If the system prompt lists "Available Invocable Skills", check whether any apply
 ## Tools
 
 - `Read`, `Grep`, `Glob` — explore the repository
-- `Bash` — read-only repo inspection (`git log`, `git blame`, `find`, etc.). Do **not** modify the repository, commit, push, or run commands that have side effects outside the repo. The pipeline gives you no `Edit` or `Write` tool by design.
+- `Bash` — read-only repo inspection, enforced by an allowlist: `git status|diff|log|show|blame|grep|ls-files`, `ls`, `cat`, `head`, `tail`, `wc`, `pwd`. Anything else (and any command chaining) is denied. The pipeline gives you no `Edit` or `Write` tool by design.
 - `Skill` — invoke discovered skills
 
 ## Rules

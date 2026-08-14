@@ -31,7 +31,9 @@ export const coderOutputSchema = z.object({
   commits: z.array(z.string()),
 }) satisfies z.ZodType<CoderOutput>;
 
-const CODER_BASH_ALLOW: RegExp[] = [
+// Exported for reuse by the build-and-test stage's fix calls, which run the
+// same kind of agent under the same policy.
+export const CODER_BASH_ALLOW: RegExp[] = [
   /^git (status|diff|log|show|blame)\b/,
   /^git add (?!-A\b|\.\s*$|--all\b|:\/)/,
   /^git commit\b/,
@@ -45,7 +47,7 @@ const CODER_BASH_ALLOW: RegExp[] = [
   /^pwd\b/,
 ];
 
-const CODER_BASH_DENY: RegExp[] = [
+export const CODER_BASH_DENY: RegExp[] = [
   /^git push\b/,
   /^git checkout\b/,
   /^git switch\b/,
@@ -181,10 +183,8 @@ export function buildCoderUserPrompt(
 }
 
 /**
- * Hand-rolled Stage (intentionally NOT via the agentStage factory) — the coder
- * has retry-on-transient-error + baseline-reset-on-throw semantics that don't fit
- * the factory's transparent pass-through. The factory is for stages that just
- * run-the-runner-and-stash.
+ * Hand-rolled Stage — the coder has retry-on-transient-error +
+ * baseline-reset-on-throw semantics beyond a plain run-the-runner-and-stash.
  */
 export function createCoderStage(deps: CoderStageDeps): Stage {
   const getHead = deps.getCurrentHeadSha ?? defaultGetCurrentHeadSha;

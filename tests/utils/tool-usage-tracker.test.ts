@@ -10,7 +10,6 @@ function makeState(): PipelineState {
     updatedAt: '',
     currentStage: null,
     history: [],
-    attempts: {},
     outputs: {},
   };
 }

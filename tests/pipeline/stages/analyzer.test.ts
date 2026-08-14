@@ -13,7 +13,6 @@ import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
 
 const baseConfig: AppConfig = {
-  org: 'o',
   orgUrl: 'https://x',
   project: 'p',
   pat: 'pat',
@@ -34,7 +33,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  dryRun: false,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, dryRun: false,
 };
 
 function makeWiContext(): WorkItemContext {
@@ -91,7 +90,6 @@ function makeState(): PipelineState {
     updatedAt: '2026-01-01T00:00:00Z',
     currentStage: 'analyzer',
     history: [],
-    attempts: {},
     outputs: {},
   };
 }
@@ -145,8 +143,8 @@ describe('buildAnalyzerUserPrompt', () => {
 
   it('includes the skill list when discoveredSkills is non-empty', () => {
     const skills: DiscoveredSkill[] = [
-      { name: 'al-formatter', description: 'Formats AL', skillDir: '/x' },
-      { name: 'field-mappings', description: 'AL→online mappings', skillDir: '/y' },
+      { name: 'al-formatter', description: 'Formats AL' },
+      { name: 'field-mappings', description: 'AL→online mappings' },
     ];
     const prompt = buildAnalyzerUserPrompt(makeWiContext(), skills);
     expect(prompt).toContain('## Available Invocable Skills');
@@ -267,5 +265,56 @@ describe('createAnalyzerStage', () => {
     });
     const result = await stage.execute(makeState(), makeCtx());
     expect(result.outputs.wiContext).toEqual(wiContext);
+  });
+
+  describe('default read-only Bash allowlist (no canUseTool override)', () => {
+    async function capturedCanUseTool() {
+      const runner = makeRunner({ verdict: 'proceed', summary: 's', reasons: [] });
+      const stage = createAnalyzerStage({
+        config: baseConfig,
+        ado: makeMockAdo(),
+        runner,
+        discoveredSkills: [],
+        promptTemplate: 'x',
+        fetchWiContext: async () => makeWiContext(),
+      });
+      await stage.execute(makeState(), makeCtx());
+      const canUseTool = runner.calls[0]?.canUseTool;
+      expect(canUseTool).toBeDefined();
+      return canUseTool!;
+    }
+
+    it('installs a canUseTool filter when none is injected', async () => {
+      await capturedCanUseTool();
+    });
+
+    it('allows read-only commands (git log, ls)', async () => {
+      const filter = await capturedCanUseTool();
+      expect((await filter('Bash', { command: 'git log --oneline' })).behavior).toBe('allow');
+      expect((await filter('Bash', { command: 'ls src' })).behavior).toBe('allow');
+    });
+
+    it('denies mutating commands (git commit, git push, rm)', async () => {
+      const filter = await capturedCanUseTool();
+      expect((await filter('Bash', { command: 'git commit -m "x"' })).behavior).toBe('deny');
+      expect((await filter('Bash', { command: 'git push origin main' })).behavior).toBe('deny');
+      expect((await filter('Bash', { command: 'rm -rf src' })).behavior).toBe('deny');
+    });
+
+    it('an injected canUseTool still takes precedence', async () => {
+      const runner = makeRunner({ verdict: 'proceed', summary: 's', reasons: [] });
+      const injected = async () => ({ behavior: 'allow' as const });
+      const stage = createAnalyzerStage({
+        config: baseConfig,
+        ado: makeMockAdo(),
+        runner,
+        discoveredSkills: [],
+        promptTemplate: 'x',
+        canUseTool: injected,
+        fetchWiContext: async () => makeWiContext(),
+      });
+      await stage.execute(makeState(), makeCtx());
+      expect(runner.calls[0]?.canUseTool).toBe(injected);
+    });
   });
 });

@@ -20,9 +20,10 @@ export interface BashAllowlistConfig {
  * of these appear, accepting the (rare) false positive on quoted occurrences of these
  * characters in commit messages etc. — the model can phrase its commands without them.
  *
- * Tokens covered: `&&`, `||`, `;`, `|`, `$(`, backtick, `>`, `>>`, `<`, `<<`.
+ * Tokens covered: `&&`, `||`, `;`, `|`, `$(`, backtick, `>`, `>>`, `<`, `<<`, and
+ * newlines/carriage returns (a second command on a new line bypasses `^`-anchored rules).
  */
-const SHELL_COMPOSITION_RE = /(?:&&|\|\||;|\||`|\$\(|>|<)/;
+const SHELL_COMPOSITION_RE = /(?:&&|\|\||;|\||`|\$\(|>|<|\n|\r)/;
 
 /**
  * Build a `CanUseToolFn` that enforces a strict allowlist + denylist on Bash tool calls.
@@ -31,8 +32,8 @@ const SHELL_COMPOSITION_RE = /(?:&&|\|\||;|\||`|\$\(|>|<)/;
  * - Non-Bash tool calls (`Read`, `Edit`, etc.) are unconditionally allowed by this filter.
  *   Compose with other filters (e.g. `createPathEscapeFilter`) to constrain non-Bash tools.
  * - Bash commands containing shell composition (`&&`, `||`, `;`, `|`, `$()`, backticks,
- *   `>`, `<`) are denied outright. They would otherwise let a model bypass the allowlist
- *   by smuggling a denied verb after an allowed prefix.
+ *   `>`, `<`, newlines) are denied outright. They would otherwise let a model bypass the
+ *   allowlist by smuggling a denied verb after an allowed prefix.
  * - For simple (non-composed) Bash: if any `deny` pattern matches → deny. Else if any
  *   `allow` pattern matches → allow. Else → deny (allowlist semantics — anything not
  *   explicitly allowed is rejected).
@@ -50,7 +51,7 @@ export function createBashAllowlist(cfg: BashAllowlistConfig): CanUseToolFn {
     if (SHELL_COMPOSITION_RE.test(command)) {
       return {
         behavior: 'deny',
-        message: `Bash command uses shell composition (&&, ||, ;, |, backticks, $(), >, <) — denied to prevent allowlist bypass: ${command}`,
+        message: `Bash command uses shell composition (&&, ||, ;, |, backticks, $(), >, <, newlines) — denied to prevent allowlist bypass: ${command}`,
       };
     }
 
