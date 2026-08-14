@@ -184,8 +184,12 @@ function makeHarness(opts: {
       callOrder.push('waitForRunning');
       return { id: 'env-9', status: 'Running', url: 'https://bc/env-9' };
     }),
+    installAppById: mock(async (_e: string, appId: string) => {
+      callOrder.push(`install-app:${appId}`);
+    }),
     installDependencies: mock(async (_e: string, app: string) => {
       callOrder.push(`install:${app}`);
+      return { skippedCount: 0, symbolsMissingCount: 0 };
     }),
     downloadSymbols: mock(async (_e: string, app: string) => {
       callOrder.push(`download:${app}`);
@@ -223,6 +227,7 @@ function makeHarness(opts: {
     config: baseConfig,
     continiaCli: cli,
     runner,
+    logger: createLogger(),
     fixerPromptTemplate: 'FIXER_PROMPT',
     discoveredSkills: [],
     getCurrentHeadSha: async () => 'base-sha',
@@ -271,6 +276,7 @@ describe('createBuildAndTestStage', () => {
 
     expect(callOrder).toEqual([
       'waitForRunning',
+      'install-app:c3755ece-dab0-4d16-987d-040661f18522',
       'install:Core/Cloud', 'install:Banking/Cloud',
       'download:Core/Cloud', 'download:Banking/Cloud',
       'deploy:Core/Cloud', 'deploy:Banking/Cloud',

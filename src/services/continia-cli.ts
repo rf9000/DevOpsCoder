@@ -13,6 +13,21 @@ export const CONTINIA_TOKEN_ENV_VAR = 'CONTINIA_API_TOKEN';
 /** Per-`test run` --timeout (seconds). The stage wall-clock is the real backstop. */
 export const DEFAULT_TEST_RUN_TIMEOUT_S = 600;
 
+/**
+ * Continia Core Internal Activation App. Must be installed on a fresh
+ * environment before agents can interact with it. `deps install-by-id` is
+ * idempotent server-side (skips when already installed) and pulls a prebuilt
+ * .app matching the env's BC version — no local compile.
+ */
+export const ACTIVATION_APP_ID = 'c3755ece-dab0-4d16-987d-040661f18522';
+
+/** Counts from a `deps install` round. Catalogue misses land in `skipped`
+ * with exit 0 — invisible unless surfaced; symbol gaps become compile errors. */
+export interface DepsInstallInfo {
+  skippedCount: number;
+  symbolsMissingCount: number;
+}
+
 export class ContiniaCliError extends Error {
   override readonly name = 'ContiniaCliError';
   constructor(
@@ -72,7 +87,8 @@ export interface ContiniaCli {
     envId: string,
     opts: ContiniaCallOpts & { pollIntervalMs?: number; maxWaitMs?: number },
   ): Promise<EnvironmentInfo>;
-  installDependencies(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<void>;
+  installDependencies(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<DepsInstallInfo>;
+  installAppById(envId: string, appId: string, opts: ContiniaCallOpts): Promise<void>;
   downloadSymbols(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<void>;
   deployApp(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<DeployAppResult[]>;
   runTests(
@@ -101,6 +117,13 @@ const environmentInfoSchema = z
     status: z.string().optional(),
     url: z.string().optional(),
     webUrl: z.string().optional(),
+  })
+  .passthrough();
+
+const depsInstallSchema = z
+  .object({
+    skipped: z.array(z.unknown()).default([]),
+    symbolsMissing: z.array(z.unknown()).default([]),
   })
   .passthrough();
 
@@ -322,7 +345,16 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     },
 
     async installDependencies(envId, appPathRel, opts) {
-      await runJson(['deps', 'install', envId, appPathRel, '--json'], opts);
+      const raw = await runJson(['deps', 'install', envId, appPathRel, '--json'], opts);
+      const parsed = depsInstallSchema.parse(raw ?? {});
+      return {
+        skippedCount: parsed.skipped.length,
+        symbolsMissingCount: parsed.symbolsMissing.length,
+      };
+    },
+
+    async installAppById(envId, appId, opts) {
+      await runJson(['deps', 'install-by-id', envId, appId, '--json'], opts);
     },
 
     async downloadSymbols(envId, appPathRel, opts) {

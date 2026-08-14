@@ -75,7 +75,8 @@ function makeGreenContiniaCli(): ContiniaCli {
     startEnvironment: mock(async () => {}),
     getEnvironment: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/env-9' })),
     waitForRunning: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/env-9' })),
-    installDependencies: mock(async () => {}),
+    installDependencies: mock(async () => ({ skippedCount: 0, symbolsMissingCount: 0 })),
+    installAppById: mock(async () => {}),
     downloadSymbols: mock(async () => {}),
     deployApp: mock(async () => [{ app: 'App', compiled: true, published: true }]),
     runTests: mock(async () => ({

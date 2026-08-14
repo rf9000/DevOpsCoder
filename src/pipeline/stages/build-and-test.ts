@@ -1,9 +1,10 @@
 import type { Stage } from '../stage.ts';
 import type { AgentRunner } from '../agent-stage.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
-import type { ContiniaCli } from '../../services/continia-cli.ts';
+import { ACTIVATION_APP_ID, type ContiniaCli } from '../../services/continia-cli.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
+import type { Logger } from '../../utils/logger.ts';
 import {
   VerificationFailedError,
   type AppConfig,
@@ -121,6 +122,7 @@ export interface BuildAndTestDeps {
   config: AppConfig;
   continiaCli: ContiniaCli;
   runner: AgentRunner;
+  logger: Logger;
   /** The contents of `src/prompts/test-fixer.md`. */
   fixerPromptTemplate: string;
   discoveredSkills: DiscoveredSkill[];
@@ -187,8 +189,18 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
       };
       state.outputs.environment = env;
 
+      // A fresh environment can't be interacted with until the Continia Core
+      // Internal Activation App is installed. Idempotent — safe on re-entry.
+      await deps.continiaCli.installAppById(env.envId, ACTIVATION_APP_ID, callOpts);
+
       for (const appPath of config.continiaAppPaths) {
-        await deps.continiaCli.installDependencies(env.envId, appPath, callOpts);
+        const info = await deps.continiaCli.installDependencies(env.envId, appPath, callOpts);
+        if (info.skippedCount > 0 || info.symbolsMissingCount > 0) {
+          deps.logger.warn(
+            `build-and-test: deps install for ${appPath} reported ${info.skippedCount} skipped dep(s) ` +
+              `and ${info.symbolsMissingCount} symbol gap(s) — catalogue misses surface later as compile errors`,
+          );
+        }
       }
 
       const codeunits = await discover(worktree.path, config.continiaTestAppPaths);

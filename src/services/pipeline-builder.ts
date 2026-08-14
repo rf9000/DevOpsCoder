@@ -187,6 +187,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       config: deps.config,
       continiaCli,
       runner,
+      logger: deps.logger,
       fixerPromptTemplate: testFixerPromptTemplate,
       discoveredSkills,
       getCurrentHeadSha: deps.getCurrentHeadSha,

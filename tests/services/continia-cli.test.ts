@@ -5,6 +5,7 @@ import {
   ContiniaCliError,
   CONTINIA_TOKEN_ENV_VAR,
   DEFAULT_TEST_RUN_TIMEOUT_S,
+  ACTIVATION_APP_ID,
   type ExecFn,
   type ExecResult,
 } from '../../src/services/continia-cli.ts';
@@ -145,6 +146,28 @@ describe('createContiniaCli', () => {
     expect(calls[0]?.argv.slice(1)).toEqual(['deps', 'install', 'env-1', 'Core/Cloud', '--json']);
     expect(calls[1]?.argv.slice(1)).toEqual(['deps', 'download', 'env-1', 'Core/Cloud', '--json']);
     expect(calls[0]?.cwd).toBe(WORKTREE);
+  });
+
+  it('installAppById uses deps install-by-id with the app GUID', async () => {
+    const { cli, calls } = makeCli([ok('{}')]);
+    await cli.installAppById('env-1', ACTIVATION_APP_ID, opts);
+    expect(calls[0]?.argv.slice(1)).toEqual([
+      'deps', 'install-by-id', 'env-1', ACTIVATION_APP_ID, '--json',
+    ]);
+  });
+
+  it('installDependencies surfaces skipped deps and symbol gaps as counts', async () => {
+    const { cli } = makeCli([
+      ok('{"installed":["A"],"skipped":[{"id":"B"}],"symbolsMissing":["C","D"]}'),
+    ]);
+    const info = await cli.installDependencies('env-1', 'Core/Cloud', opts);
+    expect(info).toEqual({ skippedCount: 1, symbolsMissingCount: 2 });
+  });
+
+  it('installDependencies returns zero counts when the CLI omits the arrays', async () => {
+    const { cli } = makeCli([ok('{}')]);
+    const info = await cli.installDependencies('env-1', 'Core/Cloud', opts);
+    expect(info).toEqual({ skippedCount: 0, symbolsMissingCount: 0 });
   });
 
   describe('deployApp', () => {
