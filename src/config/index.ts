@@ -39,6 +39,7 @@ const envSchema = z.object({
   CLAUDE_MODEL: z.string().default('claude-opus-4-7'),
   STATE_DIR: z.string().default('.state'),
   ASSIGNED_TO_FILTER: z.string().optional(),
+  SKILLS_SOURCE_DIR: z.string().optional(),
 });
 
 export function loadConfig(
@@ -123,6 +124,7 @@ export function loadConfig(
     continiaTestAppPaths,
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
     continiaTestTimeoutS: p.CONTINIA_TEST_TIMEOUT_S,
+    skillsSourceDir: p.SKILLS_SOURCE_DIR,
     dryRun: false,
   };
 }

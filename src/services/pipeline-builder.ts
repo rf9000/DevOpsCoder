@@ -156,7 +156,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       promptTemplate: analyzerPromptTemplate,
       canUseTool: deps.canUseTool,
     }),
-    createWorktreeSetupStage({ worktreeManager }),
+    createWorktreeSetupStage({ worktreeManager, config: deps.config }),
     createEnvProvisionStage({
       config: deps.config,
       continiaCli,

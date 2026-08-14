@@ -33,6 +33,10 @@ export interface AppConfig {
   maxTestFixAttempts: number;
   /** `--timeout` (seconds) passed to each `continia test run`. */
   continiaTestTimeoutS: number;
+  /** Dir containing an orchestrator-owned `skills/` tree (e.g. /app/.claude).
+   * When set, worktree-setup symlinks each skill into the worktree's .claude/.
+   * Unset → only the target repo's own committed skills are available. */
+  skillsSourceDir?: string;
   dryRun: boolean;
 }
 

@@ -249,4 +249,9 @@ describe('loadConfig', () => {
       expect(config.continiaTestTimeoutS).toBe(900);
     });
   });
+
+  it('SKILLS_SOURCE_DIR is optional and maps to skillsSourceDir', () => {
+    expect(loadConfig(validEnv).skillsSourceDir).toBeUndefined();
+    expect(loadConfig({ ...validEnv, SKILLS_SOURCE_DIR: '/app/.claude' }).skillsSourceDir).toBe('/app/.claude');
+  });
 });

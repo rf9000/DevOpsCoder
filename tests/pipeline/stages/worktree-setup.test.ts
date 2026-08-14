@@ -24,29 +24,33 @@ function makeState(overrides: Partial<PipelineState> = {}): PipelineState {
   };
 }
 
+const baseConfig: AppConfig = {
+  orgUrl: 'https://x',
+  project: 'p',
+  pat: 'pat',
+  repositoryName: 'test-repo',
+  targetRepoPath: '/r',
+  worktreeBase: '/w',
+  triggerTag: 'agent implement',
+  blockedTag: 'agent-blocked',
+  needInputTag: 'need-input',
+  pollIntervalMinutes: 5,
+  concurrency: 1,
+  maxRevisions: 3,
+  maxRejectCycles: 3,
+  coderMaxTurns: 80,
+  testAuthorMaxTurns: 50,
+  maxCostUsdPerWi: 5.00,
+  stageTimeoutMs: {},
+  claudeModel: 'claude-opus-4-7',
+  stateDir: '.state',
+  assignedToFilter: [],
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
+};
+
 function makeCtx(config: Partial<AppConfig> = {}) {
   const base: AppConfig = {
-    orgUrl: 'https://x',
-    project: 'p',
-    pat: 'pat',
-    repositoryName: 'test-repo',
-    targetRepoPath: '/r',
-    worktreeBase: '/w',
-    triggerTag: 'agent implement',
-    blockedTag: 'agent-blocked',
-    needInputTag: 'need-input',
-    pollIntervalMinutes: 5,
-    concurrency: 1,
-    maxRevisions: 3,
-    maxRejectCycles: 3,
-    coderMaxTurns: 80,
-    testAuthorMaxTurns: 50,
-    maxCostUsdPerWi: 5.00,
-    stageTimeoutMs: {},
-    claudeModel: 'claude-opus-4-7',
-    stateDir: '.state',
-    assignedToFilter: [],
-    continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false,
+    ...baseConfig,
     ...config,
   };
   return {
@@ -82,14 +86,14 @@ describe('createWorktreeSetupStage', () => {
   };
 
   it('stage.name is "worktree-setup" and canRun is true', () => {
-    const stage = createWorktreeSetupStage({ worktreeManager: makeMgr(sampleCtx) });
+    const stage = createWorktreeSetupStage({ worktreeManager: makeMgr(sampleCtx), config: baseConfig });
     expect(stage.name).toBe('worktree-setup');
     expect(stage.canRun(makeState())).toBe(true);
   });
 
   it('first-time setup: no persisted worktree → ensureWorktree called without persistedWorktree', async () => {
     const mgr = makeMgr(sampleCtx);
-    const stage = createWorktreeSetupStage({ worktreeManager: mgr });
+    const stage = createWorktreeSetupStage({ worktreeManager: mgr, config: baseConfig });
     const state = await stage.execute(makeState(), makeCtx());
     expect(mgr.ensureCalls).toHaveLength(1);
     expect(mgr.ensureCalls[0]?.workItemId).toBe(101);
@@ -100,7 +104,7 @@ describe('createWorktreeSetupStage', () => {
 
   it('re-entry: state.outputs.worktree present → forwarded as persistedWorktree', async () => {
     const mgr = makeMgr(sampleCtx);
-    const stage = createWorktreeSetupStage({ worktreeManager: mgr });
+    const stage = createWorktreeSetupStage({ worktreeManager: mgr, config: baseConfig });
     const stateWithPrior = makeState({
       outputs: {
         worktree: {
@@ -120,7 +124,7 @@ describe('createWorktreeSetupStage', () => {
 
   it('forwards workItemId and slug from state', async () => {
     const mgr = makeMgr(sampleCtx);
-    const stage = createWorktreeSetupStage({ worktreeManager: mgr });
+    const stage = createWorktreeSetupStage({ worktreeManager: mgr, config: baseConfig });
     await stage.execute(makeState({ workItemId: 999, slug: 'other' }), makeCtx());
     expect(mgr.ensureCalls[0]?.workItemId).toBe(999);
     expect(mgr.ensureCalls[0]?.slug).toBe('other');
@@ -133,9 +137,31 @@ describe('createWorktreeSetupStage', () => {
       }),
       removeWorktree: mock(async () => {}),
     };
-    const stage = createWorktreeSetupStage({ worktreeManager: mgr });
+    const stage = createWorktreeSetupStage({ worktreeManager: mgr, config: baseConfig });
     await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow(
       'git failed',
     );
+  });
+
+  it('wires orchestrator skills into the fresh worktree when skillsSourceDir is set', async () => {
+    const wireCalls: Array<[string, string]> = [];
+    const stage = createWorktreeSetupStage({
+      worktreeManager: makeMgr(sampleCtx),
+      config: { ...baseConfig, skillsSourceDir: '/app/.claude' },
+      wireSkills: (src, wt) => { wireCalls.push([src, wt]); },
+    });
+    await stage.execute(makeState(), makeCtx());
+    expect(wireCalls).toEqual([['/app/.claude', sampleCtx.path]]);
+  });
+
+  it('skips skill wiring when skillsSourceDir is unset', async () => {
+    const wireCalls: Array<[string, string]> = [];
+    const stage = createWorktreeSetupStage({
+      worktreeManager: makeMgr(sampleCtx),
+      config: baseConfig,
+      wireSkills: (src, wt) => { wireCalls.push([src, wt]); },
+    });
+    await stage.execute(makeState(), makeCtx());
+    expect(wireCalls).toEqual([]);
   });
 });
