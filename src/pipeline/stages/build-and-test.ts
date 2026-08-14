@@ -70,6 +70,7 @@ export function buildFixPrompt(
   environment: EnvironmentOutput,
   attempt: number,
   maxAttempts: number,
+  skills: DiscoveredSkill[] = [],
 ): string {
   const sections: string[] = [];
 
@@ -107,6 +108,13 @@ export function buildFixPrompt(
           sections.push('  ```');
         }
       }
+    }
+  }
+
+  if (skills.length > 0) {
+    sections.push('\n## Available Invocable Skills\n');
+    for (const s of skills) {
+      sections.push(`- **${s.name}**: ${s.description}`);
     }
   }
 
@@ -284,6 +292,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
           env,
           attempt,
           config.maxTestFixAttempts,
+          deps.discoveredSkills,
         );
         const baselineSha = await getHead(worktree!.path);
         for (let retry = 0; retry <= MAX_TRANSIENT_RETRIES; retry++) {

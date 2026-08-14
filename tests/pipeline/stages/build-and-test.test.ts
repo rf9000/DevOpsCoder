@@ -15,6 +15,7 @@ import type {
   WorktreeContext,
 } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
+import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
 
 const wiCtx: WorkItemContext = {
   id: 101,
@@ -117,6 +118,16 @@ describe('buildFixPrompt', () => {
     );
     expect(prompt.toLowerCase()).toContain('do not weaken');
   });
+
+  it('advertises invocable skills when provided', () => {
+    const prompt = buildFixPrompt(
+      { compiled: false, deploy: [{ app: 'A', compiled: false, published: false, error: 'x' }], testRuns: [] },
+      wiCtx, worktree, environment, 1, 2,
+      [{ name: 'continia-deploy', description: 'Compile and deploy AL code to a BC environment.' }],
+    );
+    expect(prompt).toContain('## Available Invocable Skills');
+    expect(prompt).toContain('**continia-deploy**: Compile and deploy AL code');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -174,6 +185,7 @@ function makeHarness(opts: {
   testQueue?: TestRunResult[];
   runnerBehavior?: () => Promise<unknown>;
   codeunits?: Array<{ id: number; name: string; file: string }>;
+  skills?: DiscoveredSkill[];
 } = {}) {
   const callOrder: string[] = [];
   const deployQueue = [...(opts.deployQueue ?? [greenDeploy])];
@@ -233,7 +245,7 @@ function makeHarness(opts: {
     runner,
     logger: createLogger(),
     fixerPromptTemplate: 'FIXER_PROMPT',
-    discoveredSkills: [],
+    discoveredSkills: opts.skills ?? [],
     getCurrentHeadSha: async () => 'base-sha',
     resetWorktree: async (_p, sha) => { resets.push(sha); },
     discoverTestCodeunits: async () =>
@@ -404,5 +416,14 @@ describe('createBuildAndTestStage', () => {
     const { stage, testOpts } = makeHarness();
     await stage.execute(makeStageState(), makeStageCtx());
     expect(testOpts).toEqual([600, 600]);
+  });
+
+  it('passes discoveredSkills through to the fix prompt', async () => {
+    const { stage, runnerCalls } = makeHarness({
+      deployQueue: [redDeploy, redDeploy, greenDeploy],
+      skills: [{ name: 'continia-test', description: 'Run AL tests on a BC environment.' }],
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+    expect(runnerCalls[0]!.prompt).toContain('**continia-test**');
   });
 });
