@@ -98,7 +98,7 @@ DevopsCoder ships into the same Azure VM as the read-only sibling agents under `
    mkdir -p ~/repos
    git clone <target-repo-url> ~/repos/<target-repo>
    ```
-   The origin URL must embed a PAT or use a credential helper so `git push` works non-interactively — see [Push auth](#push-auth) below.
+   The origin URL does not need to embed a PAT — pushes and fetches authenticate per-invocation, see [Push auth](#push-auth) below.
 
 3. Create the worktree base directory:
    ```bash
@@ -187,9 +187,14 @@ DevopsCoder is just an additional service block in the same `~/teams/<team-name>
 
 ### Push auth
 
-The draft-PR-creator stage runs `git push origin <branch>` from inside the per-WI worktree, which inherits the target repo's origin URL. The host clone at `~/repos/<target-repo>` must have an origin URL that authenticates non-interactively — either by embedding the PAT (`https://<pat>@dev.azure.com/<org>/<project>/_git/<repo>`) or by using a configured credential helper. Embedding the PAT in the URL is the simpler option and is the recommended pattern for this setup.
-
-If push auth is not configured, `git push` will hang waiting for a credential prompt. The stage will eventually time out on `STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR` (default 2 min), the WI will receive the blocked tag, and the stage-timeout comment will appear on the work item. If you see that pattern, check your origin URL first.
+Git pushes and fetches authenticate per-invocation with an
+`http.extraHeader=Authorization: Basic base64(":"+AZURE_DEVOPS_PAT)` argument —
+the PAT is never written to `.git/config`, so the target repo's origin URL
+should be the plain `https://dev.azure.com/<org>/<project>/_git/<repo>` form.
+A PAT embedded in the origin URL still works but is no longer needed; prefer
+removing it (`git remote set-url origin <credential-free-url>`). Error
+messages from failed git calls are PAT-redacted before they reach logs or
+work-item comments.
 
 ### Writable target repo gotcha
 
@@ -243,7 +248,7 @@ The entrypoint runs `chown -R claude:claude /home/claude/.claude` inside the con
 - Open the auth URL in your local browser, authorize, and paste the code back into the VM terminal.
 
 **`git push` fails or hangs, WI ends up with the blocked tag and a stage-timeout comment**
-- The origin URL on `~/repos/<target-repo>` does not authenticate non-interactively. Embed the PAT in the URL or configure a credential helper — see [Push auth](#push-auth) above.
+- Check that `AZURE_DEVOPS_PAT` is set and valid — pushes and fetches authenticate per-invocation via that PAT, not via the origin URL — see [Push auth](#push-auth) above.
 
 **"git worktree add: cannot create directory ... permission denied"**
 - The target repo or the worktree base is mounted `:ro`. Both must be `:rw` — see [Writable target repo gotcha](#writable-target-repo-gotcha) above.

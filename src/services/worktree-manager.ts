@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { resolve } from 'path';
 import type { AppConfig, WorktreeContext } from '../types/index.ts';
+import { buildGitAuthArgs, redactPat } from '../utils/git-auth.ts';
 
 /** Normalise to forward-slash form for cross-platform path comparisons. */
 function normPath(p: string): string {
@@ -70,22 +71,24 @@ export function createWorktreeManager(deps: WorktreeManagerDeps): WorktreeManage
   const worktreeBase = deps.config.worktreeBase;
 
   async function runGit(args: string[], cwd: string): Promise<RunGitResult> {
+    const pat = deps.config.pat;
+    const describe = redactPat(`git ${args.join(' ')}`, pat);
     let proc: ReturnType<typeof Bun.spawn>;
     try {
       proc = Bun.spawn(['git', ...args], {
         cwd,
         stdout: 'pipe',
         stderr: 'pipe',
+        // Never block on a credential prompt (matters inside the container).
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
       });
     } catch (spawnErr) {
       // Bun.spawn throws (e.g. ENOENT) synchronously when cwd is invalid or git not found.
       const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
       throw new WorktreeError(
-        `git ${args.join(' ')} failed (spawn error): ${msg}`,
-        ['git', ...args],
-        -1,
-        '',
-        msg,
+        `${describe} failed (spawn error): ${redactPat(msg, pat)}`,
+        ['git', ...args.map((a) => redactPat(a, pat))],
+        -1, '', msg,
       );
     }
     const stdout = await new Response(proc.stdout as ReadableStream).text();
@@ -93,11 +96,9 @@ export function createWorktreeManager(deps: WorktreeManagerDeps): WorktreeManage
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new WorktreeError(
-        `git ${args.join(' ')} failed (exit ${exitCode}): ${stderr.trim() || stdout.trim() || '(no output)'}`,
-        ['git', ...args],
-        exitCode,
-        stdout,
-        stderr,
+        `${describe} failed (exit ${exitCode}): ${redactPat(stderr.trim() || stdout.trim() || '(no output)', pat)}`,
+        ['git', ...args.map((a) => redactPat(a, pat))],
+        exitCode, stdout, stderr,
       );
     }
     return { stdout, stderr };
@@ -161,7 +162,7 @@ export function createWorktreeManager(deps: WorktreeManagerDeps): WorktreeManage
       }
 
       // Fetch origin so origin/main is current
-      await runGit(['fetch', 'origin'], baseRepoPath);
+      await runGit([...buildGitAuthArgs(deps.config.pat), 'fetch', 'origin'], baseRepoPath);
 
       // Branch name is locked at first creation — persisted wins over computed slug.
       const branch =

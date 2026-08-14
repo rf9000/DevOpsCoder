@@ -210,6 +210,32 @@ describe('createWorktreeManager', () => {
     ).resolves.toBeUndefined();
   }, 30000);
 
+  it('authenticates fetch per-invocation and never leaks the PAT into errors', async () => {
+    const config = {
+      ...makeConfig(sandbox.targetRepoPath, sandbox.worktreeBase),
+      pat: 'super-secret-pat-value-1234',
+    };
+    const mgr = createWorktreeManager({ config });
+    // Break the remote so the initial `git fetch origin` fails.
+    await runGit(
+      ['remote', 'set-url', 'origin', join(sandbox.root, 'does-not-exist.git')],
+      sandbox.targetRepoPath,
+    );
+    let caught: unknown;
+    try {
+      await mgr.ensureWorktree({ workItemId: 101, slug: 'x' });
+    } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(WorktreeError);
+    const err = caught as WorktreeError;
+    const basic = Buffer.from(':super-secret-pat-value-1234').toString('base64');
+    // The fetch argv carries the auth header, so the message proves both that
+    // auth args are present and that they are redacted.
+    expect(err.message).toContain('http.extraHeader');
+    expect(err.message).not.toContain('super-secret-pat-value-1234');
+    expect(err.message).not.toContain(basic);
+    expect(err.command.join(' ')).not.toContain(basic);
+  }, 30000);
+
   it('throws WorktreeError when run against an invalid baseRepoPath', async () => {
     const mgr = createWorktreeManager({
       config: makeConfig(

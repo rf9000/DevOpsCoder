@@ -11,6 +11,7 @@ import type {
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AdoClient } from '../../sdk/azure-devops-client.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
+import { buildGitAuthArgs, redactPat } from '../../utils/git-auth.ts';
 
 // ---------------------------------------------------------------------------
 // Deps interface
@@ -29,16 +30,26 @@ export interface DraftPrCreatorStageDeps {
 // Default push implementation (Bun.spawn git push)
 // ---------------------------------------------------------------------------
 
-async function defaultPushBranch(branch: string, cwd: string): Promise<void> {
-  const proc = Bun.spawn(['git', 'push', 'origin', branch], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+async function defaultPushBranch(branch: string, cwd: string, pat: string): Promise<void> {
+  // --force-with-lease: agent/wi-* branches are agent-owned; the fix loop's
+  // reset path can rewrite history, and a plain push then dies non-fast-forward
+  // on re-entry. Auth is per-invocation extraHeader — the origin URL stays
+  // credential-free (see README "Push auth").
+  const proc = Bun.spawn(
+    ['git', ...buildGitAuthArgs(pat), 'push', '--force-with-lease', 'origin', branch],
+    {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
+    },
+  );
   const exitCode = await proc.exited;
   if (exitCode !== 0) {
     const stderr = await new Response(proc.stderr as ReadableStream).text();
-    throw new Error(`git push origin ${branch} failed (exit ${exitCode}): ${stderr.trim()}`);
+    throw new Error(
+      `git push origin ${branch} failed (exit ${exitCode}): ${redactPat(stderr.trim(), pat)}`,
+    );
   }
 }
 
@@ -179,7 +190,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
       if (!worktree) throw new Error('draft-pr-creator requires state.outputs.worktree to be populated');
 
       const branch = worktree.branch;
-      const push = deps.pushBranch ?? defaultPushBranch;
+      const push = deps.pushBranch ?? ((b: string, cwd: string) => defaultPushBranch(b, cwd, deps.config.pat));
 
       // 1. Push branch — let the underlying push error propagate; the orchestrator
       // logs the stage name, so the original error message is already actionable.
