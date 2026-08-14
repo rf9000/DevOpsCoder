@@ -1,12 +1,12 @@
-import { basename, dirname, isAbsolute, resolve } from 'path';
+import { isAbsolute, resolve } from 'path';
 import { z } from 'zod';
 import type { AppConfig, DeployAppResult, TestCaseResult } from '../types/index.ts';
 
 /**
- * Env-var name the spawned continia.exe reads its DemoPortal token from.
- * Single place to change once the CLI's real variable name is confirmed
- * (the interactive CLI reads the VS Code setting `environment-explorer.api-token`;
- * headless runs get the token injected via this process env var instead).
+ * Env-var name the spawned Continia CLI reads its DemoPortal token from.
+ * Confirmed against ADONewDirectCombuilder: headless runs authenticate from
+ * CONTINIA_API_TOKEN in the process environment (the interactive CLI falls
+ * back to the VS Code setting `environment-explorer.api-token`).
  */
 export const CONTINIA_TOKEN_ENV_VAR = 'CONTINIA_API_TOKEN';
 
@@ -329,11 +329,19 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     },
 
     async deployApp(envId, appPathRel, opts) {
-      // The CLI discovers apps from the cwd; absolute app paths fail with
-      // "No app.json found" — run from the app's parent dir with a relative arg.
-      const appAbs = resolve(opts.worktreePath, appPathRel);
-      const args = ['deploy', envId, basename(appAbs), '--with-deps', '--json'];
-      const raw = await runJson(args, opts, dirname(appAbs));
+      // Invocation contract per the sibling's continia-deploy skill:
+      // --workspace-root scopes app discovery to the app itself so sibling
+      // dependency source dirs are not recompiled; --allow-downgrade lets a
+      // branch build (e.g. 29.0.0.0) replace a higher CI baseline, which BC
+      // otherwise refuses (conflict: "higher-version-installed").
+      // --with-deps is deliberately NOT used: it recompiles dependency apps
+      // from source — slow, and it fails when their own deps aren't staged.
+      const args = [
+        'deploy', envId, appPathRel,
+        '--workspace-root', appPathRel,
+        '--allow-downgrade', '--json',
+      ];
+      const raw = await runJson(args, opts);
       return deployResultSchema.parse(raw) as DeployAppResult[];
     },
 

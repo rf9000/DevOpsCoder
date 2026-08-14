@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolve, dirname, join } from 'path';
+import { resolve, join } from 'path';
 import {
   createContiniaCli,
   ContiniaCliError,
@@ -148,14 +148,17 @@ describe('createContiniaCli', () => {
   });
 
   describe('deployApp', () => {
-    it('runs from the app parent dir with a relative app arg, --with-deps, never --all', async () => {
+    it('deploys with --workspace-root and --allow-downgrade from the worktree root; never --with-deps or --all', async () => {
       const { cli, calls } = makeCli([
         ok('[{"app":"Continia_Core","compiled":true,"published":true}]'),
       ]);
       const result = await cli.deployApp('env-1', 'Core/Cloud', opts);
       const call = calls[0]!;
-      expect(call.cwd).toBe(dirname(resolve(WORKTREE, 'Core/Cloud')));
-      expect(call.argv.slice(1)).toEqual(['deploy', 'env-1', 'Cloud', '--with-deps', '--json']);
+      expect(call.cwd).toBe(WORKTREE);
+      expect(call.argv.slice(1)).toEqual([
+        'deploy', 'env-1', 'Core/Cloud', '--workspace-root', 'Core/Cloud', '--allow-downgrade', '--json',
+      ]);
+      expect(call.argv).not.toContain('--with-deps');
       expect(call.argv).not.toContain('--all');
       expect(result).toEqual([{ app: 'Continia_Core', compiled: true, published: true }]);
     });
