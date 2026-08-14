@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import {
   createTestAuthorStage,
   buildTestAuthorUserPrompt,
@@ -246,4 +246,3 @@ describe('createTestAuthorStage', () => {
     expect((await canUseTool('Bash', { command: 'rm src/login.ts' })).behavior).toBe('deny');
   });
 });
-

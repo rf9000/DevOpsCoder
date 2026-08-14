@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -485,7 +485,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     expect(savedState.terminalError?.stage).toBe('slow');
   });
 
-  // T6: Timer cleared on normal completion â€” no spurious abort after stage finishes
+  // T6: Timer cleared on normal completion — no spurious abort after stage finishes
   it('timer cleared on success: signal stays unaborted after stage completes', async () => {
     const store = makeMockStore();
     const state = createInitialState(101, 'wi');
@@ -587,4 +587,3 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     expect(failureEntries.length).toBe(0);
   });
 });
-

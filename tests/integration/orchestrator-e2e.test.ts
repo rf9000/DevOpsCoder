@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -74,7 +74,7 @@ function runnerStage<T>(
 }
 
 describe('orchestrator end-to-end (mock stages)', () => {
-  it('analyzer (proceed) â†’ coder â†’ revisionLoop(coder, reviewer approve) â†’ finalizer', async () => {
+  it('analyzer (proceed) → coder → revisionLoop(coder, reviewer approve) → finalizer', async () => {
     const dir = tmpStateDir();
     const store = new PipelineStateStore(dir);
     const ctx = makeContext();
@@ -171,4 +171,3 @@ describe('orchestrator end-to-end (mock stages)', () => {
     expect(resumed.outputs.tailRan).toBe(true);
   });
 });
-

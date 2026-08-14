@@ -1,4 +1,4 @@
-﻿import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
+import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -215,4 +215,3 @@ describe('watcher end-to-end (empty pipeline)', () => {
     expect(store.load(301)?.completedAt).toBeTruthy();
   });
 });
-

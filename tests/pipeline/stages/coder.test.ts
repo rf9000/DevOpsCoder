@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import {
   createCoderStage,
   buildCoderUserPrompt,
@@ -139,7 +139,7 @@ describe('buildCoderUserPrompt', () => {
     expect(prompt).toContain(sampleWorktree.branch);
     expect(prompt).toContain('The login button is broken.');
     expect(prompt).toContain('### Acceptance Criteria');
-    // no reviewer feedback passed â€” section must NOT appear
+    // no reviewer feedback passed — section must NOT appear
     expect(prompt).not.toContain('Previous reviewer findings');
   });
 
@@ -345,7 +345,7 @@ describe('createCoderStage', () => {
     expect(resetCalls).toBe(MAX_TRANSIENT_RETRIES + 1);
   });
 
-  it('does NOT retry on a hard (non-parse) error â€” resets and re-throws immediately', async () => {
+  it('does NOT retry on a hard (non-parse) error — resets and re-throws immediately', async () => {
     const runner = makeRunner(async () => {
       throw new Error('hard failure: network down');
     });
@@ -405,4 +405,3 @@ describe('createCoderStage', () => {
     expect(insideWrite.behavior).toBe('allow');
   });
 });
-

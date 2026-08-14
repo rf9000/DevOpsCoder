@@ -1,4 +1,4 @@
-﻿import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
+import { makeGreenContiniaCli, greenCodeunits } from './_continia-fake.ts';
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -151,7 +151,7 @@ describe('cost-cap e2e', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('coder cost pushes cumulative past cap â†’ reviewer completes revision-loop â†’ cost check fires before test-author â†’ blocked tag + cost comment + no PR + worktree retained', async () => {
+  it('coder cost pushes cumulative past cap → reviewer completes revision-loop → cost check fires before test-author → blocked tag + cost comment + no PR + worktree retained', async () => {
     const config = { ...baseConfig, stateDir: dir, maxCostUsdPerWi: 0.50 };
     const store = new PipelineStateStore(dir);
 
@@ -161,9 +161,9 @@ describe('cost-cap e2e', () => {
 
     // Responder returns {value, costUsd} directly so each stage carries its own cost.
     // Flow:
-    //   'A' (analyzer)   â†’ costUsd 0.10, total 0.10 (under cap)
-    //   'C' (coder)      â†’ costUsd 0.45, total 0.55 (OVER cap â€” but check fires between stages)
-    //   'R\n\naxis'      â†’ costUsd 0     (reviewer axes; reviewer runs inside revision-loop
+    //   'A' (analyzer)   → costUsd 0.10, total 0.10 (under cap)
+    //   'C' (coder)      → costUsd 0.45, total 0.55 (OVER cap — but check fires between stages)
+    //   'R\n\naxis'      → costUsd 0     (reviewer axes; reviewer runs inside revision-loop
     //                                      before the between-stage cost check fires)
     // After revision-loop completes (coder + reviewer both succeed), orchestrator
     // advances currentStage to 'test-author'. The pre-stage cost check then reads
@@ -241,8 +241,7 @@ describe('cost-cap e2e', () => {
     // --- No push ---
     expect(pushBranch).not.toHaveBeenCalled();
 
-    // --- Worktree retained â€” NOT removed ---
+    // --- Worktree retained — NOT removed ---
     expect(worktreeManager.removeWorktree).not.toHaveBeenCalled();
   });
 });
-

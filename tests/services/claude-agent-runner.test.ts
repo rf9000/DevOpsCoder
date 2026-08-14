@@ -1,11 +1,11 @@
-﻿import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { z } from 'zod';
 import type { AgentRunArgs } from '../../src/pipeline/agent-stage.ts';
 import type { AppConfig } from '../../src/types/index.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 
 // ---------------------------------------------------------------------------
-// Module mock â€” must be declared before the module under test is imported so
+// Module mock — must be declared before the module under test is imported so
 // Bun replaces the binding at load time.  We expose a `setQueryImpl` handle
 // so individual tests can swap the fake implementation.
 // ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ describe('buildQueryOptions', () => {
 });
 
 // ---------------------------------------------------------------------------
-// createClaudeAgentRunner â€” cost and AbortSignal tests
+// createClaudeAgentRunner — cost and AbortSignal tests
 // ---------------------------------------------------------------------------
 describe('createClaudeAgentRunner', () => {
   const VerdictSchema = z.object({ verdict: z.enum(['proceed', 'reject']) });
@@ -315,4 +315,3 @@ describe('createClaudeAgentRunner', () => {
     expect(res.toolUsage).toEqual({});
   });
 });
-

@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { revisionLoop } from '../../src/pipeline/revision-loop.ts';
 import type { Stage, PipelineContext } from '../../src/pipeline/stage.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
@@ -170,4 +170,3 @@ describe('revisionLoop', () => {
     expect(stage.name).toBe('rl');
   });
 });
-

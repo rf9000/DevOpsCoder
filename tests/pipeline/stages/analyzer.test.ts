@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import {
   createAnalyzerStage,
   buildAnalyzerUserPrompt,
@@ -144,12 +144,12 @@ describe('buildAnalyzerUserPrompt', () => {
   it('includes the skill list when discoveredSkills is non-empty', () => {
     const skills: DiscoveredSkill[] = [
       { name: 'al-formatter', description: 'Formats AL' },
-      { name: 'field-mappings', description: 'ALâ†’online mappings' },
+      { name: 'field-mappings', description: 'AL→online mappings' },
     ];
     const prompt = buildAnalyzerUserPrompt(makeWiContext(), skills);
     expect(prompt).toContain('## Available Invocable Skills');
     expect(prompt).toContain('- **al-formatter**: Formats AL');
-    expect(prompt).toContain('- **field-mappings**: ALâ†’online mappings');
+    expect(prompt).toContain('- **field-mappings**: AL→online mappings');
   });
 });
 
@@ -318,4 +318,3 @@ describe('createAnalyzerStage', () => {
     });
   });
 });
-
