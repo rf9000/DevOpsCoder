@@ -115,33 +115,34 @@ const deployResultSchema = z.array(
     .passthrough(),
 );
 
+// `summary` and `tests` are REQUIRED, with required counters: lenient defaults
+// here green-wash a red run (a renamed `summary.failed` would default to 0 and
+// make `passed` come out true). Unknown EXTRA fields still pass through.
 const testRunSchema = z
   .object({
     status: z.string().default('unknown'),
     summary: z
       .object({
-        total: z.number().default(0),
-        passed: z.number().default(0),
-        failed: z.number().default(0),
+        total: z.number(),
+        passed: z.number(),
+        failed: z.number(),
         skipped: z.number().default(0),
         durationSeconds: z.number().optional(),
         codeunitName: z.string().optional(),
       })
       .passthrough(),
-    tests: z
-      .array(
-        z
-          .object({
-            name: z.string().default('(unnamed test)'),
-            fullName: z.string().optional(),
-            result: z.string().default('unknown'),
-            durationSeconds: z.number().optional(),
-            errorMessage: z.string().optional(),
-            stackTrace: z.string().optional(),
-          })
-          .passthrough(),
-      )
-      .default([]),
+    tests: z.array(
+      z
+        .object({
+          name: z.string().default('(unnamed test)'),
+          fullName: z.string().optional(),
+          result: z.string().default('unknown'),
+          durationSeconds: z.number().optional(),
+          errorMessage: z.string().optional(),
+          stackTrace: z.string().optional(),
+        })
+        .passthrough(),
+    ),
   })
   .passthrough();
 
@@ -368,7 +369,20 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
           result.stderr,
         );
       }
-      const parsed = testRunSchema.parse(raw);
+      const shape = testRunSchema.safeParse(raw);
+      if (!shape.success) {
+        throw new ContiniaCliError(
+          `continia ${args.join(' ')} returned an unexpected test-result shape ` +
+            `(refusing to guess pass/fail): missing/invalid ${shape.error.issues
+              .map((i) => i.path.join('.'))
+              .join(', ')}`,
+          result.argv,
+          result.exitCode,
+          result.stdout,
+          result.stderr,
+        );
+      }
+      const parsed = shape.data;
       return {
         status: parsed.status,
         // Derived, not trusted from the CLI: green means zero failures.

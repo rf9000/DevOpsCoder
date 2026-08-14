@@ -185,6 +185,32 @@ describe('createContiniaCli', () => {
       ],
     });
 
+    it('refuses to guess pass/fail when summary is missing (no silent green)', async () => {
+      const { cli } = makeCli([ok('{"status":"completed","tests":[]}')]);
+      await expect(cli.runTests('env-1', 148001, opts)).rejects.toThrow(
+        /unexpected test-result shape/,
+      );
+    });
+
+    it('refuses to guess pass/fail when summary.failed is missing', async () => {
+      // A renamed counter field must be a hard error, not a default-0 pass.
+      const { cli } = makeCli([
+        ok('{"status":"completed","summary":{"total":2,"passed":1,"failures":1},"tests":[]}'),
+      ]);
+      await expect(cli.runTests('env-1', 148001, opts)).rejects.toThrow(
+        /unexpected test-result shape/,
+      );
+    });
+
+    it('refuses to guess when the tests array is missing', async () => {
+      const { cli } = makeCli([
+        ok('{"status":"completed","summary":{"total":1,"passed":0,"failed":1,"skipped":0}}'),
+      ]);
+      await expect(cli.runTests('env-1', 148001, opts)).rejects.toThrow(
+        /unexpected test-result shape/,
+      );
+    });
+
     it('parses valid JSON even when the CLI exits 1 (red tests are results, not errors)', async () => {
       const { cli } = makeCli([{ exitCode: 1, stdout: redRun, stderr: '' }]);
       const run = await cli.runTests('env-1', 148001, opts);
