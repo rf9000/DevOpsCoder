@@ -10,7 +10,7 @@ Plan 7 makes per-WI cost operationally visible: every non-skipped watcher outcom
 
 Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome also reports the tools the agents invoked, e.g. `WI 123: completed (cost: $0.42, tools: Edit×5, Bash×2)`. Usage is tallied per stage (the 6 reviewer axes are merged) and persisted in `state.outputs.toolUsage`.
 
-Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys all configured apps to the environment and runs every AL test codeunit sequentially. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID`, `CONTINIA_API_TOKEN`, and `CONTINIA_APP_PATHS` (see `.env.example`) — config validation fails fast without them.**
+Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys all configured apps to the environment and runs every AL test codeunit sequentially. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID`, `CONTINIA_API_TOKEN`, and `CONTINIA_APP_PATHS` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without them otherwise.**
 
 ## Tech stack
 
@@ -158,15 +158,15 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
 | `MAX_COST_USD_PER_WI` | **yes** | **none** | Pipeline refuses to start without this; set it consciously |
-| `CONTINIA_ENV_PROFILE_ID` | **yes** | **none** | DemoPortal profile for per-WI env creation |
-| `CONTINIA_API_TOKEN` | **yes** | **none** | Forwarded into the spawned continia.exe |
-| `CONTINIA_APP_PATHS` | **yes** | **none** | Comma-separated app dirs, dependency order, worktree-relative |
+| `CONTINIA_ENV_PROFILE_ID` | **yes\*** | **none** | DemoPortal profile for per-WI env creation |
+| `CONTINIA_API_TOKEN` | **yes\*** | **none** | Forwarded into the spawned continia.exe |
+| `CONTINIA_APP_PATHS` | **yes\*** | **none** | Comma-separated app dirs, dependency order, worktree-relative |
 | `CONTINIA_CLI_PATH` | no | `.tools/continia.exe` | Relative → resolved against the worktree; set absolute if the target repo doesn't vendor the CLI |
 | `CONTINIA_TEST_TIMEOUT_S` | no | 600 | Seconds passed as `--timeout` to each `continia test run` |
 | `CONTINIA_ALC_PATH` | no | none | Read by the spawned Continia CLI itself (not validated by this service) — path to the AL compiler binary |
 | `CONTINIA_AUTO_INSTALL_ALC` | no | none | Read by the spawned Continia CLI itself — set `0` to disable its auto-install path (broken upstream; Docker image bind-mounts `/opt/al/bin` instead) |
 | `SKILLS_SOURCE_DIR` | no | none (Docker image sets `/app/.claude`) | Dir of orchestrator skills symlinked into each per-WI worktree's `.claude/`; target-repo skills win on name conflict |
-| `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the three `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN`/`CONTINIA_APP_PATHS` vars become optional |
+| `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the three `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN`/`CONTINIA_APP_PATHS` vars marked `yes*` above become optional |
 | `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; only sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default |
@@ -183,6 +183,8 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `MAX_REJECT_CYCLES` | no | 3 | Max analyzer reject cycles before need-input lockout |
 | `POLL_INTERVAL_MINUTES` | no | 5 | |
 | `CONCURRENCY` | no | 1 | Max concurrent WI pipelines |
+
+\* Required unless `SKIP_BUILD_TEST=true`, in which case these three are optional — see the `SKIP_BUILD_TEST` row above.
 
 ### Common Commands
 
