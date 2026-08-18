@@ -3,3 +3,5 @@ node_modules/
 .state/
 .env
 .env.*.local
+.tools/continia.exe
+docs/

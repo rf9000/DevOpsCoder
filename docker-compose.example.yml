@@ -11,6 +11,10 @@
 #   docker compose build --no-cache devops-coder
 #   docker compose up -d devops-coder
 #   docker compose logs -f devops-coder
+#
+# .env.devops-coder must now also define CONTINIA_ENV_PROFILE_ID,
+# CONTINIA_API_TOKEN, CONTINIA_APP_PATHS (or SKIP_BUILD_TEST=true for a
+# smoke bring-up without the verification gate).
 
 services:
   devops-coder:
@@ -18,6 +22,24 @@ services:
       context: ./DevOpsCoder
     env_file:
       - .env.devops-coder
+    environment:
+      # env_file wins over the image's ENV — re-pin the image paths so a stray
+      # var in .env.devops-coder can't silently repoint the CLI or compiler.
+      CONTINIA_CLI_PATH: /usr/local/bin/continia
+      CONTINIA_ALC_PATH: /opt/al/bin/linux/alc
+      CONTINIA_AUTO_INSTALL_ALC: "0"
+      SKILLS_SOURCE_DIR: /app/.claude
+    deploy:
+      resources:
+        limits:
+          # alc peaks ~0.6 GiB compiling the base application (measured on the
+          # sibling); 2G leaves headroom for bun + git.
+          memory: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
     # restart: unless-stopped   # Suggested for production; not enforced — matches siblings.
     volumes:
       # OAuth credentials (shared with the read-only sibling agents on the same host)
@@ -32,6 +54,11 @@ services:
       # A WI paused mid-pipeline resumes against the existing worktree on the next
       # poll cycle; if this mount is reset on restart, paused WIs fail to resume.
       - ${HOME}/repos/.worktrees:/repos/.worktrees:rw
+
+      # AL compiler — read-only bind mount of the host's AL VS Code extension
+      # bin dir (contains linux/alc). Required by `continia deploy`; the CLI's
+      # auto-install path is broken upstream (see Dockerfile).
+      - ${HOME}/tools/al/al-ext/extension/bin:/opt/al/bin:ro
 
       # Optional dependency repos (read-only is fine for these — same as siblings)
       # - ${HOME}/repos/<dep-repo>:/repos/<dep-repo>:ro
