@@ -2,9 +2,9 @@
 
 The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo and opens draft PRs. DevopsCoder picks up work items tagged `agent implement`, runs a full analyzer → coder/reviewer → test-author → draft-PR pipeline against a per-WI git worktree, then tears down the worktree on success.
 
-The repo is at the **milestone-10 stage** (Plans 1-8 + 10 done): full end-to-end pipeline with cost and safety rails, operationally observable, gated by real deploy-and-test verification. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
+The repo is at the **milestone-11 stage** (Plans 1-8, 10-11 done): full end-to-end pipeline with cost and safety rails, operationally observable, gated by real deploy-and-test verification. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
 
-Plan 6 adds safety rails: a per-WI cumulative cost cap (`MAX_COST_USD_PER_WI`), per-stage wall-clock timeouts (7 configurable `STAGE_TIMEOUT_MS_*` env vars), and mid-stage abort propagation via `AbortSignal` threaded through `PipelineContext`. Exceeding the cost cap or a stage timeout records a `terminalError`, posts a formatted WI comment, and adds the blocked tag. An external abort (SIGINT) sets `state.cancelled` instead — resumable, no blocked tag.
+Plan 6 adds safety rails: a per-WI cumulative cost cap (`MAX_COST_USD_PER_WI`), per-stage wall-clock timeouts (11 configurable `STAGE_TIMEOUT_MS_*` env vars), and mid-stage abort propagation via `AbortSignal` threaded through `PipelineContext`. Exceeding the cost cap or a stage timeout records a `terminalError`, posts a formatted WI comment, and adds the blocked tag. An external abort (SIGINT) sets `state.cancelled` instead — resumable, no blocked tag.
 
 Plan 7 makes per-WI cost operationally visible: every non-skipped watcher outcome log line now ends with `(cost: $X.XX)`, so an operator tailing `docker compose logs -f` can see spend without opening state JSON. Ships with `docker-compose.example.yml` and a full `## VM Deployment (Docker)` section below.
 
@@ -43,18 +43,19 @@ src/
   pipeline/
     stage.ts       — Stage interface, PipelinePauseError, PipelineRejectError
     orchestrator.ts — runPipeline with pause + reject + terminal-error branches
-    stages/        — concrete stages: analyzer, worktree-setup, coder, reviewer, test-author, draft-pr-creator, worktree-teardown
-    agent-stage.ts, revision-loop.ts, checkpoint.ts — factories
-  prompts/         — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
+    stages/        — concrete stages: analyzer, worktree-setup, env-provision, coder, reviewer, test-author, build-and-test, draft-pr-creator, worktree-teardown
+    agent-stage.ts, revision-loop.ts — factories
+  prompts/         — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, test-fixer.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
   sdk/             — Azure DevOps REST client
   services/        — Claude SDK wrapper, watcher, processor, pipeline-builder,
-                     wi-context fetcher, skill-loader, worktree-manager
+                     wi-context fetcher, skill-loader, skill-wiring, worktree-manager,
+                     continia-cli
   state/           — Per-work-item PipelineStateStore
   types/           — Shared types
-  utils/           — Logger, slugify, runPool, html helpers, bash-allowlist, path-escape-filter
+  utils/           — Logger, slugify, runPool, html helpers, bash-allowlist, path-escape-filter, al-test-discovery, git-auth
 tests/             — mirrors src/ layout; integration/ for cross-cutting tests
 docs/
-  superpowers/plans/ — implementation plans (Plans 1–8 done)
+  superpowers/plans/ — implementation plans (Plans 1–8, 10–11 done — milestone-11)
 ```
 
 ## Local setup
@@ -117,7 +118,7 @@ DevopsCoder ships into the same Azure VM as the read-only sibling agents under `
    ```
    Inside the REPL, type `/login`, copy the URL it shows and open it in your local browser, authorize, then paste the code back into the VM terminal. Exit with `/exit`.
 
-6. Configure `.env.devops-coder` from `.env.example`. At minimum fill in `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` — this last variable is **required with no default**; the pipeline will refuse to start without it.
+6. Configure `.env.devops-coder` from `.env.example`. At minimum fill in `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` — this last variable is **required with no default**; the pipeline will refuse to start without it. The verification gate additionally requires `CONTINIA_ENV_PROFILE_ID`, `CONTINIA_API_TOKEN`, and `CONTINIA_APP_PATHS` — or set `SKIP_BUILD_TEST=true` to skip `env-provision` + `build-and-test` entirely for a first smoke bring-up (see step 10 below).
 
 7. Copy `docker-compose.example.yml` from this repo into `~/teams/<team-name>/docker-compose.yml` and replace the `<target-repo>` placeholder with the real repo name:
    ```bash
@@ -125,12 +126,30 @@ DevopsCoder ships into the same Azure VM as the read-only sibling agents under `
    # then edit the file to set <target-repo>
    ```
 
-8. Build and start:
+8. Copy the Linux Continia CLI binary into the repo checkout on the VM, before `docker compose build` — `.tools/` is gitignored, so this file is never in the clone, and the Dockerfile's `COPY .tools/continia-linux /usr/local/bin/continia` step fails the build without it:
    ```bash
-   cd ~/teams/<team-name>
-   docker compose build --no-cache devops-coder
-   docker compose up -d devops-coder
+   cp <source>/continia-linux ~/teams/<team-name>/DevOpsCoder/.tools/continia-linux
    ```
+   Get the binary from the Continia CLI release share, or copy it from `ADONewDirectCombuilder/.tools/` if that repo is already checked out on the VM.
+
+9. Provide the AL compiler for the container. `docker-compose.example.yml` bind-mounts `${HOME}/tools/al/al-ext/extension/bin:/opt/al/bin:ro`, and the image sets `CONTINIA_ALC_PATH=/opt/al/bin/linux/alc` + `CONTINIA_AUTO_INSTALL_ALC=0` so the Continia CLI uses that mount instead of its own auto-install path (broken upstream — resolves the wrong target-framework dir and extracts `alc` with the wrong file mode). Install the AL Language VS Code extension somewhere on the VM host — or copy its `bin/` directory there — so `~/tools/al/al-ext/extension/bin/linux/alc` exists before starting the container.
+
+10. Build and probe before starting the full service:
+    ```bash
+    cd ~/teams/<team-name>
+    docker compose build --no-cache devops-coder
+    docker compose run --rm --entrypoint /usr/local/bin/continia devops-coder env list --json
+    docker compose run --rm --entrypoint node devops-coder --version
+    docker compose run --rm --entrypoint /opt/al/bin/linux/alc devops-coder /? | head -2
+    docker compose run --rm --entrypoint bun devops-coder run once
+    ```
+    `--entrypoint` is required for these probes — the image's entrypoint always execs the watcher. Each command should return in seconds; a failure here (broken CLI/token, missing node runtime, bad AL-compiler mount, or a config error caught by `bun run once`) surfaces immediately instead of after tens of minutes into a real verification pass. Before running these, confirm `oven/bun:1` is still Debian-bookworm-based (the copied `node:22-bookworm-slim` binaries need matching glibc) and that the dynamic `libicu[0-9]+` apt resolution in the `Dockerfile` actually finds a package on the current base image.
+
+11. Start the service:
+    ```bash
+    docker compose up -d devops-coder
+    ```
+    Note: `deploy.resources.limits.memory` in `docker-compose.example.yml` is a Swarm-oriented compose key — verify your installed `docker compose` version actually enforces it outside Swarm mode before relying on the 2G cap under load.
 
 ### Environment Variables
 
@@ -143,8 +162,14 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CONTINIA_API_TOKEN` | **yes** | **none** | Forwarded into the spawned continia.exe |
 | `CONTINIA_APP_PATHS` | **yes** | **none** | Comma-separated app dirs, dependency order, worktree-relative |
 | `CONTINIA_CLI_PATH` | no | `.tools/continia.exe` | Relative → resolved against the worktree; set absolute if the target repo doesn't vendor the CLI |
+| `CONTINIA_TEST_TIMEOUT_S` | no | 600 | Seconds passed as `--timeout` to each `continia test run` |
+| `CONTINIA_ALC_PATH` | no | none | Read by the spawned Continia CLI itself (not validated by this service) — path to the AL compiler binary |
+| `CONTINIA_AUTO_INSTALL_ALC` | no | none | Read by the spawned Continia CLI itself — set `0` to disable its auto-install path (broken upstream; Docker image bind-mounts `/opt/al/bin` instead) |
+| `SKILLS_SOURCE_DIR` | no | none (Docker image sets `/app/.claude`) | Dir of orchestrator skills symlinked into each per-WI worktree's `.claude/`; target-repo skills win on name conflict |
+| `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the three `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN`/`CONTINIA_APP_PATHS` vars become optional |
 | `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
+| `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; only sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default |
 | `STAGE_TIMEOUT_MS_BUILD_AND_TEST` | no | derived (105 min) | `(MAX_TEST_FIX_ATTEMPTS+1) × VERIFY_PASS + MAX_TEST_FIX_ATTEMPTS × CODER` |
 | `STAGE_TIMEOUT_MS_ANALYZER` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_WORKTREE_SETUP` | no | 60000 (1 min) | |
