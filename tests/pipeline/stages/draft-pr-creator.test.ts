@@ -479,6 +479,16 @@ describe('createDraftPrCreatorStage', () => {
       expect(capped.length).toBeLessThanOrEqual(MAX_PR_DESCRIPTION_LENGTH);
       expect(capped).toContain('truncated');
     });
+
+    it('anchors on the LAST occurrence when head content echoes the heading', () => {
+      const echo = 'The agent noted:\n## Test environment\nis documented below.\n';
+      const head = echo + 'H'.repeat(6000);
+      const tail = '\n## Test environment\n\nenv `env-9` — https://bc/env-9\n';
+      const capped = capPrDescription(head + tail);
+      expect(capped.length).toBeLessThanOrEqual(MAX_PR_DESCRIPTION_LENGTH);
+      expect(capped).toContain('https://bc/env-9');
+      expect(capped).toContain('truncated');
+    });
   });
 
   it('buildPrDescription output never exceeds the ADO limit', () => {

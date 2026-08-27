@@ -35,15 +35,22 @@ async function defaultPushBranch(branch: string, cwd: string, pat: string): Prom
   // reset path can rewrite history, and a plain push then dies non-fast-forward
   // on re-entry. Auth is per-invocation extraHeader — the origin URL stays
   // credential-free (see README "Push auth").
-  const proc = Bun.spawn(
-    ['git', ...buildGitAuthArgs(pat), 'push', '--force-with-lease', 'origin', branch],
-    {
-      cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
-    },
-  );
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(
+      ['git', ...buildGitAuthArgs(pat), 'push', '--force-with-lease', 'origin', branch],
+      {
+        cwd,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' },
+      },
+    );
+  } catch (spawnErr) {
+    // Bun.spawn throws (e.g. ENOENT) synchronously when cwd is invalid or git not found.
+    const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+    throw new Error(`git push origin ${branch} failed (spawn error): ${redactPat(msg, pat)}`);
+  }
   const exitCode = await proc.exited;
   if (exitCode !== 0) {
     const stderr = await new Response(proc.stderr as ReadableStream).text();
@@ -69,15 +76,19 @@ const TAIL_MARKER = '\n## Test environment';
  */
 export function capPrDescription(full: string): string {
   if (full.length <= MAX_PR_DESCRIPTION_LENGTH) return full;
-  const idx = full.indexOf(TAIL_MARKER);
+  // lastIndexOf: agent-authored head content (coder summary, reviewer notes)
+  // can echo the literal heading text, so anchoring on the first occurrence
+  // would treat nearly the whole document as "tail" and starve headBudget.
+  // The real env section — the one we must preserve — is always the last one.
+  const idx = full.lastIndexOf(TAIL_MARKER);
   if (idx === -1) {
     return full.slice(0, MAX_PR_DESCRIPTION_LENGTH - TRUNCATION_NOTICE.length) + TRUNCATION_NOTICE;
   }
   const tail = full.slice(idx);
   const headBudget = MAX_PR_DESCRIPTION_LENGTH - tail.length - TRUNCATION_NOTICE.length;
   const capped = full.slice(0, Math.max(0, headBudget)) + TRUNCATION_NOTICE + tail;
-  // Degenerate case: the tail alone exceeds the limit — hard cap, better a
-  // clipped footer than a 400 from ADO.
+  // Degenerate case: the tail plus the notice alone exceed the limit — hard
+  // cap, better a clipped footer than a 400 from ADO.
   return capped.length <= MAX_PR_DESCRIPTION_LENGTH ? capped : capped.slice(0, MAX_PR_DESCRIPTION_LENGTH);
 }
 
