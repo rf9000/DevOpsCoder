@@ -5,6 +5,7 @@ import type {
   WiqlQueryResponse,
   WorkItem,
   WorkItemComment,
+  WorkItemUpdate,
 } from '../types/index.ts';
 
 export class AzureDevOpsError extends Error {
@@ -21,6 +22,7 @@ export interface AdoClient {
   queryWorkItemsByTag(tag: string, opts?: { signal?: AbortSignal }): Promise<number[]>;
   getWorkItem(workItemId: number, opts?: { signal?: AbortSignal }): Promise<WorkItem>;
   getWorkItemComments(workItemId: number, opts?: { signal?: AbortSignal }): Promise<WorkItemComment[]>;
+  getWorkItemUpdates(workItemId: number, opts?: { signal?: AbortSignal }): Promise<WorkItemUpdate[]>;
   addTagToWorkItem(workItemId: number, tag: string, opts?: { signal?: AbortSignal }): Promise<void>;
   removeTagFromWorkItem(workItemId: number, tag: string, opts?: { signal?: AbortSignal }): Promise<void>;
   addWorkItemComment(workItemId: number, html: string, opts?: { signal?: AbortSignal }): Promise<void>;
@@ -170,6 +172,14 @@ export function createAdoClient(
         { signal: opts.signal },
       );
       return response.comments ?? [];
+    },
+
+    async getWorkItemUpdates(workItemId: number, opts: { signal?: AbortSignal } = {}): Promise<WorkItemUpdate[]> {
+      const response = await adoFetchWithRetry<{ value?: WorkItemUpdate[] }>(
+        `/_apis/wit/workItems/${workItemId}/updates?api-version=7.1`,
+        opts.signal !== undefined ? { signal: opts.signal } : undefined,
+      );
+      return response.value ?? [];
     },
 
     async addTagToWorkItem(workItemId: number, tag: string, opts: { signal?: AbortSignal } = {}): Promise<void> {

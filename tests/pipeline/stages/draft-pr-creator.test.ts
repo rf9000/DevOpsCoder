@@ -150,6 +150,7 @@ function makeAdoClient(overrides: Partial<AdoClient> = {}): AdoClient {
     queryWorkItemsByTag: mock(async () => []),
     getWorkItem: mock(async () => ({ id: 101, fields: {} })),
     getWorkItemComments: mock(async () => []),
+    getWorkItemUpdates: mock(async () => []),
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),

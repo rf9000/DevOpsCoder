@@ -281,6 +281,25 @@ export interface WorkItemComment {
   createdBy?: { displayName?: string; uniqueName?: string };
 }
 
+/** An Azure DevOps identity. `id` is the GUID an @-mention anchor needs. */
+export interface IdentityRef {
+  id?: string;
+  displayName?: string;
+  uniqueName?: string;
+}
+
+/**
+ * One revision from `/workItems/{id}/updates`. `fields` maps a field reference
+ * name to its old/new value for that revision — the trigger tag's addition is
+ * found by diffing `System.Tags` across revisions.
+ */
+export interface WorkItemUpdate {
+  id?: number;
+  revisedBy?: IdentityRef;
+  revisedDate?: string;
+  fields?: Record<string, { oldValue?: unknown; newValue?: unknown }>;
+}
+
 export type ProcessOutcome =
   | { kind: 'completed'; workItemId: number; costUsd: number; toolUsage: Record<string, number> }
   | {

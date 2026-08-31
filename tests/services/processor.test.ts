@@ -51,6 +51,7 @@ function makeAdo(overrides: Partial<AdoClient> = {}): AdoClient {
       }) satisfies WorkItem,
     ),
     getWorkItemComments: mock(async () => []),
+    getWorkItemUpdates: mock(async () => []),
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),
@@ -241,6 +242,73 @@ describe('createProcessor', () => {
     expect(ado.addWorkItemComment).toHaveBeenCalled();
     expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'need-input');
+  });
+
+  it('reject comment @-mentions whoever applied the trigger tag', async () => {
+    let postedHtml = '';
+    const ado = makeAdo({
+      getWorkItemUpdates: mock(async () => [
+        {
+          revisedBy: { id: 'guid-bob', displayName: 'Bob Jones' },
+          fields: { 'System.Tags': { oldValue: 'bug', newValue: 'bug; agent implement' } },
+        },
+      ]),
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({ reasons: ['no AC'], summary: 'WI is not ready' });
+      },
+    };
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+
+    await proc.processWorkItem(101);
+    expect(postedHtml).toContain('data-vss-mention="version:2.0,guid-bob"');
+    expect(postedHtml).toContain('@Bob Jones');
+  });
+
+  it('reject comment still posts when the updates lookup fails', async () => {
+    let postedHtml = '';
+    const ado = makeAdo({
+      getWorkItemUpdates: mock(async () => {
+        throw new Error('403 forbidden');
+      }),
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+    const rejectStage: Stage = {
+      name: 'analyzer',
+      canRun: () => true,
+      execute: async () => {
+        throw new PipelineRejectError({ reasons: ['no AC'], summary: 'WI is not ready' });
+      },
+    };
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [rejectStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('rejected');
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+    expect(postedHtml).toContain('WI is not ready');
+    expect(postedHtml).not.toContain('data-vss-mention');
   });
 
   it('reject path: escalates to blocked severity when rejectCount reaches maxRejectCycles', async () => {
@@ -475,8 +543,11 @@ describe('createProcessor', () => {
 
     // Comment was posted with reviewer findings HTML
     expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
-    expect(postedHtml).toContain('blocking findings');
+    expect(postedHtml).toContain('blocking');
     expect(postedHtml).toContain('SQL injection vulnerability');
+    // Terse by design: titles only, no per-finding description/suggestion prose.
+    expect(postedHtml).not.toContain('Unsanitised input passed directly to query.');
+    expect(postedHtml).not.toContain('Use parameterised queries.');
 
     // Blocked tag was added
     expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);

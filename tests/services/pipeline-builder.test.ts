@@ -54,6 +54,7 @@ function makeAdo(): AdoClient {
       fields: { 'System.Title': 'WI', 'System.State': 'Active' },
     }),
     getWorkItemComments: async () => [],
+    getWorkItemUpdates: async () => [],
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},

@@ -18,6 +18,7 @@ import type { PipelineStateStore } from '../state/state-store.ts';
 import type { Stage, AbortFlag } from '../pipeline/stage.ts';
 import { DEFAULT_STAGE_TIMEOUT_MS, createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
 import { slugify } from '../utils/slug.ts';
+import { findTagAdder, formatAdoMention } from '../utils/tag-history.ts';
 import type { PipelineBuilderDeps } from './pipeline-builder.ts';
 import { REVISION_LOOP_EXHAUSTED } from './pipeline-builder.ts';
 
@@ -45,47 +46,52 @@ function hasStatusCode(err: unknown, code: number): boolean {
   );
 }
 
+/** Cap on rendered list items — comments stay scannable even if a stage overshoots. */
+const MAX_COMMENT_LIST_ITEMS = 4;
+
+function capList(items: string[]): string[] {
+  return items.slice(0, MAX_COMMENT_LIST_ITEMS);
+}
+
 export function renderRejectMarkdown(
   rejection: PipelineRejection,
   severity: 'reject' | 'blocked',
   config: AppConfig,
   workItemId: number,
+  /** @-mention for whoever applied the trigger tag; '' when unknown. */
+  mention = '',
 ): string {
   const lines: string[] = [];
+  const at = mention ? `${mention} ` : '';
 
   if (severity === 'blocked') {
-    lines.push(
-      `## Implementation blocked after ${config.maxRejectCycles} rejection cycles`,
-    );
+    lines.push(`## Blocked after ${config.maxRejectCycles} rejections`);
   } else {
-    lines.push(`## I need more information before I can implement this`);
+    lines.push(`## Need more info`);
   }
 
   lines.push('');
-  lines.push(rejection.summary);
+  lines.push(`${at}${rejection.summary}`);
   lines.push('');
 
   if (rejection.reasons.length > 0) {
-    lines.push(`### What's missing`);
-    for (const r of rejection.reasons) lines.push(`- ${r}`);
+    lines.push(`**Missing**`);
+    for (const r of capList(rejection.reasons)) lines.push(`- ${r}`);
     lines.push('');
   }
 
   if (rejection.questions && rejection.questions.length > 0) {
-    lines.push(`### Questions`);
-    for (const q of rejection.questions) lines.push(`- ${q}`);
+    lines.push(`**Questions**`);
+    for (const q of capList(rejection.questions)) lines.push(`- ${q}`);
     lines.push('');
   }
 
-  lines.push('---');
   if (severity === 'blocked') {
     lines.push(
-      `I've rejected this work item ${config.maxRejectCycles} times. To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+      `Rejected ${config.maxRejectCycles}×. Operator: \`reset-state ${workItemId}\` to retry.`,
     );
   } else {
-    lines.push(
-      `After you've addressed the items above, re-add the \`${config.triggerTag}\` tag to try again.`,
-    );
+    lines.push(`Update the WI, then re-add \`${config.triggerTag}\`.`);
   }
 
   return lines.join('\n');
@@ -272,13 +278,9 @@ export function renderReviewerFindingsMarkdown(
   const lines: string[] = [];
   const totalFindings = reviewer.findings.length;
 
-  lines.push(
-    `## Pipeline blocked: reviewer rejected after ${reviewer.attempts} attempt${reviewer.attempts === 1 ? '' : 's'}`,
-  );
+  lines.push(`## Review not passed (${reviewer.attempts}×)`);
   lines.push('');
-  lines.push(
-    `The reviewer found ${totalFindings} finding${totalFindings === 1 ? '' : 's'} across ${reviewer.attempts} attempt${reviewer.attempts === 1 ? '' : 's'} that could not be resolved.`,
-  );
+  lines.push(`${totalFindings} unresolved finding${totalFindings === 1 ? '' : 's'}:`);
   lines.push('');
 
   // Group findings by severity in descending order
@@ -288,29 +290,26 @@ export function renderReviewerFindingsMarkdown(
     grouped.get(finding.severity)?.push(finding);
   }
 
+  // Title only — titles are self-contained, and the full description plus
+  // suggestion for every finding turned this comment into pages of prose.
+  // Detail lives in the retained worktree and the run log.
+  let shown = 0;
   for (const sev of SEVERITY_ORDER) {
     const group = grouped.get(sev) ?? [];
-    if (group.length === 0) continue;
-
-    lines.push(`### ${sev} findings (${group.length})`);
-    lines.push('');
     for (const f of group) {
+      if (shown >= MAX_COMMENT_LIST_ITEMS) break;
       const location = f.line !== undefined ? `${f.file}:${f.line}` : f.file;
-      lines.push(`- **${location}** (${f.axis}): ${f.title}`);
-      lines.push('');
-      lines.push(`  ${f.description}`);
-      lines.push('');
-      if (f.suggestion) {
-        lines.push(`  Suggestion: ${f.suggestion}`);
-        lines.push('');
-      }
+      lines.push(`- **${sev}** ${location} — ${f.title}`);
+      shown++;
     }
   }
-
-  lines.push('---');
+  if (totalFindings > shown) {
+    lines.push(`- …and ${totalFindings - shown} more`);
+  }
   lines.push('');
+
   lines.push(
-    `Re-add the \`${config.triggerTag}\` tag to retry from the failed stage, or ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\` for a completely fresh attempt.`,
+    `Re-add \`${config.triggerTag}\` to retry, or operator: \`reset-state ${workItemId}\`.`,
   );
 
   return lines.join('\n');
@@ -393,11 +392,24 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       // to avoid duplicates (we assume the previous cycle may have already
       // posted it; tags are idempotent so retrying them is safe).
       if (!isRecovery) {
+        // Notify whoever asked for this work. Best-effort: the updates endpoint
+        // is a separate call and a failure here must not cost us the comment.
+        let mention = '';
+        try {
+          const updates = await ado.getWorkItemUpdates(state.workItemId);
+          const adder = findTagAdder(updates, config.triggerTag);
+          if (adder) mention = formatAdoMention(adder.identity);
+        } catch (err) {
+          logger.info(
+            `WI ${state.workItemId}: could not resolve who applied ${config.triggerTag} :: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
         const markdown = renderRejectMarkdown(
           rejection,
           severity,
           config,
           state.workItemId,
+          mention,
         );
         const html = await marked(markdown);
         await safeAdoOp(logger, state.workItemId, 'addWorkItemComment', () =>

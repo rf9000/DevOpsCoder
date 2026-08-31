@@ -28,6 +28,24 @@ Respond with **ONLY a single valid JSON object** matching this schema. No prose 
 - `reasons` is required on `reject`, empty array on `proceed`.
 - `questions` is optional. Use it on `reject` to give the human concrete, answerable questions whose answers would unblock the work.
 
+### Length limits — these are hard
+
+Your output is posted verbatim as a work-item comment that a busy human reads on
+a phone. Long comments do not get read.
+
+- `summary`: ONE sentence, max 25 words.
+- `reasons`: at most **3**, one line each, max 20 words. State the gap, not the
+  evidence. Write "No acceptance criteria" — not a paragraph proving it.
+- `questions`: at most **3**, one line each, max 20 words. One question mark each.
+
+Do NOT include in any field: file paths, line numbers, code excerpts, repo
+findings, restatements of the work item, or explanations of your reasoning. You
+explored the repo to reach a verdict — do not narrate that exploration. If a
+reason needs a citation to be believed, it is too long; shorten the claim.
+
+Prefer the smallest set of gaps that actually blocks implementation. Three sharp
+questions beat six thorough ones.
+
 ## Criteria for `reject`
 
 Reject when one or more of the following hold:
