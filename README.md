@@ -281,8 +281,9 @@ The entrypoint runs `chown -R claude:claude /home/claude/.claude` inside the con
 **`git push` fails or hangs, WI ends up with the blocked tag and a stage-timeout comment**
 - Check that `AZURE_DEVOPS_PAT` is set and valid — pushes and fetches authenticate per-invocation via that PAT, not via the origin URL — see [Push auth](#push-auth) above.
 
-**"git worktree add: cannot create directory ... permission denied"**
+**"git worktree add: cannot create directory ... permission denied"** / **"could not create leading directories of '.../.git': Permission denied"**
 - The target repo or the worktree base is mounted `:ro`. Both must be `:rw` — see [Writable target repo gotcha](#writable-target-repo-gotcha) above.
+- If both are `:rw`, it is host-uid ownership on the worktree base. The entrypoint chowns `$WORKTREE_BASE` explicitly at startup; an image built before that fix skips it, because the general `/repos/*/` chown loop does not match dot-directories like `.worktrees`. Rebuild, or fix it on the host: `sudo chown -R $(docker compose exec -T devops-coder id -u claude):$(docker compose exec -T devops-coder id -g claude) ~/repos/.worktrees`.
 
 **Paused WI fails to resume after container restart**
 - The worktree base mount (`~/repos/.worktrees`) is not persistent across restarts (e.g., it is an anonymous volume or tmpfs). Use a named bind mount so the directory survives restarts.

@@ -20,6 +20,17 @@ if [ "$(id -u)" = "0" ]; then
     exit 1
   fi
 
+  # Fix ownership of the worktree base explicitly. The /repos/*/ glob below does
+  # NOT match dot-directories, so the conventional /repos/.worktrees is skipped
+  # by it and `git worktree add` then dies with "could not create leading
+  # directories of '<base>/<wi>/.git': Permission denied".
+  # Non-recursive on purpose: worktrees are created by the claude user itself,
+  # and a recursive chown over multi-GB AL checkouts on every start is slow.
+  if [ -n "$WORKTREE_BASE" ]; then
+    chown claude:claude "$WORKTREE_BASE" || \
+      echo "WARNING: could not chown $WORKTREE_BASE — worktree-setup may fail"
+  fi
+
   # Fix ownership of writable repo mounts (skip read-only mounts to avoid slow no-op chowns)
   for dir in /repos/*/; do
     [ ! -d "$dir" ] && continue
