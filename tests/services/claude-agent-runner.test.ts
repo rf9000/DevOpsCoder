@@ -120,6 +120,21 @@ describe('buildQueryOptions', () => {
     expect(opts.model).toBe('claude-sonnet-4-6');
   });
 
+  it('omits pathToClaudeCodeExecutable when the config does not set it', () => {
+    const opts = buildQueryOptions(minimalArgs, deps);
+    expect('pathToClaudeCodeExecutable' in opts).toBe(false);
+  });
+
+  it('forwards claudeCodeExecutablePath as pathToClaudeCodeExecutable', () => {
+    // The SDK's own platform probe picks the musl build under Bun on a glibc
+    // image and then fails to find a binary there; an explicit path wins.
+    const opts = buildQueryOptions(minimalArgs, {
+      ...deps,
+      config: { ...baseConfig, claudeCodeExecutablePath: '/home/claude/.local/bin/claude' },
+    });
+    expect(opts.pathToClaudeCodeExecutable).toBe('/home/claude/.local/bin/claude');
+  });
+
   it('systemPrompt uses claude_code preset with STRUCTURED_OUTPUT_INSTRUCTION when no append is given', () => {
     const opts = buildQueryOptions(minimalArgs, deps);
     const sp = opts.systemPrompt as { type: string; preset: string; append: string };

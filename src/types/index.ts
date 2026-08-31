@@ -37,6 +37,12 @@ export interface AppConfig {
    * When set, worktree-setup symlinks each skill into the worktree's .claude/.
    * Unset → only the target repo's own committed skills are available. */
   skillsSourceDir?: string;
+  /** Absolute path to the Claude Code executable, forwarded to the Agent SDK as
+   * `pathToClaudeCodeExecutable`. Unset → the SDK probes for its own bundled
+   * native binary. Under Bun on a glibc image that probe picks the *-musl
+   * package and fails, so the Docker image pins this to the natively-installed
+   * CLI at /home/claude/.local/bin/claude. */
+  claudeCodeExecutablePath?: string;
   /** Skip env-provision + build-and-test (harness smoke tests). */
   skipBuildTest: boolean;
   dryRun: boolean;

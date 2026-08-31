@@ -51,6 +51,7 @@ const envSchema = z.object({
   STATE_DIR: z.string().default('.state'),
   ASSIGNED_TO_FILTER: z.string().optional(),
   SKILLS_SOURCE_DIR: z.string().optional(),
+  CLAUDE_CODE_EXECUTABLE_PATH: z.string().optional(),
 });
 
 export function loadConfig(
@@ -155,6 +156,7 @@ export function loadConfig(
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
     continiaTestTimeoutS: p.CONTINIA_TEST_TIMEOUT_S,
     skillsSourceDir: p.SKILLS_SOURCE_DIR,
+    claudeCodeExecutablePath: p.CLAUDE_CODE_EXECUTABLE_PATH,
     skipBuildTest: p.SKIP_BUILD_TEST,
     dryRun: false,
   };

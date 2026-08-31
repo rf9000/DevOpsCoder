@@ -58,6 +58,14 @@ export function buildQueryOptions<T>(
     systemPrompt: { type: 'preset', preset: 'claude_code', append: fullAppend },
   };
 
+  // Without this the SDK probes for its own bundled native binary. Under Bun on
+  // a glibc image that probe resolves to the *-linux-x64-musl package and throws
+  // "Claude Code native binary not found", so the Docker image pins the path to
+  // the natively-installed CLI.
+  if (deps.config.claudeCodeExecutablePath !== undefined) {
+    opts.pathToClaudeCodeExecutable = deps.config.claudeCodeExecutablePath;
+  }
+
   if (args.disallowedTools !== undefined) opts.disallowedTools = args.disallowedTools;
   if (args.maxTurns !== undefined) opts.maxTurns = args.maxTurns;
   if (args.cwd !== undefined) opts.cwd = args.cwd;

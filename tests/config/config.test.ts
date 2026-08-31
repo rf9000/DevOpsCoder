@@ -255,6 +255,14 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...validEnv, SKILLS_SOURCE_DIR: '/app/.claude' }).skillsSourceDir).toBe('/app/.claude');
   });
 
+  it('CLAUDE_CODE_EXECUTABLE_PATH is optional and maps to claudeCodeExecutablePath', () => {
+    expect(loadConfig(validEnv).claudeCodeExecutablePath).toBeUndefined();
+    expect(
+      loadConfig({ ...validEnv, CLAUDE_CODE_EXECUTABLE_PATH: '/home/claude/.local/bin/claude' })
+        .claudeCodeExecutablePath,
+    ).toBe('/home/claude/.local/bin/claude');
+  });
+
   describe('SKIP_BUILD_TEST', () => {
     it('defaults to false and CONTINIA_* stay required', () => {
       expect(loadConfig(validEnv).skipBuildTest).toBe(false);

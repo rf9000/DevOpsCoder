@@ -60,10 +60,15 @@ ENV PATH="/home/claude/.local/bin:$PATH"
 # compiler resolves the wrong target-framework path (lib/net10.0 vs the
 # shipped lib/net8.0) and extracts alc as mode 644. The compose file
 # bind-mounts the host's AL VS Code extension at /opt/al/bin instead.
+# CLAUDE_CODE_EXECUTABLE_PATH points the Agent SDK at the CLI installed above.
+# Left unset, the SDK probes for its own bundled native binary and — under Bun
+# on this glibc base — resolves the *-linux-x64-musl package, then dies with
+# "Claude Code native binary not found at .../claude-agent-sdk-linux-x64-musl/claude".
 ENV CONTINIA_CLI_PATH=/usr/local/bin/continia \
     CONTINIA_ALC_PATH=/opt/al/bin/linux/alc \
     CONTINIA_AUTO_INSTALL_ALC=0 \
     SKILLS_SOURCE_DIR=/app/.claude \
+    CLAUDE_CODE_EXECUTABLE_PATH=/home/claude/.local/bin/claude \
     GIT_TERMINAL_PROMPT=0
 
 # Persist state and Claude auth across restarts

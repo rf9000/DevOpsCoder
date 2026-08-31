@@ -166,6 +166,7 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CONTINIA_ALC_PATH` | no | none | Read by the spawned Continia CLI itself (not validated by this service) — path to the AL compiler binary |
 | `CONTINIA_AUTO_INSTALL_ALC` | no | none | Read by the spawned Continia CLI itself — set `0` to disable its auto-install path (broken upstream; Docker image bind-mounts `/opt/al/bin` instead) |
 | `SKILLS_SOURCE_DIR` | no | none (Docker image sets `/app/.claude`) | Dir of orchestrator skills symlinked into each per-WI worktree's `.claude/`; target-repo skills win on name conflict |
+| `CLAUDE_CODE_EXECUTABLE_PATH` | no | none (Docker image sets `/home/claude/.local/bin/claude`) | Forwarded to the Agent SDK as `pathToClaudeCodeExecutable`. Unset, the SDK probes for its own bundled native binary — under Bun on a glibc image it picks the `*-linux-x64-musl` package and fails |
 | `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the three `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN`/`CONTINIA_APP_PATHS` vars marked `yes*` above become optional |
 | `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
@@ -253,6 +254,9 @@ If the pipeline starts failing with "Claude Code process exited with code 1", th
 The entrypoint runs `chown -R claude:claude /home/claude/.claude` inside the container on startup, so credentials remain accessible to both host and container.
 
 ### Troubleshooting
+
+**"Claude Code native binary not found at .../claude-agent-sdk-linux-x64-musl/claude"**
+- The Agent SDK probed for its own bundled native binary and picked the musl build (Bun's libc detection on the glibc base image). Set `CLAUDE_CODE_EXECUTABLE_PATH=/home/claude/.local/bin/claude` — the image and `docker-compose.example.yml` both pin it, so this only bites an older image or a compose file that predates it. Verify with `docker compose exec devops-coder printenv CLAUDE_CODE_EXECUTABLE_PATH`.
 
 **"Claude Code process exited with code 1" with no other details**
 - Most likely an expired OAuth token. Re-authenticate on the VM host (see above).

@@ -29,6 +29,7 @@ services:
       CONTINIA_ALC_PATH: /opt/al/bin/linux/alc
       CONTINIA_AUTO_INSTALL_ALC: "0"
       SKILLS_SOURCE_DIR: /app/.claude
+      CLAUDE_CODE_EXECUTABLE_PATH: /home/claude/.local/bin/claude
     deploy:
       resources:
         limits:
