@@ -16,6 +16,7 @@ import type {
 } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
+import type { AlApp } from '../../../src/utils/al-app-graph.ts';
 
 const wiCtx: WorkItemContext = {
   id: 101,
@@ -151,7 +152,7 @@ const baseConfig: AppConfig = {
   maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600,
   dryRun: false,
-  skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0,
+  skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
 
 const greenDeploy: DeployAppResult[] = [{ app: 'A', compiled: true, published: true }];
@@ -189,6 +190,7 @@ function makeHarness(opts: {
   skills?: DiscoveredSkill[];
   config?: AppConfig;
   changedFiles?: string[];
+  apps?: AlApp[];
 } = {}) {
   const callOrder: string[] = [];
   const deployQueue = [...(opts.deployQueue ?? [greenDeploy])];
@@ -257,6 +259,7 @@ function makeHarness(opts: {
         { id: 148002, name: 'Tests B', file: 'y.al' },
       ],
     getChangedFiles: async () => opts.changedFiles ?? [],
+    discoverAlApps: () => opts.apps ?? [],
   });
 
   return { stage, cli, callOrder, runnerCalls, resets, testOpts };
@@ -447,6 +450,56 @@ describe('createBuildAndTestStage', () => {
       });
       await stage.execute(makeStageState(), makeStageCtx());
       expect(callOrder.filter((c) => c.startsWith('test:'))).toEqual(['test:148001']);
+    });
+
+    it('derives the deploy set from changed files + selected tests, dependency-first', async () => {
+      // No CONTINIA_APP_PATHS: a static list cannot be right for a repo where
+      // one WI touches base-application and the next touches export.
+      const apps: AlApp[] = [
+        { dir: 'permission-sets', name: 'PS', dependencies: [] },
+        { dir: 'base-application', name: 'Continia Banking', dependencies: ['PS'] },
+        { dir: 'export', name: 'Continia Banking - Export', dependencies: ['Continia Banking'] },
+        { dir: 'base-application-test', name: 'Base Test', dependencies: ['Continia Banking'] },
+      ];
+      const { stage, callOrder } = makeHarness({
+        config: { ...baseConfig, continiaAppPaths: [], testSelection: 'changed' },
+        apps,
+        codeunits: [
+          { id: 148001, name: 'Base Tests', file: `${worktree.path}/base-application-test/T.al` },
+        ],
+        changedFiles: ['base-application/Bank/Tables/Bank.Table.al', 'base-application-test/T.al'],
+      });
+      await stage.execute(makeStageState(), makeStageCtx());
+
+      // export is untouched, so it is not deployed; permission-sets is pulled in
+      // as a dependency and lands before the app that needs it.
+      expect(callOrder.filter((c) => c.startsWith('deploy:'))).toEqual([
+        'deploy:permission-sets',
+        'deploy:base-application',
+        'deploy:base-application-test',
+      ]);
+    });
+
+    it('a change in export deploys export, not base-application-test', async () => {
+      const apps: AlApp[] = [
+        { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+        { dir: 'export', name: 'Continia Banking - Export', dependencies: ['Continia Banking'] },
+        { dir: 'export-test', name: 'Export Test', dependencies: ['Continia Banking - Export'] },
+        { dir: 'base-application-test', name: 'Base Test', dependencies: ['Continia Banking'] },
+      ];
+      const { stage, callOrder } = makeHarness({
+        config: { ...baseConfig, continiaAppPaths: [], testSelection: 'changed' },
+        apps,
+        codeunits: [
+          { id: 148002, name: 'Export Tests', file: `${worktree.path}/export-test/T.al` },
+        ],
+        changedFiles: ['export/Codeunits/X.al', 'export-test/T.al'],
+      });
+      await stage.execute(makeStageState(), makeStageCtx());
+
+      const deploys = callOrder.filter((c) => c.startsWith('deploy:'));
+      expect(deploys).toEqual(['deploy:base-application', 'deploy:export', 'deploy:export-test']);
+      expect(deploys).not.toContain('deploy:base-application-test');
     });
 
     it('fails loudly rather than passing when the selection is empty', async () => {

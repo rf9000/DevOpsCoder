@@ -173,8 +173,10 @@ describe('loadConfig', () => {
   });
 
   describe('Plan 10 — verification gate config', () => {
-    it('throws when CONTINIA_ENV_PROFILE_ID / CONTINIA_API_TOKEN / CONTINIA_APP_PATHS are missing', () => {
-      for (const key of ['CONTINIA_ENV_PROFILE_ID', 'CONTINIA_API_TOKEN', 'CONTINIA_APP_PATHS']) {
+    it('throws when CONTINIA_ENV_PROFILE_ID / CONTINIA_API_TOKEN are missing', () => {
+      // CONTINIA_APP_PATHS is deliberately NOT in this list: the deploy set is
+      // derived per work item from the changed files and the selected tests.
+      for (const key of ['CONTINIA_ENV_PROFILE_ID', 'CONTINIA_API_TOKEN']) {
         const env = { ...validEnv };
         delete env[key];
         expect(() => loadConfig(env)).toThrow(new RegExp(key));
@@ -189,15 +191,17 @@ describe('loadConfig', () => {
       expect(config.continiaAppPaths).toEqual(['Core/Cloud', 'Banking/Cloud', 'Banking/Test']);
     });
 
-    it('throws when CONTINIA_APP_PATHS is empty after trimming', () => {
-      expect(() => loadConfig({ ...validEnv, CONTINIA_APP_PATHS: ' , ' })).toThrow(
-        /CONTINIA_APP_PATHS/,
-      );
+    it('CONTINIA_APP_PATHS is optional — empty means "derive the deploy set"', () => {
+      expect(loadConfig({ ...validEnv, CONTINIA_APP_PATHS: ' , ' }).continiaAppPaths).toEqual([]);
+      const env = { ...validEnv };
+      delete env.CONTINIA_APP_PATHS;
+      expect(loadConfig(env).continiaAppPaths).toEqual([]);
     });
 
-    it('CONTINIA_TEST_APP_PATHS falls back to continiaAppPaths when absent', () => {
-      const config = loadConfig(validEnv);
-      expect(config.continiaTestAppPaths).toEqual(config.continiaAppPaths);
+    it('CONTINIA_TEST_APP_PATHS is empty when absent — build-and-test scans every app', () => {
+      const env = { ...validEnv };
+      delete env.CONTINIA_TEST_APP_PATHS;
+      expect(loadConfig(env).continiaTestAppPaths).toEqual([]);
     });
 
     it('CONTINIA_TEST_APP_PATHS overrides when set', () => {

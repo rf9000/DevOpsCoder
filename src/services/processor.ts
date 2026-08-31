@@ -8,6 +8,7 @@ import type {
   PipelineTerminalError,
   ProcessOutcome,
   ReviewerOutput,
+  DraftPrOutput,
   FindingSeverity,
   VerificationOutput,
 } from '../types/index.ts';
@@ -19,6 +20,7 @@ import type { Stage, AbortFlag } from '../pipeline/stage.ts';
 import { DEFAULT_STAGE_TIMEOUT_MS, createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
 import { slugify } from '../utils/slug.ts';
 import { findTagAdder, formatAdoMention } from '../utils/tag-history.ts';
+import type { CostLedger } from './cost-ledger.ts';
 import type { PipelineBuilderDeps } from './pipeline-builder.ts';
 import { REVISION_LOOP_EXHAUSTED } from './pipeline-builder.ts';
 
@@ -29,6 +31,8 @@ export interface ProcessorDeps {
   store: PipelineStateStore;
   buildPipeline: (deps: PipelineBuilderDeps) => Stage[];
   abortFlag: AbortFlag;
+  /** Append-only spend log. Omitted in tests and dry runs. */
+  ledger?: CostLedger;
 }
 
 export interface Processor {
@@ -367,7 +371,7 @@ async function safeAdoOp(
 }
 
 export function createProcessor(deps: ProcessorDeps): Processor {
-  const { config, logger, ado, store, buildPipeline, abortFlag } = deps;
+  const { config, logger, ado, store, buildPipeline, abortFlag, ledger } = deps;
 
   async function dispatchRejection(
     state: PipelineState,
@@ -448,7 +452,25 @@ export function createProcessor(deps: ProcessorDeps): Processor {
     };
   }
 
-  return {
+  // One choke point for the spend log: every terminal outcome funnels through
+  // the wrapper below, so the ledger cannot drift from the outcomes the watcher
+  // reports. `skipped` is excluded — nothing ran, so there is nothing to bill.
+  function recordSpend(outcome: ProcessOutcome): void {
+    if (!ledger || outcome.kind === 'skipped') return;
+    const persisted = store.load(outcome.workItemId);
+    const cost = persisted?.outputs.cost as PipelineCostInfo | undefined;
+    const draftPr = persisted?.outputs.draftPr as DraftPrOutput | undefined;
+    ledger.record({
+      at: new Date().toISOString(),
+      workItemId: outcome.workItemId,
+      outcome: outcome.kind,
+      costUsd: 'costUsd' in outcome ? outcome.costUsd : 0,
+      ...(draftPr ? { prId: draftPr.id, prUrl: draftPr.url } : {}),
+      ...(cost?.perStage ? { perStage: cost.perStage } : {}),
+    });
+  }
+
+  const inner = {
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
       if (abortFlag.aborted) {
         return { kind: 'skipped', workItemId, reason: 'aborted' };
@@ -656,6 +678,14 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           toolUsage: (persisted?.outputs.toolUsage as Record<string, number> | undefined) ?? {},
         };
       }
+    },
+  };
+
+  return {
+    async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
+      const outcome = await inner.processWorkItem(workItemId);
+      recordSpend(outcome);
+      return outcome;
     },
   };
 }

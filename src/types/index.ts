@@ -47,6 +47,8 @@ export interface AppConfig {
    * package and fails, so the Docker image pins this to the natively-installed
    * CLI at /home/claude/.local/bin/claude. */
   claudeCodeExecutablePath?: string;
+  /** Append-only JSONL spend log: one record per finished work item. */
+  costLogPath: string;
   /** Skip env-provision + build-and-test (harness smoke tests). */
   skipBuildTest: boolean;
   /** Which discovered test codeunits a verification round runs. */

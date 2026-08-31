@@ -1,3 +1,4 @@
+import { relative } from 'path';
 import type { Stage } from '../stage.ts';
 import type { AgentRunner } from '../agent-stage.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
@@ -36,6 +37,12 @@ import {
   defaultResetWorktree,
 } from './_stage-helpers.ts';
 import { selectTestCodeunits } from '../../utils/test-selection.ts';
+import {
+  discoverAlApps as defaultDiscoverAlApps,
+  ownerAppOf,
+  resolveDeployOrder,
+  type AlApp,
+} from '../../utils/al-app-graph.ts';
 
 const STACK_TRACE_MAX_LINES = 15;
 const STACK_TRACE_MAX_CHARS = 1500;
@@ -147,6 +154,48 @@ export interface BuildAndTestDeps {
   ) => Promise<DiscoveredTestCodeunit[]>;
   /** Test override for the changed-file lookup that drives test selection. */
   getChangedFiles?: (worktreePath: string, baselineSha: string) => Promise<string[]>;
+  /** Test override for the app.json scan that drives the derived deploy set. */
+  discoverAlApps?: (worktreePath: string) => AlApp[];
+}
+
+export interface ResolveAppPathsArgs {
+  apps: AlApp[];
+  /** Worktree-relative, from git diff. */
+  changedFiles: string[];
+  /** Absolute paths of the test codeunits selected for this round. */
+  testFiles: string[];
+  worktreePath: string;
+  /** CONTINIA_APP_PATHS. Non-empty pins the deploy set and skips derivation. */
+  override: string[];
+}
+
+/**
+ * Work out which apps to deploy for this work item.
+ *
+ * Seeds are the apps owning the changed files and the apps owning the selected
+ * test codeunits; the seeds are then expanded over internal dependencies and
+ * ordered dependency-first so each app compiles against something already
+ * published.
+ *
+ * Derived rather than configured because a static list cannot be correct in a
+ * repo where one WI touches base-application and the next touches export —
+ * pinning it either under-deploys (the change compiles nowhere) or
+ * over-deploys (every app recompiles every round).
+ */
+export function resolveAppPaths(args: ResolveAppPathsArgs): string[] {
+  if (args.override.length > 0) return args.override;
+
+  const seeds = new Set<string>();
+  for (const rel of args.changedFiles) {
+    const owner = ownerAppOf(rel, args.apps);
+    if (owner) seeds.add(owner.dir);
+  }
+  for (const abs of args.testFiles) {
+    const rel = relative(args.worktreePath, abs);
+    const owner = ownerAppOf(rel, args.apps);
+    if (owner) seeds.add(owner.dir);
+  }
+  return resolveDeployOrder(args.apps, [...seeds]);
 }
 
 function summarize(failure: VerificationFailure): string {
@@ -178,6 +227,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
   const reset = deps.resetWorktree ?? defaultResetWorktree;
   const discover = deps.discoverTestCodeunits ?? defaultDiscoverTestCodeunits;
   const changedFilesOf = deps.getChangedFiles ?? defaultGetChangedFiles;
+  const discoverApps = deps.discoverAlApps ?? defaultDiscoverAlApps;
   const { config } = deps;
 
   return {
@@ -206,29 +256,32 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
       // Internal Activation App is installed. Idempotent — safe on re-entry.
       await deps.continiaCli.installAppById(env.envId, ACTIVATION_APP_ID, callOpts);
 
-      for (const appPath of config.continiaAppPaths) {
-        const info = await deps.continiaCli.installDependencies(env.envId, appPath, callOpts);
-        if (info.skippedCount > 0 || info.symbolsMissingCount > 0) {
-          deps.logger.warn(
-            `build-and-test: deps install for ${appPath} reported ${info.skippedCount} skipped dep(s) ` +
-              `and ${info.symbolsMissingCount} symbol gap(s) — catalogue misses surface later as compile errors`,
-          );
-        }
-      }
+      // Everything below the environment calls is filesystem-only, so it runs
+      // BEFORE the expensive deps-install/compile work: the set of apps worth
+      // deploying is derived from what changed and from which tests we picked.
+      const appGraph = discoverApps(worktree.path);
+      const changedFiles = await changedFilesOf(worktree.path, worktree.baseSha);
 
-      const discovered = await discover(worktree.path, config.continiaTestAppPaths);
+      // Scan scope for test discovery. Unset CONTINIA_TEST_APP_PATHS means
+      // "every app in the repo" — discovery is cheap (file reads) and selection
+      // is what bounds the expensive part.
+      const testScanPaths =
+        config.continiaTestAppPaths.length > 0
+          ? config.continiaTestAppPaths
+          : appGraph.map((a) => a.dir);
+
+      const discovered = await discover(worktree.path, testScanPaths);
       if (discovered.length === 0) {
         throw new VerificationFailedError(
           0,
           true,
-          `no test codeunits discovered under ${config.continiaTestAppPaths.join(', ')}`,
+          `no test codeunits discovered under ${testScanPaths.join(', ')}`,
         );
       }
 
       // Narrow to what this change actually needs. Codeunits run strictly
       // sequentially against one environment, so running the whole suite is
       // hours of wall clock and a guaranteed stage timeout on a real codebase.
-      const changedFiles = await changedFilesOf(worktree.path, worktree.baseSha);
       const selection = selectTestCodeunits({
         discovered,
         changedFiles,
@@ -259,6 +312,39 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         );
       }
 
+      // Deploy set: the apps the change touched, plus the apps owning the tests
+      // we are about to run, expanded over internal dependencies and ordered
+      // dependency-first. Derived per work item — a static list cannot be right
+      // for a repo where one WI touches base-application and the next touches
+      // export. CONTINIA_APP_PATHS, when set, overrides this entirely.
+      const appPaths = resolveAppPaths({
+        apps: appGraph,
+        changedFiles,
+        testFiles: codeunits.map((c) => c.file),
+        worktreePath: worktree.path,
+        override: config.continiaAppPaths,
+      });
+      if (appPaths.length === 0) {
+        throw new Error(
+          'build-and-test could not determine which apps to deploy: no app.json owns the changed ' +
+            'files or the selected tests. Set CONTINIA_APP_PATHS to pin the deploy set explicitly.',
+        );
+      }
+      deps.logger.info(
+        `build-and-test: deploying ${appPaths.length} app(s) in dependency order — ${appPaths.join(' → ')}` +
+          (config.continiaAppPaths.length > 0 ? ' (pinned via CONTINIA_APP_PATHS)' : ' (derived)'),
+      );
+
+      for (const appPath of appPaths) {
+        const info = await deps.continiaCli.installDependencies(env.envId, appPath, callOpts);
+        if (info.skippedCount > 0 || info.symbolsMissingCount > 0) {
+          deps.logger.warn(
+            `build-and-test: deps install for ${appPath} reported ${info.skippedCount} skipped dep(s) ` +
+              `and ${info.symbolsMissingCount} symbol gap(s) — catalogue misses surface later as compile errors`,
+          );
+        }
+      }
+
       const canUseTool = composeCanUseTool([
         createBashAllowlist({ allow: CODER_BASH_ALLOW, deny: CODER_BASH_DENY }),
         createPathEscapeFilter(worktree.path),
@@ -275,12 +361,12 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
 
         // Re-download symbols every round: the fix call's reset path runs
         // `git clean -fd`, which deletes untracked .alpackages.
-        for (const appPath of config.continiaAppPaths) {
+        for (const appPath of appPaths) {
           await deps.continiaCli.downloadSymbols(env.envId, appPath, callOpts);
         }
 
         const deploy: DeployAppResult[] = [];
-        for (const appPath of config.continiaAppPaths) {
+        for (const appPath of appPaths) {
           deploy.push(...(await deps.continiaCli.deployApp(env.envId, appPath, callOpts)));
         }
         const compiled = deploy.every((e) => e.compiled && e.published);

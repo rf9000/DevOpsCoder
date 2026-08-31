@@ -54,6 +54,7 @@ const envSchema = z.object({
   ASSIGNED_TO_FILTER: z.string().optional(),
   SKILLS_SOURCE_DIR: z.string().optional(),
   CLAUDE_CODE_EXECUTABLE_PATH: z.string().optional(),
+  COST_LOG_PATH: z.string().optional(),
 });
 
 export function loadConfig(
@@ -75,7 +76,6 @@ export function loadConfig(
       [
         ['CONTINIA_ENV_PROFILE_ID', p.CONTINIA_ENV_PROFILE_ID],
         ['CONTINIA_API_TOKEN', p.CONTINIA_API_TOKEN],
-        ['CONTINIA_APP_PATHS', p.CONTINIA_APP_PATHS],
       ] as const
     ).filter(([, v]) => v.trim() === '');
     if (missing.length > 0) {
@@ -99,15 +99,11 @@ export function loadConfig(
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
+  // Both optional: build-and-test derives the deploy set per work item from the
+  // changed files plus the selected tests, and scans every app for test
+  // codeunits when no scan scope is pinned. Non-empty values override either.
   const continiaAppPaths = splitPaths(p.CONTINIA_APP_PATHS);
-  if (!p.SKIP_BUILD_TEST && continiaAppPaths.length === 0) {
-    throw new Error(
-      'Invalid configuration:\n  - CONTINIA_APP_PATHS: must contain at least one app path',
-    );
-  }
-  const continiaTestAppPaths = p.CONTINIA_TEST_APP_PATHS
-    ? splitPaths(p.CONTINIA_TEST_APP_PATHS)
-    : continiaAppPaths;
+  const continiaTestAppPaths = splitPaths(p.CONTINIA_TEST_APP_PATHS ?? '');
 
   return {
     orgUrl: `https://dev.azure.com/${p.AZURE_DEVOPS_ORG}`,
@@ -149,6 +145,7 @@ export function loadConfig(
     },
     claudeModel: p.CLAUDE_MODEL,
     stateDir: p.STATE_DIR,
+    costLogPath: p.COST_LOG_PATH ?? `${p.STATE_DIR}/cost-ledger.jsonl`,
     assignedToFilter,
     continiaCliPath: p.CONTINIA_CLI_PATH,
     continiaEnvProfileId: p.CONTINIA_ENV_PROFILE_ID,

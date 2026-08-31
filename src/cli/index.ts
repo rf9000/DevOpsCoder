@@ -4,6 +4,7 @@ import { createAdoClient } from '../sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../state/state-store.ts';
 import { buildPipeline } from '../services/pipeline-builder.ts';
 import { createProcessor } from '../services/processor.ts';
+import { createCostLedger } from '../services/cost-ledger.ts';
 import { createWorktreeManager } from '../services/worktree-manager.ts';
 import {
   createAbortFlag,
@@ -42,6 +43,10 @@ function buildDeps() {
   const ado = createAdoClient(config);
   const store = new PipelineStateStore(config.stateDir);
   const abortFlag = createAbortFlag();
+  // Dry runs are rehearsals — they must not pollute the real spend log.
+  const ledger = config.dryRun
+    ? undefined
+    : createCostLedger({ path: config.costLogPath, logger });
   const processor = createProcessor({
     config,
     logger,
@@ -49,6 +54,7 @@ function buildDeps() {
     store,
     buildPipeline,
     abortFlag,
+    ...(ledger ? { ledger } : {}),
   });
   return { config, logger, ado, store, processor, abortFlag };
 }

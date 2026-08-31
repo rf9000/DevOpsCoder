@@ -22,7 +22,7 @@ Plan 7 makes per-WI cost operationally visible: every non-skipped watcher outcom
 
 Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome also reports the tools the agents invoked, e.g. `WI 123: completed (cost: $0.42, tools: Edit×5, Bash×2)`. Usage is tallied per stage (the 6 reviewer axes are merged) and persisted in `state.outputs.toolUsage`.
 
-Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys all configured apps to the environment and runs every AL test codeunit sequentially. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID`, `CONTINIA_API_TOKEN`, and `CONTINIA_APP_PATHS` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without them otherwise.**
+Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys the apps this change actually needs (derived per WI from the changed files and the selected tests) and runs the test codeunits `TEST_SELECTION` picks — not the whole suite, which on a real AL repo is hundreds of sequential runs. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID` and `CONTINIA_API_TOKEN` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without them otherwise. `CONTINIA_APP_PATHS` is optional; leave it unset to let the deploy set be derived per work item.**
 
 ## Tech stack
 
@@ -130,7 +130,7 @@ DevopsCoder ships into the same Azure VM as the read-only sibling agents under `
    ```
    Inside the REPL, type `/login`, copy the URL it shows and open it in your local browser, authorize, then paste the code back into the VM terminal. Exit with `/exit`.
 
-6. Configure `.env.devops-coder` from `.env.example`. At minimum fill in `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` — this last variable is **required with no default**; the pipeline will refuse to start without it. The verification gate additionally requires `CONTINIA_ENV_PROFILE_ID`, `CONTINIA_API_TOKEN`, and `CONTINIA_APP_PATHS` — or set `SKIP_BUILD_TEST=true` to skip `env-provision` + `build-and-test` entirely for a first smoke bring-up (see step 10 below).
+6. Configure `.env.devops-coder` from `.env.example`. At minimum fill in `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` — this last variable is **required with no default**; the pipeline will refuse to start without it. The verification gate additionally requires `CONTINIA_ENV_PROFILE_ID` and `CONTINIA_API_TOKEN` (not `CONTINIA_APP_PATHS` — that is derived per work item) — or set `SKIP_BUILD_TEST=true` to skip `env-provision` + `build-and-test` entirely for a first smoke bring-up (see step 10 below).
 
 7. Copy `docker-compose.example.yml` from this repo into `~/teams/<team-name>/docker-compose.yml` and replace the `<target-repo>` placeholder with the real repo name:
    ```bash
@@ -172,16 +172,17 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `MAX_COST_USD_PER_WI` | **yes** | **none** | Pipeline refuses to start without this; set it consciously |
 | `CONTINIA_ENV_PROFILE_ID` | **yes\*** | **none** | DemoPortal profile for per-WI env creation |
 | `CONTINIA_API_TOKEN` | **yes\*** | **none** | Forwarded into the spawned continia.exe |
-| `CONTINIA_APP_PATHS` | **yes\*** | **none** | Comma-separated app dirs, dependency order, worktree-relative |
+| `CONTINIA_APP_PATHS` | no | derived | Pins the deploy set. Normally leave unset — build-and-test derives it per WI from the changed files plus the apps owning the selected tests, expanded over `app.json` dependencies and ordered dependency-first |
 | `CONTINIA_CLI_PATH` | no | `.tools/continia.exe` | Relative → resolved against the worktree; set absolute if the target repo doesn't vendor the CLI |
 | `CONTINIA_TEST_TIMEOUT_S` | no | 600 | Seconds passed as `--timeout` to each `continia test run` |
 | `CONTINIA_ALC_PATH` | no | none | Read by the spawned Continia CLI itself (not validated by this service) — path to the AL compiler binary |
 | `CONTINIA_AUTO_INSTALL_ALC` | no | none | Read by the spawned Continia CLI itself — set `0` to disable its auto-install path (broken upstream; Docker image bind-mounts `/opt/al/bin` instead) |
 | `SKILLS_SOURCE_DIR` | no | none (Docker image sets `/app/.claude`) | Dir of orchestrator skills symlinked into each per-WI worktree's `.claude/`; target-repo skills win on name conflict |
 | `CLAUDE_CODE_EXECUTABLE_PATH` | no | none (Docker image sets `/home/claude/.local/bin/claude`) | Forwarded to the Agent SDK as `pathToClaudeCodeExecutable`. Unset, the SDK probes for its own bundled native binary — under Bun on a glibc image it picks the `*-linux-x64-musl` package and fails |
-| `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the three `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN`/`CONTINIA_APP_PATHS` vars marked `yes*` above become optional |
+| `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN` vars marked `yes*` above become optional |
 | `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
 | `TEST_SELECTION` | no | `related` | Which discovered test codeunits a round runs: `changed` (tests in files this run touched), `related` (those + tests referencing a changed AL object), `all`. Codeunits run strictly sequentially, so `all` on a real AL suite is hours and a guaranteed stage timeout |
+| `COST_LOG_PATH` | no | `<STATE_DIR>/cost-ledger.jsonl` | Append-only JSONL spend log: one record per finished WI with `workItemId`, `outcome`, `costUsd`, `prId`, `prUrl`, and a per-stage breakdown. Dry runs never write to it |
 | `CONTINIA_MAX_TEST_CODEUNITS` | no | 25 | Hard ceiling per round; 0 = unlimited. Dropped codeunits are logged as a WARNING — a capped green round does not mean everything passed |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; only sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default |

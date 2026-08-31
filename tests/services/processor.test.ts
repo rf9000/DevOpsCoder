@@ -12,6 +12,7 @@ import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
 import { CostExceededError, StageTimeoutError, VerificationFailedError } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
+import type { CostRecord } from '../../src/services/cost-ledger.ts';
 
 const baseConfig = {
   orgUrl: 'https://x',
@@ -34,7 +35,7 @@ const baseConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0,
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 } satisfies AppConfig;
 
 function makeAdo(overrides: Partial<AdoClient> = {}): AdoClient {
@@ -189,6 +190,97 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
     // Blocking also un-triggers — see the dedicated test below.
     expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
+  });
+
+  describe('cost ledger', () => {
+    it('records work item id, cost and PR id for a completed run', async () => {
+      const records: CostRecord[] = [];
+      const prStage: Stage = {
+        name: 'draft-pr-creator',
+        canRun: () => true,
+        execute: async (state) => {
+          state.outputs.cost = { total: 8.45, perStage: { analyzer: 0.31, coder: 8.14 } };
+          state.outputs.draftPr = {
+            id: 42,
+            url: 'https://dev.azure.com/o/p/_git/r/pullrequest/42',
+            branch: 'agent/wi-101',
+            createdAt: '2026-09-01T10:00:00Z',
+          };
+          return state;
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [prStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        workItemId: 101,
+        outcome: 'completed',
+        costUsd: 8.45,
+        prId: 42,
+        prUrl: 'https://dev.azure.com/o/p/_git/r/pullrequest/42',
+      });
+      expect(records[0]?.perStage).toEqual({ analyzer: 0.31, coder: 8.14 });
+    });
+
+    it('records spend for a failed run too — money is spent either way', async () => {
+      const records: CostRecord[] = [];
+      const boomStage: Stage = {
+        name: 'revision-loop',
+        canRun: () => true,
+        execute: async (state) => {
+          state.outputs.cost = { total: 5.62, perStage: { 'revision-loop': 5.62 } };
+          throw new Error('exploded');
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [boomStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: 'failed', costUsd: 5.62 });
+      expect(records[0]?.prId).toBeUndefined();
+    });
+
+    it('writes nothing for a skipped work item — nothing ran, nothing to bill', async () => {
+      const records: CostRecord[] = [];
+      const ado = makeAdo({
+        getWorkItem: mock(async () => ({
+          id: 101,
+          fields: { 'System.Title': 't', 'System.State': 'Closed' },
+        })),
+      });
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado,
+        store,
+        buildPipeline: () => [],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      const outcome = await proc.processWorkItem(101);
+      expect(outcome.kind).toBe('skipped');
+      expect(records).toHaveLength(0);
+    });
   });
 
   it('suppresses ADO writes when dryRun is true', async () => {
