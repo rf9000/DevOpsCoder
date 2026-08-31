@@ -31,9 +31,11 @@ import {
 import {
   MAX_TRANSIENT_RETRIES,
   composeCanUseTool,
+  defaultGetChangedFiles,
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
 } from './_stage-helpers.ts';
+import { selectTestCodeunits } from '../../utils/test-selection.ts';
 
 const STACK_TRACE_MAX_LINES = 15;
 const STACK_TRACE_MAX_CHARS = 1500;
@@ -143,6 +145,8 @@ export interface BuildAndTestDeps {
     worktreePath: string,
     testAppPaths: string[],
   ) => Promise<DiscoveredTestCodeunit[]>;
+  /** Test override for the changed-file lookup that drives test selection. */
+  getChangedFiles?: (worktreePath: string, baselineSha: string) => Promise<string[]>;
 }
 
 function summarize(failure: VerificationFailure): string {
@@ -173,6 +177,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
   const getHead = deps.getCurrentHeadSha ?? defaultGetCurrentHeadSha;
   const reset = deps.resetWorktree ?? defaultResetWorktree;
   const discover = deps.discoverTestCodeunits ?? defaultDiscoverTestCodeunits;
+  const changedFilesOf = deps.getChangedFiles ?? defaultGetChangedFiles;
   const { config } = deps;
 
   return {
@@ -211,12 +216,46 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         }
       }
 
-      const codeunits = await discover(worktree.path, config.continiaTestAppPaths);
-      if (codeunits.length === 0) {
+      const discovered = await discover(worktree.path, config.continiaTestAppPaths);
+      if (discovered.length === 0) {
         throw new VerificationFailedError(
           0,
           true,
           `no test codeunits discovered under ${config.continiaTestAppPaths.join(', ')}`,
+        );
+      }
+
+      // Narrow to what this change actually needs. Codeunits run strictly
+      // sequentially against one environment, so running the whole suite is
+      // hours of wall clock and a guaranteed stage timeout on a real codebase.
+      const changedFiles = await changedFilesOf(worktree.path, worktree.baseSha);
+      const selection = selectTestCodeunits({
+        discovered,
+        changedFiles,
+        worktreePath: worktree.path,
+        mode: config.testSelection,
+        maxCodeunits: config.maxTestCodeunits,
+      });
+      const codeunits = selection.selected;
+      deps.logger.info(
+        `build-and-test: running ${codeunits.length} test codeunit(s) — ${selection.reason}`,
+      );
+      if (selection.droppedByCap > 0) {
+        // Never silent: a truncated run that goes green must not read as
+        // "everything passed".
+        deps.logger.info(
+          `build-and-test: WARNING ${selection.droppedByCap} selected codeunit(s) dropped by ` +
+            `CONTINIA_MAX_TEST_CODEUNITS=${config.maxTestCodeunits} — this round does NOT cover them`,
+        );
+      }
+      if (codeunits.length === 0) {
+        // Fail loudly rather than green-washing: an empty selection means the
+        // change is unverified, which is exactly what this gate exists to catch.
+        throw new VerificationFailedError(
+          0,
+          true,
+          `no test codeunits selected for the changed files (${selection.reason}); ` +
+            `set TEST_SELECTION=all to run the full suite`,
         );
       }
 

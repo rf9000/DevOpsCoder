@@ -181,6 +181,8 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CLAUDE_CODE_EXECUTABLE_PATH` | no | none (Docker image sets `/home/claude/.local/bin/claude`) | Forwarded to the Agent SDK as `pathToClaudeCodeExecutable`. Unset, the SDK probes for its own bundled native binary — under Bun on a glibc image it picks the `*-linux-x64-musl` package and fails |
 | `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the three `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN`/`CONTINIA_APP_PATHS` vars marked `yes*` above become optional |
 | `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
+| `TEST_SELECTION` | no | `related` | Which discovered test codeunits a round runs: `changed` (tests in files this run touched), `related` (those + tests referencing a changed AL object), `all`. Codeunits run strictly sequentially, so `all` on a real AL suite is hours and a guaranteed stage timeout |
+| `CONTINIA_MAX_TEST_CODEUNITS` | no | 25 | Hard ceiling per round; 0 = unlimited. Dropped codeunits are logged as a WARNING — a capped green round does not mean everything passed |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; only sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default |
 | `STAGE_TIMEOUT_MS_BUILD_AND_TEST` | no | derived (105 min) | `(MAX_TEST_FIX_ATTEMPTS+1) × VERIFY_PASS + MAX_TEST_FIX_ATTEMPTS × CODER` |

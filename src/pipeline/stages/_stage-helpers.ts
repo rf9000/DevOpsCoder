@@ -53,6 +53,38 @@ export async function defaultGetCurrentHeadSha(
 }
 
 /**
+ * Worktree-relative paths changed between `baselineSha` and HEAD.
+ *
+ * Authoritative by construction: the coder and test-author both report a
+ * `filesChanged` list, but those are model-authored and drift from reality
+ * (missed files, invented paths, inconsistent prefixes). Test selection gates
+ * what actually runs, so it reads the diff instead of trusting the narration.
+ *
+ * Returns [] on failure — callers degrade to a wider test selection rather
+ * than skipping verification.
+ */
+export async function defaultGetChangedFiles(
+  worktreePath: string,
+  baselineSha: string,
+): Promise<string[]> {
+  try {
+    const proc = Bun.spawn(['git', 'diff', '--name-only', baselineSha, 'HEAD'], {
+      cwd: worktreePath,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const out = await new Response(proc.stdout as ReadableStream).text();
+    if ((await proc.exited) !== 0) return [];
+    return out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Reset a worktree to a given SHA via `git reset --hard ${sha}` plus
  * `git clean -fd`. Best-effort: errors are swallowed (the worktree may be in
  * a weird state and there's nothing meaningful the caller can do beyond logging).

@@ -15,27 +15,44 @@ A running environment ID. If unavailable, invoke `continia-env-setup` first.
 
 ## Strategy Selection
 
-**Default — deploy ONLY your target app, scoped, against pre-staged symbols.**
-Your dependency symbols are already in `.alpackages` (the pipeline pre-stages them;
-when coding manually run `continia deps download <envId> <appPath>` once). So you
-do NOT compile or deploy your dependencies — you deploy just your app:
+**Default — deploy ONLY your target app.**
+`compile`/`deploy` refresh the app's dependency symbols from the target environment
+automatically before every run (env-truth model: the environment's NST is the source of
+truth, not a local build — see CLAUDE.md's "Env-truth symbols"). You do NOT need to run
+`continia deps download` first, and you do NOT compile or deploy your dependencies — you
+deploy just your app. Run it from the session root:
 ```bash
-continia deploy <envId> <appPath> --workspace-root <appPath> --allow-downgrade --json
+continia deploy <envId> <appPath> --allow-downgrade --json
 ```
-- **`--workspace-root <appPath>`** scopes app discovery to your app so sibling
-  dependency source dirs (e.g. `Core/`, `DeliveryNetwork/`) are NOT picked up and
-  recompiled. It does not affect what you can read.
 - **`--allow-downgrade`** lets your branch build replace the higher-versioned
   CI-built baseline the env already has (BC refuses a downgrade by default).
+- Naming `<appPath>` (rather than `--all`) is what scopes the run to one app. Deploy
+  compiles and publishes only the app you name; it discovers siblings but never builds them
+  unless you pass `--with-deps`.
+
+**Do NOT pass `--workspace-root <appPath>`.** Earlier versions of this skill did, to keep
+discovery off sibling source directories. Two things go wrong now:
+- The unpublished-dependency safety gate needs to SEE the siblings. Scoping discovery to
+  one app hides them, so a dependency the environment does not publish stops being an
+  actionable error and becomes a confusing compile failure later.
+- Symbol state anchors at the nearest ancestor holding `.continia` (what `continia env use`
+  creates). Run `continia env use <envId>` once at your session root and every app in the
+  session shares one symbol state and one set of publish events.
+
+Use `--workspace-root` only to point discovery at a session root that is not your current
+directory. It no longer affects where symbol state is written.
 
 **Do NOT use `--with-deps` or `--all` for a normal change.** `--with-deps`
 recompiles your dependency apps from their source dirs (slow, fails without their
-own deps, and unnecessary — their symbols are pre-staged). `--all` discovers every
-app in the workspace (including 200+ BC base apps). Deploy your specific app only.
+own deps, and unnecessary — the target app's own compile/deploy already refreshes its
+symbols from the environment). `--all` discovers every app in the workspace (including
+200+ BC base apps). Deploy your specific app only.
 
 **`--with-deps` is ONLY for the rare case** where you genuinely changed a
 companion's source and must rebuild it as part of your change — not for resolving
-missing symbols (use `continia deps download` for that).
+missing symbols. Symbol refresh is automatic; if a dependency genuinely isn't published
+on the target env, compile/deploy fail with an actionable message naming it (deploy it
+first, run `deploy --with-deps`, or use `compile --local-symbols` for a pre-publish check).
 
 **Override schema sync mode** (default: Synchronize; options: Synchronize, ForceSync, Recreate):
 ```bash
@@ -93,13 +110,43 @@ If a workspace uses such a ruleset, ship a sibling `.cli-ruleset.json` whose `in
 
 ## Result Interpretation
 
-JSON output is an array per app:
+JSON output is an array per app (one NDJSON line per app under `--stream`):
 ```json
-[{"app": "Continia Software_Continia Core", "compiled": true, "published": true}]
+[{"app": "Continia Software_Continia Core", "compiled": true, "published": true,
+  "workspaceRoot": "U:\\Git\\DO.Support", "degraded": false}]
 ```
+- **`code`** — present on every failed row, and the field to branch on: `unpublished-sibling`,
+  `dependency-not-on-env`, `superseded-package-retained`, `symbol-fetch-failed`,
+  `app-lock-held`, `app-lock-failed`,
+  `symbol-refresh-failed`, `compile-failed`, `compile-produced-no-app`, `publish-failed`,
+  `higher-version-installed`. `error` is free prose (alc's full output on a compile failure) —
+  never regex it.
+- **`workspaceRoot`** — where this run's symbol provenance and publish events were recorded.
+  Same on every row. If it isn't your session root, see the Gotchas above.
+- **`degraded`** — `true` when this app's packages were not fully verified against the env.
+- A run that cannot even reach the per-app loop emits one object instead of an array:
+  `{"success": false, "error": {"code": "...", "message": "..."}}`.
 
 On failure, the `error` field contains details:
-- **Missing symbols** -- invoke `continia-deps` to download dependencies, then retry
+- **Missing/stale symbols** -- `compile`/`deploy` refresh dependency symbols from the target
+  env automatically, and **stop before running the compiler** if any dependency could not be
+  established. They never fall through to a possibly-stale cached package; the `code` says
+  which case you hit:
+  - `unpublished-sibling` — a workspace app the env doesn't publish. Deploy it, run
+    `deploy --with-deps`, or use `compile --local-symbols` for a pre-publish check.
+  - `dependency-not-on-env` — proven absent from the env's extension list. `continia deps
+    install <envId> <appPath>`, or deploy it.
+  - `superseded-package-retained` — a stale package couldn't be deleted from `.alpackages`,
+    and alc compiles against the highest version in the directory. A **local file lock**, not
+    an env problem: close whatever holds the `.app` open (usually VS Code with the AL
+    extension) and re-run.
+  - `symbol-fetch-failed` — the env couldn't serve the package (unreachable, auth, a bad
+    package). Fix the connection (`continia auth status`) and re-run; for a deliberate
+    offline compile, `continia compile <appPath> --no-symbol-refresh` uses the cache
+    unverified.
+  If symbols look stale but nothing errors, the cache may need a forced refresh because
+  another tool republished at the same version (`continia deps refresh <appPath>` — see
+  `continia-deps`, the one gap the env-truth model can't detect on its own).
 - **AL syntax errors** -- fix the code and re-deploy
 - **"App is already installed" (same-version re-deploy):** BC silently no-ops a same-version POST. The CLI automatically unpublishes the installed entry first so the new binary actually replaces the old one. Opt out with `--no-replace-same-version`.
 - **"a newer version X was already installed" (downgrade):** the env holds a higher version than the build you're deploying. Re-run with `--allow-downgrade` to auto-unpublish and replace it, or unpublish the higher version manually then re-deploy. The `--json` result carries `conflict: "higher-version-installed"` with both versions.
@@ -120,6 +167,18 @@ Compile only (no publish):
 ```bash
 continia compile <appPath> --json
 ```
+
+`compile` refreshes the app's dependency symbols from the target environment first
+(`--env <id>` > `CONTINIA_ENV` > the workspace default from `continia env use`; a hard error
+if none of those resolve and the cache can't stand in). If any dependency can't be
+established against the env, compile **fails before alc runs** with `error.code` set to
+`unpublished-sibling`, `dependency-not-on-env`, `superseded-package-retained`, or
+`symbol-fetch-failed` — it never falls
+through to a cached package the refresh policy just judged stale. Two escape hatches:
+`--no-symbol-refresh` compiles against whatever is already in `.alpackages`, unverified
+(offline); `--local-symbols` stages sibling apps' locally built `.app` files instead of the
+environment's, for checking a dependency + dependent chain before either is published.
+`symbolRefresh.degraded` is `true` on any run whose packages weren't fully verified.
 
 Compile uses the AL VS Code extension's bundled `alc.exe` (matched against analyzer DLLs by construction — no version mismatch). Override with `CONTINIA_ALC_PATH=<path>`. Without an AL extension installed, falls back to altool's `al compile` and warns on stderr — analyzers may fail to load in that mode.
 
@@ -142,18 +201,21 @@ Prefer `--app-id` from headless callers (it's the field `env apps --json` return
 
 ## Gotchas
 
-- **Deploy from the session root and pin `--workspace-root`** — pass
-  `--workspace-root <appPath>` so discovery is scoped to your app regardless of cwd,
-  and sibling dependency source isn't treated as workspace-local. (Without it the
-  CLI discovers apps from the cwd, so you'd otherwise run deploy from within the
-  app's parent directory, e.g. `continia deploy <envId> Cloud` from the
-  `DocumentOutput` dir; passing a full absolute path like
-  `U:\Git\...\DocumentOutput\Cloud` fails with "No app.json found.")
+- **Deploy from the session root** — run `continia env use <envId>` there once, then run
+  deploy from that directory. Discovery starts at cwd, so `<appPath>` can be a path
+  relative to it (`DocumentOutput/Cloud`) or an absolute path under it. Do **not** pin
+  `--workspace-root` to the app directory: that hides the sibling apps the
+  unpublished-dependency check needs to see, and it is not what decides where symbol state
+  lives (the nearest ancestor holding `.continia` does).
+- **Where symbol state lives** — deploy prints both roots on stderr
+  (`Discovery root: … ; symbol state root: …`) and every `--json` row carries
+  `workspaceRoot`. If the state root is not your session root, you have a stray `.continia`
+  below it; the CLI says so the first time it creates one.
 - **`--all` deploys too much** — `--all --workspace-root` discovers all apps in the workspace including BC base apps (209+ apps in DO.Support). Deploy specific apps instead of using `--all`.
 
 ## Common Pattern: Fix-and-Deploy
 
 1. Fix the AL code
-2. `continia deploy <envId> <appPath> --workspace-root <appPath> --allow-downgrade --json`
+2. `continia deploy <envId> <appPath> --allow-downgrade --json` (from the session root)
 3. If compile fails, fix errors and retry
 4. Once published, invoke `continia-test` to verify

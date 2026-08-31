@@ -41,6 +41,8 @@ const envSchema = z.object({
   CONTINIA_APP_PATHS: z.string().default(''),
   CONTINIA_TEST_APP_PATHS: z.string().optional(),
   SKIP_BUILD_TEST: boolFlag(false),
+  TEST_SELECTION: z.enum(['changed', 'related', 'all']).default('related'),
+  CONTINIA_MAX_TEST_CODEUNITS: z.coerce.number().int().nonnegative().default(25),
   MAX_TEST_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
   CONTINIA_TEST_TIMEOUT_S: z.coerce.number().int().positive().default(600),
   STAGE_TIMEOUT_MS_TEST_AUTHOR: z.coerce.number().int().positive().default(1_200_000),
@@ -158,6 +160,8 @@ export function loadConfig(
     skillsSourceDir: p.SKILLS_SOURCE_DIR,
     claudeCodeExecutablePath: p.CLAUDE_CODE_EXECUTABLE_PATH,
     skipBuildTest: p.SKIP_BUILD_TEST,
+    testSelection: p.TEST_SELECTION,
+    maxTestCodeunits: p.CONTINIA_MAX_TEST_CODEUNITS,
     dryRun: false,
   };
 }

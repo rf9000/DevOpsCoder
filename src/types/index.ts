@@ -1,3 +1,7 @@
+import type { TestSelectionMode } from '../utils/test-selection.ts';
+
+export type { TestSelectionMode };
+
 export interface AppConfig {
   orgUrl: string;
   project: string;
@@ -45,6 +49,10 @@ export interface AppConfig {
   claudeCodeExecutablePath?: string;
   /** Skip env-provision + build-and-test (harness smoke tests). */
   skipBuildTest: boolean;
+  /** Which discovered test codeunits a verification round runs. */
+  testSelection: TestSelectionMode;
+  /** Hard ceiling on test codeunits per round; 0 = unlimited. */
+  maxTestCodeunits: number;
   dryRun: boolean;
 }
 

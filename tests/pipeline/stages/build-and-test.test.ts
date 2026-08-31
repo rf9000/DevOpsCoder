@@ -151,7 +151,7 @@ const baseConfig: AppConfig = {
   maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600,
   dryRun: false,
-  skipBuildTest: false,
+  skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0,
 };
 
 const greenDeploy: DeployAppResult[] = [{ app: 'A', compiled: true, published: true }];
@@ -187,6 +187,8 @@ function makeHarness(opts: {
   runnerBehavior?: () => Promise<unknown>;
   codeunits?: Array<{ id: number; name: string; file: string }>;
   skills?: DiscoveredSkill[];
+  config?: AppConfig;
+  changedFiles?: string[];
 } = {}) {
   const callOrder: string[] = [];
   const deployQueue = [...(opts.deployQueue ?? [greenDeploy])];
@@ -241,7 +243,7 @@ function makeHarness(opts: {
 
   const resets: string[] = [];
   const stage = createBuildAndTestStage({
-    config: baseConfig,
+    config: opts.config ?? baseConfig,
     continiaCli: cli,
     runner,
     logger: createLogger(),
@@ -254,6 +256,7 @@ function makeHarness(opts: {
         { id: 148001, name: 'Tests A', file: 'x.al' },
         { id: 148002, name: 'Tests B', file: 'y.al' },
       ],
+    getChangedFiles: async () => opts.changedFiles ?? [],
   });
 
   return { stage, cli, callOrder, runnerCalls, resets, testOpts };
@@ -417,6 +420,48 @@ describe('createBuildAndTestStage', () => {
     const { stage, testOpts } = makeHarness();
     await stage.execute(makeStageState(), makeStageCtx());
     expect(testOpts).toEqual([600, 600]);
+  });
+
+  describe('test selection', () => {
+    // Discovery returns absolute paths under the worktree; selection compares
+    // them against git's worktree-relative diff output.
+    const codeunits = [
+      { id: 148001, name: 'Tests A', file: `${worktree.path}/Test/A.al` },
+      { id: 148002, name: 'Tests B', file: `${worktree.path}/Test/B.al` },
+    ];
+
+    it('mode=changed runs only the test codeunits in changed files', async () => {
+      const { stage, callOrder } = makeHarness({
+        config: { ...baseConfig, testSelection: 'changed' },
+        codeunits,
+        changedFiles: ['Test/A.al'],
+      });
+      await stage.execute(makeStageState(), makeStageCtx());
+      expect(callOrder.filter((c) => c.startsWith('test:'))).toEqual(['test:148001']);
+    });
+
+    it('the cap limits how many codeunits a round runs', async () => {
+      const { stage, callOrder } = makeHarness({
+        config: { ...baseConfig, testSelection: 'all', maxTestCodeunits: 1 },
+        codeunits,
+      });
+      await stage.execute(makeStageState(), makeStageCtx());
+      expect(callOrder.filter((c) => c.startsWith('test:'))).toEqual(['test:148001']);
+    });
+
+    it('fails loudly rather than passing when the selection is empty', async () => {
+      // An empty selection means the change is unverified — the exact thing
+      // this gate exists to catch. It must not read as green.
+      const { stage, callOrder } = makeHarness({
+        config: { ...baseConfig, testSelection: 'changed' },
+        codeunits,
+        changedFiles: ['docs/README.md'],
+      });
+      await expect(stage.execute(makeStageState(), makeStageCtx())).rejects.toThrow(
+        /no test codeunits selected/,
+      );
+      expect(callOrder.filter((c) => c.startsWith('test:'))).toEqual([]);
+    });
   });
 
   it('passes discoveredSkills through to the fix prompt', async () => {

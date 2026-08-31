@@ -25,7 +25,13 @@ closure is `deps download`'s job.
 
 **Exit code:** a genuine install failure (BC rejects the install) lands in the `failed` JSON array and makes the command exit non-zero (1). A catalogue *miss* stays in `skipped` (usually a pre-installed Microsoft platform app) and keeps exit 0 — so `$?` distinguishes "couldn't install" from "nothing to install".
 
-**Symbol gaps:** After `deps install`, check the `symbolsMissing` field in JSON (or the "symbol gaps N" summary on stderr in human mode). If non-empty, run `continia deps download <envId> <appPath>` to populate `.alpackages` for compile.
+**JSON contract:** exactly one object on stdout on every path, carrying `success` on both. A run that cannot start (e.g. `<appPath>` has no `app.json`) emits `{ success: false, error: { code, message }, ... }` with every collection present but empty, so a consumer never has to check whether a key exists before reading it.
+
+**Symbol gaps:** After `deps install`, check two fields in JSON (or the summary line on stderr in human mode):
+- `symbolsMissing` — no `.app` at all in `.alpackages` for a satisfied dependency. Run `continia deps download <envId> <appPath>` to populate it.
+- `symbolsStale` — a `.app` is present but the symbol engine's refresh policy would replace it anyway (env switch, version drift, a publish event newer than the cached download, platform drift). Run `continia deps refresh <appPath>` to replace it.
+
+Both are computed dry-run, no downloads.
 
 ## Download Symbols
 
@@ -39,11 +45,39 @@ base-symbol references — the CLI reads each package's embedded `NavxManifest.x
 recursively resolves the symbol closure the AL compiler needs (this is what prevents AL1022,
 both for transitive dependency refs such as `Application Test Library` / `Permissions Mock`
 and for the Microsoft base/system symbols pulled in via `application` / `platform`).
-For each package the DemoPortal catalogue is tried first (by appId), then BC's `/dev/packages`
-endpoint for Microsoft system symbols. The chosen version prefers what is installed on the
-target environment. Add `--clean` to rebuild `.alpackages` from scratch. Override the env's
-profile lookup with `--bc-version <ver>` / `--target <Cloud|OnPrem>` when needed. JSON output is
-`{ resolved: [...], skipped: [...] }` with the requested vs. resolved identity and source per entry.
+
+The target environment's NST is treated as truth: a dependency **installed on the
+env** is fetched from BC's `/dev/packages` endpoint (authoritative — the env can be running a
+custom same-version build the catalogue doesn't have). The DemoPortal catalogue is used only
+for a dependency **not installed on the env** — this command, unlike `compile`, is allowed to
+reach it, since staging happens before `deps install` has necessarily run. A package already
+cached with valid provenance (matches the env, no newer publish event, no version drift) costs
+zero network traffic.
+
+Add `--clean` to rebuild `.alpackages` from scratch (also drops recorded provenance for this
+app). Override the env's profile lookup with `--bc-version <ver>` / `--target <Cloud|OnPrem>`
+when needed.
+
+JSON output: `{ success, envId, packageDir, resolved: [...], skipped: [...], counts: { refreshed, cached, cachedRefreshFailed, staged, missing, errors }, degraded, stateSaved }`.
+- Each `resolved` entry: `{ resolved: { id, name, publisher, version }, source, reasonCode, reason }` — `source` is `dev-endpoint`, `catalogue`, or `existing-cache` (already there, untouched this run).
+- Each `skipped` entry: `{ dep: { id, name, publisher, version }, reasonCode, reason, workspaceApp, guidance? }` — `workspaceApp: true` means the dependency is a sibling app in this workspace that the target env doesn't publish; `guidance` then names the fix (deploy it, or `compile --local-symbols`).
+- **`resolved.length` is deliberately NOT `counts.refreshed + counts.cached + counts.staged`.** `resolved` lists every package that ended up usable in the package directory, which includes the ones served from cache after a failed refresh (`reasonCode: "cached-refresh-failed"`) — they are on disk and alc will read them. `counts.cached` excludes those, reporting them under `counts.cachedRefreshFailed` instead, so "verified cache hit" and "unverified fallback" never collapse into one number. To reconcile: `resolved.length === counts.refreshed + counts.cached + counts.cachedRefreshFailed + counts.staged`.
+- `degraded: true` means this run did **not** end with every dependency in the closure verified against the environment: a package kept from cache after a failed refresh, a dependency that couldn't be fetched, or one the environment doesn't hold. Same definition `compile` and `deploy` use, so one predicate works across all three. A `deps download` that reports `skipped` entries is degraded — the cache it left behind is not compile-ready.
+
+## Force a Refresh
+
+`deps download` (and `compile`/`deploy`) only refresh what's provably stale: no provenance,
+a hash mismatch, a different source env, version drift, or a publish event recorded in
+`.continia/symbol-state.json` after the download. A **same-version republish done by another
+tool** (the VS Code Env Explorer) or **from another workspace** leaves no trace this CLI can
+see — the NST exposes no content hash, and no publish event lands here. That's the one gap
+the env-truth model doesn't close on its own. If you suspect it happened, force it:
+```bash
+continia deps refresh <appPath> --json          # non-Microsoft dependencies only
+continia deps refresh <appPath> --all --json    # also Microsoft platform/base symbols (large, rarely needed)
+```
+Resolves the environment the same way `compile`/`deploy` do: `--env <id>` > `CONTINIA_ENV` >
+the workspace default set by `continia env use`.
 
 ## Version Resolution (BC major vs Continia major)
 
@@ -65,22 +99,28 @@ continia deps tree <appPath> --workspace-root .
 
 ## Fresh Environment Setup
 
-1. Invoke `continia-env-setup` to get a running env
+1. Invoke `continia-env-setup` to get a running env (this also sets it as the workspace
+   default via `continia env use`, so you don't need to repeat `--env` below)
 2. Install deps in dependency order:
    ```bash
    continia deps install <envId> Core/Cloud --json
    continia deps install <envId> DeliveryNetwork/Cloud --json
    continia deps install <envId> DocumentOutput/Cloud --json
    ```
-3. Download symbols:
-   ```bash
-   continia deps download <envId> Core/Cloud --json
-   continia deps download <envId> DeliveryNetwork/Cloud --json
-   continia deps download <envId> DocumentOutput/Cloud --json
-   ```
-4. Invoke `continia-deploy` to build and publish
+3. Invoke `continia-deploy` to build and publish — `compile`/`deploy` pull dependency symbols
+   from the environment automatically as they run; a separate `deps download` pass before
+   compiling is no longer part of the normal workflow (see `continia-deploy` for the
+   env-truth model). Run `deps download` yourself only to pre-stage `.alpackages` without
+   compiling (e.g. inspecting the closure, or preparing an offline compile).
 
 ## Fixing Missing Symbol Errors
 
-1. `continia deps download <envId> <appPath> --json`
-2. `continia compile <appPath> --json`
+`compile`/`deploy` refresh symbols from the target environment automatically, so most
+AL1022/AL0132-style errors from a stale cache no longer happen. If you still hit one:
+- **Dependency not installed on the env** — compile/deploy fail with a message naming it:
+  `continia deps install <envId> <appPath> --json`, then deploy the dependency, or
+  `continia deploy <envId> <appPath> --with-deps --json`.
+- **Suspected stale cache from another tool or workspace** (the one gap env-truth can't
+  detect on its own — see "Force a Refresh" above): `continia deps refresh <appPath> --json`.
+- **Pre-publish chain check**, dependency not deployed yet: `continia compile <appPath> --local-symbols --json`.
+- **Deliberate offline compile**: `continia compile <appPath> --no-symbol-refresh --json` (uses whatever is already cached, unverified).
