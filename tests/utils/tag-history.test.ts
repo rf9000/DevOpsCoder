@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { findTagAdder, formatAdoMention } from '../../src/utils/tag-history.ts';
+import {
+  findTagAdder,
+  formatAdoMention,
+  formatAdoMentionMarkdown,
+} from '../../src/utils/tag-history.ts';
 import type { WorkItemUpdate } from '../../src/types/index.ts';
 
 const alice = { id: 'guid-alice', displayName: 'Alice Smith', uniqueName: 'alice@x.com' };
@@ -94,5 +98,18 @@ describe('formatAdoMention', () => {
 
   it('returns empty string when the identity has no usable name', () => {
     expect(formatAdoMention({ id: 'g' })).toBe('');
+  });
+});
+
+describe('formatAdoMentionMarkdown', () => {
+  it('renders the bare @<GUID> token PR comments expand', () => {
+    // PR comments are markdown, not HTML — the data-vss-mention anchor used for
+    // work-item comments would show as raw markup here.
+    expect(formatAdoMentionMarkdown(alice)).toBe('@<guid-alice>');
+    expect(formatAdoMentionMarkdown(alice)).not.toContain('data-vss-mention');
+  });
+
+  it('returns empty string without a GUID — a name alone notifies nobody', () => {
+    expect(formatAdoMentionMarkdown({ displayName: 'Alice Smith' })).toBe('');
   });
 });

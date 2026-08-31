@@ -55,6 +55,7 @@ function makeAdo(): AdoClient {
     }),
     getWorkItemComments: async () => [],
     getWorkItemUpdates: async () => [],
+    createPullRequestThread: async () => {},
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},

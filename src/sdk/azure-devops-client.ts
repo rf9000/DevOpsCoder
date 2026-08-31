@@ -1,6 +1,7 @@
 import type {
   AppConfig,
   CreatePullRequestArgs,
+  CreatePullRequestThreadArgs,
   PullRequest,
   WiqlQueryResponse,
   WorkItem,
@@ -27,6 +28,10 @@ export interface AdoClient {
   removeTagFromWorkItem(workItemId: number, tag: string, opts?: { signal?: AbortSignal }): Promise<void>;
   addWorkItemComment(workItemId: number, html: string, opts?: { signal?: AbortSignal }): Promise<void>;
   createPullRequest(args: CreatePullRequestArgs, opts?: { signal?: AbortSignal }): Promise<PullRequest>;
+  createPullRequestThread(
+    args: CreatePullRequestThreadArgs,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void>;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000];
@@ -235,6 +240,26 @@ export function createAdoClient(
         sourceRefName: response.sourceRefName,
         targetRefName: response.targetRefName,
       };
+    },
+
+    async createPullRequestThread(
+      args: CreatePullRequestThreadArgs,
+      opts: { signal?: AbortSignal } = {},
+    ): Promise<void> {
+      await adoFetchWithRetry(
+        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(args.repositoryName)}/pullRequests/${args.pullRequestId}/threads?api-version=7.1`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            // commentType 1 = text. status 4 = closed: this is a notification,
+            // not a review point, and an active thread would trip a "all
+            // comments resolved" completion policy.
+            comments: [{ parentCommentId: 0, content: args.content, commentType: 1 }],
+            status: 4,
+          }),
+          signal: opts.signal,
+        },
+      );
     },
   };
 }

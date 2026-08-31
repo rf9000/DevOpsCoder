@@ -56,6 +56,7 @@ function makeMockAdo(): AdoClient {
     getWorkItem: async () => ({ id: 101, fields: {} }),
     getWorkItemComments: async () => [],
     getWorkItemUpdates: async () => [],
+    createPullRequestThread: async () => {},
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},

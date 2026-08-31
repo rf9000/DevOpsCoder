@@ -151,6 +151,7 @@ function makeAdoClient(overrides: Partial<AdoClient> = {}): AdoClient {
     getWorkItem: mock(async () => ({ id: 101, fields: {} })),
     getWorkItemComments: mock(async () => []),
     getWorkItemUpdates: mock(async () => []),
+    createPullRequestThread: mock(async () => {}),
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),
@@ -214,6 +215,75 @@ describe('createDraftPrCreatorStage', () => {
     expect(draftPr.url).toBe('https://dev.azure.com/myorg/my-project/_git/test-repo/pullrequest/42');
     expect(draftPr.branch).toBe(sampleWorktree.branch);
     expect(draftPr.createdAt).toBe('2026-08-14T12:00:00.000Z');
+  });
+
+  it('posts a PR comment @-mentioning whoever applied the trigger tag', async () => {
+    const ado = makeAdoClient({
+      getWorkItemUpdates: mock(async () => [
+        {
+          revisedBy: { id: 'guid-bob', displayName: 'Bob Jones' },
+          fields: { 'System.Tags': { oldValue: 'bug', newValue: 'bug; agent implement' } },
+        },
+      ]),
+    });
+    const stage = createDraftPrCreatorStage({
+      config: baseConfig,
+      ado,
+      prDescriptionTemplate: MINIMAL_TEMPLATE,
+      pushBranch: async () => {},
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    const threadMock = ado.createPullRequestThread as ReturnType<typeof mock>;
+    expect(threadMock.mock.calls).toHaveLength(1);
+    const arg = threadMock.mock.calls[0]![0] as {
+      repositoryName: string;
+      pullRequestId: number;
+      content: string;
+    };
+    expect(arg.pullRequestId).toBe(42);
+    expect(arg.repositoryName).toBe('test-repo');
+    // Markdown token, not the HTML anchor used for work-item comments.
+    expect(arg.content).toContain('@<guid-bob>');
+    expect(arg.content).not.toContain('data-vss-mention');
+  });
+
+  it('skips the PR comment when the tag adder cannot be identified', async () => {
+    const ado = makeAdoClient({ getWorkItemUpdates: mock(async () => []) });
+    const stage = createDraftPrCreatorStage({
+      config: baseConfig,
+      ado,
+      prDescriptionTemplate: MINIMAL_TEMPLATE,
+      pushBranch: async () => {},
+    });
+
+    await stage.execute(makeState(), makeCtx());
+    // A comment nobody is notified by is just noise.
+    expect((ado.createPullRequestThread as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  it('a failing notification does not fail the stage — the PR is the deliverable', async () => {
+    const ado = makeAdoClient({
+      getWorkItemUpdates: mock(async () => [
+        {
+          revisedBy: { id: 'guid-bob', displayName: 'Bob Jones' },
+          fields: { 'System.Tags': { oldValue: '', newValue: 'agent implement' } },
+        },
+      ]),
+      createPullRequestThread: mock(async () => {
+        throw new Error('403 forbidden');
+      }),
+    });
+    const stage = createDraftPrCreatorStage({
+      config: baseConfig,
+      ado,
+      prDescriptionTemplate: MINIMAL_TEMPLATE,
+      pushBranch: async () => {},
+    });
+
+    const result = await stage.execute(makeState(), makeCtx());
+    expect((result.outputs.draftPr as DraftPrOutput).id).toBe(42);
   });
 
   // -------------------------------------------------------------------------

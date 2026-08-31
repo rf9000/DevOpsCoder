@@ -82,3 +82,19 @@ export function formatAdoMention(identity: IdentityRef): string {
   if (!identity.id) return `@${name}`;
   return `<a href="#" data-vss-mention="version:2.0,${escapeHtmlAttr(identity.id)}">@${escapeHtmlAttr(name)}</a>`;
 }
+
+/**
+ * Render an @-mention for a MARKDOWN surface (pull-request comment threads).
+ *
+ * Deliberately different from formatAdoMention: work-item comments are HTML and
+ * take the `data-vss-mention` anchor, while PR comments are markdown and store
+ * mentions as the bare `@<GUID>` token, which ADO expands to the person's name
+ * on render and notifies them. Using the HTML anchor here shows raw markup.
+ *
+ * Returns '' without a GUID — there is nothing for ADO to resolve, and a
+ * literal "@Name" in a PR comment notifies no one.
+ */
+export function formatAdoMentionMarkdown(identity: IdentityRef): string {
+  if (!identity.id) return '';
+  return `@<${identity.id}>`;
+}

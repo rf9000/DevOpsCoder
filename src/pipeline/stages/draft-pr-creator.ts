@@ -12,6 +12,7 @@ import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AdoClient } from '../../sdk/azure-devops-client.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { buildGitAuthArgs, redactPat } from '../../utils/git-auth.ts';
+import { findTagAdder, formatAdoMentionMarkdown } from '../../utils/tag-history.ts';
 
 // ---------------------------------------------------------------------------
 // Deps interface
@@ -238,7 +239,33 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         { signal: ctx.signal },
       );
 
-      // 4. Store output
+      // 4. Notify whoever asked for the work, as a PR comment thread.
+      // Best-effort and deliberately after the PR exists: the PR is the
+      // deliverable, and neither the identity lookup nor the thread post is
+      // worth failing a successful run over. Failures are logged, not thrown.
+      try {
+        const updates = await deps.ado.getWorkItemUpdates(wiCtx.id, { signal: ctx.signal });
+        const adder = findTagAdder(updates, deps.config.triggerTag);
+        const mention = adder ? formatAdoMentionMarkdown(adder.identity) : '';
+        // No GUID means nothing for ADO to resolve — a comment nobody is
+        // notified by is just noise, so skip it entirely.
+        if (mention) {
+          await deps.ado.createPullRequestThread(
+            {
+              repositoryName: deps.config.repositoryName,
+              pullRequestId: prResult.id,
+              content: `${mention} Draft PR ready for #${wiCtx.id}.`,
+            },
+            { signal: ctx.signal },
+          );
+        }
+      } catch (err) {
+        ctx.logger.info(
+          `WI ${wiCtx.id}: draft PR opened but the notification comment failed :: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // 5. Store output
       const output: DraftPrOutput = {
         id: prResult.id,
         url: prResult.url,

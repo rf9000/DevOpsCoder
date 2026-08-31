@@ -417,3 +417,10 @@ export interface CreatePullRequestArgs {
   workItemId?: number;
 }
 
+export interface CreatePullRequestThreadArgs {
+  repositoryName: string;
+  pullRequestId: number;
+  /** Markdown. @-mentions use the bare `@<GUID>` token, not the HTML anchor. */
+  content: string;
+}
+
