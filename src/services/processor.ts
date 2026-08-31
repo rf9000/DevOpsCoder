@@ -142,7 +142,7 @@ export function renderCostExhaustionMarkdown(
   lines.push('---');
   lines.push('');
   lines.push(
-    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+    `Re-add the \`${config.triggerTag}\` tag to retry from the failed stage, or ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\` for a completely fresh attempt.`,
   );
 
   return lines.join('\n');
@@ -221,7 +221,7 @@ export function renderVerificationFailureMarkdown(
   lines.push('---');
   lines.push('');
   lines.push(
-    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+    `Re-add the \`${config.triggerTag}\` tag to retry from the failed stage, or ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\` for a completely fresh attempt.`,
   );
 
   return lines.join('\n');
@@ -258,7 +258,7 @@ export function renderStageTimeoutMarkdown(
   lines.push('---');
   lines.push('');
   lines.push(
-    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+    `Re-add the \`${config.triggerTag}\` tag to retry from the failed stage, or ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\` for a completely fresh attempt.`,
   );
 
   return lines.join('\n');
@@ -310,7 +310,7 @@ export function renderReviewerFindingsMarkdown(
   lines.push('---');
   lines.push('');
   lines.push(
-    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+    `Re-add the \`${config.triggerTag}\` tag to retry from the failed stage, or ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\` for a completely fresh attempt.`,
   );
 
   return lines.join('\n');
@@ -323,6 +323,7 @@ export function renderReviewerFindingsMarkdown(
  */
 export function renderTerminalFailureMarkdown(
   terminalError: PipelineTerminalError,
+  config: AppConfig,
   workItemId: number,
 ): string {
   const lines: string[] = [];
@@ -347,7 +348,7 @@ export function renderTerminalFailureMarkdown(
   lines.push('---');
   lines.push('');
   lines.push(
-    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+    `Re-add the \`${config.triggerTag}\` tag to retry from the failed stage, or ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\` for a completely fresh attempt.`,
   );
 
   return lines.join('\n');
@@ -609,12 +610,25 @@ export function createProcessor(deps: ProcessorDeps): Processor {
               ado.addWorkItemComment(workItemId, html),
             );
           } else {
-            const markdown = renderTerminalFailureMarkdown(terminalError, workItemId);
+            const markdown = renderTerminalFailureMarkdown(terminalError, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),
             );
           }
+          // Blocking a WI must also un-trigger it. Left on, the trigger tag
+          // makes every poll cycle re-enter the pipeline — and a re-entry that
+          // reaches the revision loop costs real money (~$8/run observed), with
+          // the cost cap only checked at top-level stage boundaries. Retrying is
+          // now a deliberate human act: re-add the tag (resumes at the failed
+          // stage) or reset-state for a clean run. Mirrors the reject path,
+          // which has always swapped trigger → need-input/blocked.
+          await safeAdoOp(
+            logger,
+            workItemId,
+            'removeTagFromWorkItem(triggerTag)',
+            () => ado.removeTagFromWorkItem(workItemId, config.triggerTag),
+          );
           await safeAdoOp(
             logger,
             workItemId,

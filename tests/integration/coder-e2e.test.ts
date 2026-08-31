@@ -291,7 +291,9 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
     expect(saved.completedAt).toBeUndefined();
 
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(203, 'agent-blocked');
-    expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
+    // Blocking also un-triggers, so the next poll cycle does not re-run (and
+    // re-charge for) the pipeline. Retry is a deliberate human re-tag.
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(203, config.triggerTag);
     // Hard error: 1 analyzer + 1 coder attempt (no retry) = 2; no test-author
     expect(runner.calls).toHaveLength(2);
   });

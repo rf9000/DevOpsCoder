@@ -185,7 +185,8 @@ describe('createProcessor', () => {
       expect(outcome.error.message).toBe('exploded');
     }
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
-    expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
+    // Blocking also un-triggers — see the dedicated test below.
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
   });
 
   it('suppresses ADO writes when dryRun is true', async () => {
@@ -481,8 +482,37 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
 
+    // ...and the trigger tag removed, so the next poll does not re-run the WI
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
+
     // Comment posted BEFORE the tag
     expect(callOrder).toEqual(['comment', 'tag']);
+  });
+
+  it('blocking a WI removes the trigger tag so polling does not re-enter the pipeline', async () => {
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async () => {
+        throw new Error('coder blew up');
+      },
+    };
+
+    const ado = makeAdo();
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledTimes(1);
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
+    expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
   });
 
   it('a stale terminalError is cleared on re-entry so a resumed run completes and drops the trigger tag', async () => {

@@ -6,6 +6,18 @@ The repo is at the **milestone-11 stage** (Plans 1-8, 10-11 done): full end-to-e
 
 Plan 6 adds safety rails: a per-WI cumulative cost cap (`MAX_COST_USD_PER_WI`), per-stage wall-clock timeouts (11 configurable `STAGE_TIMEOUT_MS_*` env vars), and mid-stage abort propagation via `AbortSignal` threaded through `PipelineContext`. Exceeding the cost cap or a stage timeout records a `terminalError`, posts a formatted WI comment, and adds the blocked tag. An external abort (SIGINT) sets `state.cancelled` instead — resumable, no blocked tag.
 
+### Tag lifecycle
+
+| Outcome | Trigger tag | Other tag |
+|---------|-------------|-----------|
+| Completed (draft PR opened) | removed | — |
+| Analyzer rejected | removed | `need-input` (or `agent-blocked` past `MAX_REJECT_CYCLES`) |
+| Terminal failure (any stage) | **removed** | `agent-blocked` |
+| External abort (SIGINT) | kept | — (resumes next cycle) |
+| Paused | kept | — |
+
+A blocked WI is never retried automatically: the trigger tag comes off with the blocked tag on, because polling a still-tagged failed WI re-enters the pipeline every cycle and a re-entry that reaches the revision loop costs real money. To retry, re-add the trigger tag — the run resumes at the failed stage, so a config-level fix does not re-pay for the coder. For a clean run from the top, `reset-state <id>` first.
+
 Plan 7 makes per-WI cost operationally visible: every non-skipped watcher outcome log line now ends with `(cost: $X.XX)`, so an operator tailing `docker compose logs -f` can see spend without opening state JSON. Ships with `docker-compose.example.yml` and a full `## VM Deployment (Docker)` section below.
 
 Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome also reports the tools the agents invoked, e.g. `WI 123: completed (cost: $0.42, tools: Edit×5, Bash×2)`. Usage is tallied per stage (the 6 reviewer axes are merged) and persisted in `state.outputs.toolUsage`.
