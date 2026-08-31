@@ -49,6 +49,14 @@ RUN useradd -m -s /bin/bash claude && \
     mkdir -p /repos && \
     mkdir -p /tmp && chmod 1777 /tmp
 
+# The pipeline runs as `claude`, but `docker compose exec` lands as root (this
+# image keeps USER root so the entrypoint can chown mounts before dropping
+# privileges). Git's dubious-ownership guard then rejects operator commands like
+# `exec ... reset-state`, whose `git worktree remove` fails silently-ish and
+# leaves stale state behind. The guard protects multi-user hosts; this container
+# is single-purpose with only our own mounted repos, so waive it system-wide.
+RUN git config --system --add safe.directory '*'
+
 # Install Claude Code CLI as the claude user
 USER claude
 RUN curl -fsSL https://claude.ai/install.sh | bash

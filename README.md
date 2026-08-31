@@ -195,8 +195,11 @@ Run these from `~/teams/<team-name>/`:
 |---------|-------------|
 | `docker compose logs -f devops-coder` | Follow live logs |
 | `docker compose restart devops-coder` | Restart the service |
-| `docker compose exec devops-coder bash` | Shell into the container |
-| `docker compose exec devops-coder claude -p 'hello'` | Test Claude Code inside the container |
+| `docker compose exec -u claude devops-coder bash` | Shell into the container |
+| `docker compose exec -u claude devops-coder claude -p 'hello'` | Test Claude Code inside the container |
+| `docker compose exec -u claude devops-coder bun run src/cli/index.ts reset-state <id>` | Clear state + worktree + branch for one WI |
+
+**Use `-u claude` for operator commands.** `docker compose exec` defaults to root (the image keeps `USER root` so the entrypoint can chown mounts before dropping privileges), but everything the pipeline creates — the state files, the worktrees, the target-repo checkout — is owned by `claude`. Running `reset-state` as root makes its `git worktree remove` step fail, which leaves a stale state file and causes the next run to resume mid-pipeline instead of starting fresh. The image also sets `git config --system safe.directory '*'` so root-run git commands no longer abort with "detected dubious ownership", but `-u claude` remains the correct habit.
 | `docker compose build --no-cache devops-coder && docker compose up -d devops-coder` | Full rebuild and restart |
 
 ### Deploying Service Changes
@@ -254,6 +257,9 @@ If the pipeline starts failing with "Claude Code process exited with code 1", th
 The entrypoint runs `chown -R claude:claude /home/claude/.claude` inside the container on startup, so credentials remain accessible to both host and container.
 
 ### Troubleshooting
+
+**"fatal: detected dubious ownership in repository at '/repos/...'"**
+- You ran a git command as root via `docker compose exec` against a `claude`-owned repo. Add `-u claude`. Images built after the `safe.directory '*'` change do not hit this, but `reset-state` run as root on an older image fails at `git worktree remove` and leaves a stale state file — re-run it with `-u claude` and confirm with `docker compose exec -u claude devops-coder ls /app/.state/`.
 
 **"Claude Code native binary not found at .../claude-agent-sdk-linux-x64-musl/claude"**
 - The Agent SDK probed for its own bundled native binary and picked the musl build (Bun's libc detection on the glibc base image). Set `CLAUDE_CODE_EXECUTABLE_PATH=/home/claude/.local/bin/claude` — the image and `docker-compose.example.yml` both pin it, so this only bites an older image or a compose file that predates it. Verify with `docker compose exec devops-coder printenv CLAUDE_CODE_EXECUTABLE_PATH`.
