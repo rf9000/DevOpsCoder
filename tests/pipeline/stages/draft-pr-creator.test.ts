@@ -201,7 +201,8 @@ describe('createDraftPrCreatorStage', () => {
     expect(prCall.repositoryName).toBe('test-repo');
     expect(prCall.sourceRefName).toBe(`refs/heads/${sampleWorktree.branch}`);
     expect(prCall.targetRefName).toBe('refs/heads/main');
-    expect(prCall.title).toBe(`[Agent] ${sampleWiCtx.title}`);
+    expect(prCall.title).toBe(sampleWiCtx.title);
+    expect(prCall.title).not.toContain('[Agent]');
     expect(prCall.isDraft).toBe(true);
     expect(prCall.description).toContain('101');
     expect(prCall.workItemId).toBe(101);

@@ -227,7 +227,10 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
           repositoryName: deps.config.repositoryName,
           sourceRefName: `refs/heads/${branch}`,
           targetRefName: 'refs/heads/main',
-          title: `[Agent] ${wiCtx.title}`,
+          // Plain WI title — no "[Agent]" prefix. The PR is already identifiable
+          // as agent-authored: it opens as a draft, is linked to the WI via
+          // workItemRefs, and the description carries the agent's summary.
+          title: wiCtx.title,
           description: prDescription,
           isDraft: true,
           workItemId: wiCtx.id,

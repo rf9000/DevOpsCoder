@@ -207,7 +207,7 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
     expect(prArgs?.repositoryName).toBe('test-repo');
     expect(prArgs?.sourceRefName).toBe('refs/heads/agent/wi-101-fix-login');
     expect(prArgs?.targetRefName).toBe('refs/heads/main');
-    expect(prArgs?.title).toBe('[Agent] WI 101');
+    expect(prArgs?.title).toBe('WI 101');
     expect(prArgs?.isDraft).toBe(true);
 
     // pushBranch called with branch + worktree path

@@ -7,6 +7,7 @@ import { createProcessor } from '../../src/services/processor.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
+import { createInitialState } from '../../src/pipeline/orchestrator.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
 import { CostExceededError, StageTimeoutError, VerificationFailedError } from '../../src/types/index.ts';
@@ -482,6 +483,44 @@ describe('createProcessor', () => {
 
     // Comment posted BEFORE the tag
     expect(callOrder).toEqual(['comment', 'tag']);
+  });
+
+  it('a stale terminalError is cleared on re-entry so a resumed run completes and drops the trigger tag', async () => {
+    // Production shape: WI failed at draft-pr-creator (bad repo name), the
+    // operator fixed the config, the resumed run opened the PR — but the stale
+    // terminalError kept the orchestrator from stamping completedAt, so the
+    // trigger tag was never removed and the next poll re-ran everything.
+    const seeded = store.load(101) ?? createInitialState(101, 'fix-login');
+    seeded.terminalError = {
+      stage: 'draft-pr-creator',
+      message: 'ADO POST ... failed (404): TF401019',
+      at: new Date().toISOString(),
+    };
+    seeded.currentStage = 'draft-pr-creator';
+    store.save(seeded);
+
+    const ado = makeAdo();
+    const prStage: Stage = {
+      name: 'draft-pr-creator',
+      canRun: () => true,
+      execute: async (state) => state,
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [prStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+
+    expect(outcome.kind).toBe('completed');
+    expect(store.load(101)?.terminalError).toBeUndefined();
+    expect(store.load(101)?.completedAt).toBeDefined();
+    expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
   });
 
   it('terminal error WITHOUT reviewer findings: posts the generic failure comment + blocked tag', async () => {

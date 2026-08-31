@@ -481,6 +481,20 @@ export function createProcessor(deps: ProcessorDeps): Processor {
         state.cancelled = false;
       }
 
+      // Clear a previous cycle's terminal error for the same reason. Leaving it
+      // set makes the orchestrator refuse to stamp completedAt even when the
+      // resumed run succeeds end-to-end (see orchestrator.ts "currentStage ==
+      // null && !completedAt && !terminalError"), so the processor reports
+      // `paused`, never removes the trigger tag, and the next poll re-runs the
+      // whole pipeline from the top. Observed in production: a WI that failed at
+      // draft-pr-creator, was fixed, then opened its PR successfully but kept
+      // the trigger tag.
+      // currentStage is deliberately NOT reset — resuming at the failed stage is
+      // what makes a retry cheap instead of re-paying for the coder.
+      if (state.terminalError) {
+        state.terminalError = undefined;
+      }
+
       store.save(state);
 
       const stages = buildPipeline({ config, logger, ado });
