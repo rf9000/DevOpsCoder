@@ -100,6 +100,14 @@ export interface PipelineBuilderDeps {
  * Production callers (CLI → processor) use the defaults; tests inject mocks via the
  * optional override fields.
  */
+/**
+ * Marker embedded in the revision loop's exhaustion error. The processor keys
+ * its reviewer-findings comment on this instead of merely "reviewer output
+ * exists", so a later-stage failure (e.g. a draft-PR 404) can no longer be
+ * mislabelled as a reviewer rejection.
+ */
+export const REVISION_LOOP_EXHAUSTED = 'exhausted revision loop';
+
 export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const runner =
     deps.runner ??
@@ -184,7 +192,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
         return review?.approved === true;
       },
       onExhausted: async (_state: PipelineState, _ctx: PipelineContext): Promise<PipelineState> => {
-        throw new Error(`reviewer rejected ${deps.config.maxRevisions} times — exhausted revision loop`);
+        throw new Error(
+          `reviewer rejected ${deps.config.maxRevisions} times — ${REVISION_LOOP_EXHAUSTED}`,
+        );
       },
     }),
     createTestAuthorStage({

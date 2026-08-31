@@ -455,7 +455,7 @@ describe('createProcessor', () => {
       canRun: () => true,
       execute: async (state) => {
         state.outputs.reviewer = reviewerOutput as unknown;
-        throw new Error('revision loop exhausted');
+        throw new Error('reviewer rejected 3 times — exhausted revision loop');
       },
     };
 
@@ -484,7 +484,7 @@ describe('createProcessor', () => {
     expect(callOrder).toEqual(['comment', 'tag']);
   });
 
-  it('terminal error WITHOUT reviewer findings: adds blocked tag, no comment posted', async () => {
+  it('terminal error WITHOUT reviewer findings: posts the generic failure comment + blocked tag', async () => {
     const boomStage: Stage = {
       name: 'revision-loop',
       canRun: () => true,
@@ -493,7 +493,12 @@ describe('createProcessor', () => {
       },
     };
 
-    const ado = makeAdo();
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
 
     const proc = createProcessor({
       config: baseConfig,
@@ -506,9 +511,73 @@ describe('createProcessor', () => {
 
     const outcome = await proc.processWorkItem(101);
     expect(outcome.kind).toBe('failed');
-    expect(ado.addWorkItemComment).not.toHaveBeenCalled();
+    // Previously this posted nothing, leaving a blocked tag with no explanation.
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+    expect(postedHtml).toContain('pipeline exploded with no reviewer output');
+    expect(postedHtml).toContain('revision-loop');
     expect(ado.addTagToWorkItem).toHaveBeenCalledTimes(1);
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
+  });
+
+  it('later-stage failure with non-blocking reviewer findings is NOT reported as a reviewer rejection', async () => {
+    // Real-world shape: the reviewer approved with major/nit findings, the
+    // pipeline ran on, and draft-pr-creator hit an ADO 404. The findings-based
+    // renderer used to hijack this and claim "reviewer rejected".
+    const reviewerOutput: ReviewerOutput = {
+      approved: true,
+      findings: [
+        {
+          severity: 'major',
+          file: 'src/bank.al',
+          line: 239,
+          title: 'BACS ID not carried over by the cross-company copy',
+          description: 'Allow-list omits the new field.',
+          axis: 'integration',
+        },
+      ],
+      attempts: 1,
+    };
+
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+
+    const reviewStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        return state;
+      },
+    };
+    const prStage: Stage = {
+      name: 'draft-pr-creator',
+      canRun: () => true,
+      execute: async () => {
+        throw new Error(
+          'ADO POST /_apis/git/repositories/continia-banking/pullrequests failed (404): TF401019',
+        );
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [reviewStage, prStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
+    expect(postedHtml).not.toContain('reviewer rejected');
+    expect(postedHtml).toContain('draft-pr-creator');
+    expect(postedHtml).toContain('TF401019');
   });
 
   it('dry run: terminal error with reviewer findings — neither comment nor tag is posted', async () => {

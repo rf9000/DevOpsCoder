@@ -19,6 +19,7 @@ import type { Stage, AbortFlag } from '../pipeline/stage.ts';
 import { DEFAULT_STAGE_TIMEOUT_MS, createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
 import { slugify } from '../utils/slug.ts';
 import type { PipelineBuilderDeps } from './pipeline-builder.ts';
+import { REVISION_LOOP_EXHAUSTED } from './pipeline-builder.ts';
 
 export interface ProcessorDeps {
   config: AppConfig;
@@ -315,6 +316,43 @@ export function renderReviewerFindingsMarkdown(
   return lines.join('\n');
 }
 
+/**
+ * Fallback comment for a terminal failure that none of the specific renderers
+ * claim (ADO API errors, git failures, agent crashes). Without this a human
+ * sees only the blocked tag and has to go read container logs to find out why.
+ */
+export function renderTerminalFailureMarkdown(
+  terminalError: PipelineTerminalError,
+  workItemId: number,
+): string {
+  const lines: string[] = [];
+
+  lines.push(`## Pipeline blocked: ${terminalError.stage} failed`);
+  lines.push('');
+  lines.push(
+    `The "${terminalError.stage}" stage failed with a terminal error. This is not a review or verification rejection — the pipeline hit an operational problem and stopped.`,
+  );
+  lines.push('');
+  lines.push(`### Error`);
+  lines.push('');
+  lines.push('```');
+  lines.push(terminalError.message);
+  lines.push('```');
+  lines.push('');
+  lines.push(`- Stage: \`${terminalError.stage}\``);
+  lines.push(`- Failed at: ${terminalError.at}`);
+  lines.push('');
+  lines.push('The worktree is retained for inspection.');
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To start a fresh attempt, ask the agent operator to run \`bun run src/cli/index.ts reset-state ${workItemId}\`.`,
+  );
+
+  return lines.join('\n');
+}
+
 async function safeAdoOp(
   logger: Logger,
   workItemId: number,
@@ -530,7 +568,15 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),
             );
-          } else if (reviewer && reviewer.findings.length > 0) {
+          } else if (
+            reviewer &&
+            reviewer.findings.length > 0 &&
+            terminalError.message.includes(REVISION_LOOP_EXHAUSTED)
+          ) {
+            // Gated on the exhaustion marker, not merely "findings exist": the
+            // reviewer can approve with non-blocking findings and the pipeline
+            // then die later (e.g. a draft-PR 404). Reporting that as "reviewer
+            // rejected" told humans something false.
             const markdown = renderReviewerFindingsMarkdown(reviewer, config, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
@@ -544,6 +590,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             );
           } else if (persisted && /timeout/i.test(terminalError.message)) {
             const markdown = renderStageTimeoutMarkdown(terminalError, config, workItemId);
+            const html = await marked(markdown);
+            await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
+              ado.addWorkItemComment(workItemId, html),
+            );
+          } else {
+            const markdown = renderTerminalFailureMarkdown(terminalError, workItemId);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),
