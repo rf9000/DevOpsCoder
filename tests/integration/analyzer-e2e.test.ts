@@ -112,6 +112,7 @@ function makeBuildPipeline(runner: AgentRunner) {
       resetWorktree: async () => {},
       // Stub draft-PR creator so tests don't git-push or read the prompt file:
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch: async () => {},
     });
 }
@@ -251,7 +252,9 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
       if (call === 1) return { summary: 'coded', filesChanged: [], commits: [] };
       // calls 2-7 = 6 reviewer axis calls
       if (call >= 2 && call <= 7) return { findings: [] };
-      return { summary: 'tested', testFilesChanged: [], commits: [] };
+      if (call === 8) return { summary: 'tested', testFilesChanged: [], commits: [] };
+      // call 9 = the pr-message step nested in draft-pr-creator
+      return { title: 'Make the thing make sense', bullets: ['Made the thing make sense'] };
     });
     const abortFlag = createAbortFlag();
     const processor = createProcessor({
@@ -285,7 +288,7 @@ describe('analyzer end-to-end (reject lifecycle)', () => {
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
     expect(ado.addWorkItemComment).not.toHaveBeenCalled();
 
-    // The runner WAS called for all agent stages: analyzer + coder + 6 reviewer axes + test-author = 9
-    expect(runner.calls).toHaveLength(9);
+    // The runner WAS called for all agent stages: analyzer + coder + 6 reviewer axes + test-author + pr-message = 10
+    expect(runner.calls).toHaveLength(10);
   });
 });

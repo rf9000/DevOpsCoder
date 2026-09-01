@@ -146,6 +146,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       testAuthorPromptTemplate: 'T',
       testFixerPromptTemplate: 'F',
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch: mock(async () => {}),
     });
     expect(stages).toHaveLength(8);
@@ -203,6 +204,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
         REVIEW_AXES.map((a) => [a, a]),
       ) as Record<typeof REVIEW_AXES[number], string>,
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch,
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
@@ -213,8 +215,8 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
     for (const stage of stages) {
       state = await stage.execute(state, ctx);
     }
-    // 9 = analyzer + coder + 6 reviewer axes + test-author (no fix calls on green)
-    expect(runner.calls).toHaveLength(9);
+    // 10 = analyzer + coder + 6 reviewer axes + test-author + pr-message (no fix calls on green)
+    expect(runner.calls).toHaveLength(10);
     expect(state.outputs.analyzer).toBeDefined();
     expect(state.outputs.worktree).toEqual(sampleWorktree);
     expect(state.outputs.environment).toMatchObject({ envId: 'env-9' });
@@ -261,6 +263,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
         REVIEW_AXES.map((a) => [a, a]),
       ) as Record<typeof REVIEW_AXES[number], string>,
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch: mock(async () => {}),
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
@@ -320,6 +323,7 @@ describe('buildPipeline (Plan 5 full chain)', () => {
         REVIEW_AXES.map((a) => [a, a]),
       ) as Record<typeof REVIEW_AXES[number], string>,
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch: mock(async () => {}),
       getCurrentHeadSha: async () => 'deadbeef',
       resetWorktree: async () => {},
@@ -429,6 +433,7 @@ describe('buildPipeline (Task 11 — SKIP_BUILD_TEST smoke bypass)', () => {
       testAuthorPromptTemplate: 'T',
       testFixerPromptTemplate: 'F',
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch: mock(async () => {}),
     });
     expect(stages.map((s) => s.name)).toEqual([

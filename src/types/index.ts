@@ -460,6 +460,19 @@ export interface CoderOutput {
   prBullets?: string[];
 }
 
+/**
+ * Title + description bullets for the draft PR, written by the `pr-message`
+ * step from the branch diff alone (see `src/pipeline/stages/_pr-message.ts`).
+ * The coder's `prTitle`/`prBullets` are the fallback when that step is not
+ * wired or fails.
+ */
+export interface PrMessageOutput {
+  /** Imperative, business outcome, 50-70 chars, no prefix and no WI number. */
+  title: string;
+  /** 2-6 one-line, past-tense bullets — one per logical change group. */
+  bullets: string[];
+}
+
 export interface TestAuthorOutput {
   /** 1-3 sentences describing what tests were added or updated. */
   summary: string;

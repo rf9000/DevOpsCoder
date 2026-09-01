@@ -139,6 +139,7 @@ function makeBuildPipelineWrapper(
       getCurrentHeadSha: async () => sampleWorktree.baseSha,
       resetWorktree: async () => {},
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch,
     });
 }
@@ -182,6 +183,14 @@ describe('cost-cap e2e', () => {
       if (sys.startsWith('R\n\n')) {
         // Reviewer axis: return clean findings with zero cost.
         return { value: { findings: [] }, costUsd: 0, toolUsage: {}, usage: TEST_USAGE };
+      }
+      if (sys === 'P') {
+        return {
+          value: { title: 'Fix the login button handler', bullets: ['Fixed the login button handler'] },
+          costUsd: 0,
+          toolUsage: {},
+          usage: TEST_USAGE,
+        };
       }
       throw new Error(`unexpected stage prompt: ${sys}`);
     });

@@ -143,7 +143,8 @@ describe('loadConfig', () => {
     expect(config.stageTimeoutMs['analyzer']).toBe(300_000);
     expect(config.stageTimeoutMs['worktree-setup']).toBe(60_000);
     expect(config.stageTimeoutMs['test-author']).toBe(1_200_000);
-    expect(config.stageTimeoutMs['draft-pr-creator']).toBe(120_000);
+    // Sized for the nested pr-message LLM call, not just the push + ADO calls.
+    expect(config.stageTimeoutMs['draft-pr-creator']).toBe(600_000);
     expect(config.stageTimeoutMs['worktree-teardown']).toBe(60_000);
   });
 

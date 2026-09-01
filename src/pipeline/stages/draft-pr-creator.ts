@@ -4,16 +4,22 @@ import type {
   CoderOutput,
   DraftPrOutput,
   EnvironmentOutput,
+  PrMessageOutput,
   TestAuthorOutput,
   WorktreeContext,
   ReviewerOutput,
 } from '../../types/index.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AdoClient } from '../../sdk/azure-devops-client.ts';
+import type { AgentRunner } from '../agent-stage.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { buildGitAuthArgs, redactPat } from '../../utils/git-auth.ts';
 import { findTagAdder, formatAdoMentionMarkdown } from '../../utils/tag-history.ts';
 import { pickAdminUser, type ContiniaCli } from '../../services/continia-cli.ts';
+import { runPrMessageStep } from './_pr-message.ts';
+import { modelFor } from '../../utils/model-selection.ts';
+import { createCostTracker } from '../../utils/cost-tracker.ts';
+import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
 // ---------------------------------------------------------------------------
 // Deps interface
@@ -24,6 +30,14 @@ export interface DraftPrCreatorStageDeps {
   ado: AdoClient;
   /** Contents of src/prompts/draft-pr-description.md. */
   prDescriptionTemplate: string;
+  /**
+   * Runner for the nested `pr-message` step. Optional: without it (or without
+   * `prMessagePromptTemplate`) the stage stays pure string assembly and falls
+   * back to the coder's own `prTitle`/`prBullets`.
+   */
+  runner?: AgentRunner;
+  /** Contents of src/prompts/pr-message.md. */
+  prMessagePromptTemplate?: string;
   /** Test override for `git push origin <branch>` (production default uses Bun.spawn). */
   pushBranch?: (branch: string, cwd: string) => Promise<void>;
   /**
@@ -115,6 +129,11 @@ export function buildPrDescription(args: {
   testAuthor: TestAuthorOutput | undefined;
   reviewer: ReviewerOutput | undefined;
   worktree: WorktreeContext;
+  /**
+   * Bullets from the `pr-message` step, written from the branch diff. The
+   * preferred source; absent when the step is unwired or failed.
+   */
+  prMessage?: PrMessageOutput;
   /** The per-WI BC environment the verification ran on (defensive-optional). */
   environment?: EnvironmentOutput;
   /**
@@ -128,18 +147,32 @@ export function buildPrDescription(args: {
   const { wiCtx, analyzer, coder, testAuthor, reviewer, worktree, environment, template, config } =
     args;
 
-  // Change bullets in the team's house style. prBullets is what the coder is
-  // asked for; the prose summary is the fallback when a model omits them.
+  // Change bullets in the team's house style, from the best source available.
   const changeBullets: string[] = [];
-  if (coder.prBullets && coder.prBullets.length > 0) {
-    changeBullets.push(...coder.prBullets.map(bullet));
-  } else if (coder.summary.trim().length > 0) {
-    changeBullets.push(bullet(coder.summary));
-  }
-  // The convention asks for tests to be mentioned. The coder cannot do it —
-  // test-author runs after it.
-  if (testAuthor !== undefined && testAuthor.summary.trim().length > 0) {
-    changeBullets.push(bullet(testAuthor.summary));
+  // Array.isArray, not a bare `?.`: `prMessage` can also arrive from a state
+  // file written by an older build, where the field may be any shape at all.
+  const prMessageBullets = Array.isArray(args.prMessage?.bullets)
+    ? args.prMessage.bullets.filter((b) => typeof b === 'string' && b.trim().length > 0)
+    : [];
+  if (prMessageBullets.length > 0) {
+    // Preferred: written from the branch diff, so the test commits are already
+    // one of its groups — nothing to append from the test-author here.
+    changeBullets.push(...prMessageBullets.map(bullet));
+  } else {
+    // Fallback: what the coder wrote about its own work, and the prose summary
+    // below that. Both are written from the session rather than the diff, so
+    // this path can read long — it exists so a PR still opens, not because it
+    // produces the better description.
+    if (coder.prBullets && coder.prBullets.length > 0) {
+      changeBullets.push(...coder.prBullets.map(bullet));
+    } else if (coder.summary.trim().length > 0) {
+      changeBullets.push(bullet(coder.summary));
+    }
+    // The convention asks for tests to be mentioned. The coder cannot do it —
+    // test-author runs after it.
+    if (testAuthor !== undefined && testAuthor.summary.trim().length > 0) {
+      changeBullets.push(bullet(testAuthor.summary));
+    }
   }
   const coderBullets =
     changeBullets.length > 0 ? changeBullets.join('\n') : bullet('No changes reported.');
@@ -238,7 +271,35 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
       // logs the stage name, so the original error message is already actionable.
       await push(branch, worktree.path);
 
-      // 2. Environment login for the description's Test Environment block.
+      // 2. PR message (title + bullets) from the branch diff — the automated
+      // port of the team's fw-step4-pullRequest command. Best-effort: a PR
+      // whose description came from the coder's own summary is worse, not
+      // fatal, so a failure here degrades instead of losing a pushed branch.
+      let prMessage = state.outputs.prMessage as PrMessageOutput | undefined;
+      if (prMessage === undefined && deps.runner && deps.prMessagePromptTemplate) {
+        try {
+          const { message, costUsd, toolUsage, usage } = await runPrMessageStep({
+            runner: deps.runner,
+            model: modelFor(deps.config, 'pr-message'),
+            systemPromptAppend: deps.prMessagePromptTemplate,
+            wiCtx,
+            worktree,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          createCostTracker(state).add('pr-message', costUsd, usage);
+          createToolUsageTracker(state).add('pr-message', toolUsage);
+          // Persisted so a resumed run past this point does not pay for the
+          // message twice, and so a human can see what it wrote.
+          state.outputs.prMessage = message;
+          prMessage = message;
+        } catch (err) {
+          ctx.logger.info(
+            `WI ${wiCtx.id}: PR-message step failed, falling back to the coder's bullets :: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      // 3. Environment login for the description's Test Environment block.
       // Fetched here, at PR time, and never written to state: credentials must
       // not land in .state/<id>.json. Best-effort — a PR without credentials is
       // still a PR, so a CLI failure degrades to name + URL only.
@@ -264,7 +325,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         }
       }
 
-      // 3. Build PR description
+      // 4. Build PR description
       const prDescription = buildPrDescription({
         wiCtx,
         analyzer,
@@ -273,23 +334,28 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         reviewer,
         worktree,
         environment,
+        ...(prMessage ? { prMessage } : {}),
         ...(environmentUser ? { environmentUser } : {}),
         template: deps.prDescriptionTemplate,
         config: deps.config,
       });
 
-      // 4. Create the PR — let AzureDevOpsError propagate; its message already
+      // 5. Create the PR — let AzureDevOpsError propagate; its message already
       // carries the URL, status, and ADO response body.
       const prResult = await deps.ado.createPullRequest(
         {
           repositoryName: deps.config.repositoryName,
           sourceRefName: `refs/heads/${branch}`,
           targetRefName: 'refs/heads/main',
-          // The coder writes the title in the team's house style (imperative,
-          // business outcome, 50-70 chars). The WI title is the fallback: it is
-          // a request ("Handling of BACS payments"), not a change description.
-          // No "[Agent]" prefix — the PR opens as a draft and is WI-linked.
-          title: coder.prTitle?.trim() || wiCtx.title,
+          // Same source order as the bullets: the diff-derived message first,
+          // then the coder's own title. The WI title is the last fallback — it
+          // is a request ("Handling of BACS payments"), not a change
+          // description. No "[Agent]" prefix — the PR opens as a draft and is
+          // WI-linked.
+          title:
+            (typeof prMessage?.title === 'string' ? prMessage.title.trim() : '') ||
+            coder.prTitle?.trim() ||
+            wiCtx.title,
           description: prDescription,
           isDraft: true,
           workItemId: wiCtx.id,
@@ -297,7 +363,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         { signal: ctx.signal },
       );
 
-      // 5. Notify whoever asked for the work, as a PR comment thread.
+      // 6. Notify whoever asked for the work, as a PR comment thread.
       // Best-effort and deliberately after the PR exists: the PR is the
       // deliverable, and neither the identity lookup nor the thread post is
       // worth failing a successful run over. Failures are logged, not thrown.
@@ -323,7 +389,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         );
       }
 
-      // 6. Store output
+      // 7. Store output
       const output: DraftPrOutput = {
         id: prResult.id,
         url: prResult.url,

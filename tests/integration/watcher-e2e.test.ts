@@ -81,6 +81,7 @@ function buildPipelineForTest(deps: PipelineBuilderDeps) {
     resetWorktree: async () => {},
     // Stub draft-PR creator so tests don't git-push or read the prompt file:
     prDescriptionTemplate: 'D',
+    prMessagePromptTemplate: 'P',
     pushBranch: async () => {},
   });
 }

@@ -127,6 +127,7 @@ function makeBuildPipelineWrapper(
       resetWorktree: async () => {},
       // Stub draft-PR creator so tests don't git-push or read the prompt file:
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch: async () => {},
     });
 }
@@ -153,6 +154,7 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
       if (sys === 'C') return { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] };
       if (sys === 'T') return { summary: 'tested', testFilesChanged: ['x.test.ts'], commits: ['def'] };
       if (sys.startsWith('R\n\n')) return { findings: [] };
+      if (sys === 'P') return { title: 'Fix the login button handler', bullets: ['Fixed the login button handler', 'Added tests for the login button'] };
       throw new Error(`unexpected stage prompt: ${sys}`);
     });
     const worktreeManager = makeWorktreeManager();
@@ -200,8 +202,8 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
     expect(worktreeManager.ensureWorktree).toHaveBeenCalled();
     expect(worktreeManager.removeWorktree).toHaveBeenCalledTimes(1);
     expect(saved.outputs.draftPr).toMatchObject({ id: 1, url: 'https://example.com/pr/1', branch: sampleWorktree.branch });
-    // Runner: analyzer (1) + coder (1) + 6 reviewer axes + test-author (1) = 9.
-    expect(runner.calls).toHaveLength(9);
+    // Runner: analyzer (1) + coder (1) + 6 reviewer axes + test-author (1) + pr-message (1) = 10.
+    expect(runner.calls).toHaveLength(10);
   });
 
   it('coder retries on AgentOutputParseError (transient), eventually succeeds', async () => {
@@ -251,8 +253,8 @@ describe('Plan 4 end-to-end (coder + test-author pipeline)', () => {
       commits: ['abc'],
     });
     expect(saved.completedAt).toBeTruthy();
-    // Total runner calls: analyzer (1) + coder (3 attempts: 2 fail + 1 success) + 6 reviewer axes + test-author (1) = 11
-    expect(runner.calls).toHaveLength(11);
+    // Total runner calls: analyzer (1) + coder (3 attempts: 2 fail + 1 success) + 6 reviewer axes + test-author (1) + pr-message (1) = 12
+    expect(runner.calls).toHaveLength(12);
   });
 
   it('coder fails terminally (hard error) → terminal failure + blockedTag added', async () => {

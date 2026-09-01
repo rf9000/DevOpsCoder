@@ -33,7 +33,7 @@ WI 77843: completed (cost: $17.36, tools: Bash×286, Edit×19, Grep×7)
 WI 77843: spend — coder $8.21, reviewer $4.02 ×6, test-fixer $1.90, coder-plan $1.00, analyzer $0.13
 ```
 
-Steps are the LLM call sites, not `Stage.name`s: the plan/write split bills to `coder-plan` / `coder`, each reviewer axis to `reviewer:<axis>`, and the fixer nested inside `build-and-test` to `test-fixer`. Lumping those under their stage is what makes a total unreadable — six reviewer axes and four fix rounds are exactly the spend worth seeing. On the log line, `prefix:sub` steps collapse to `prefix $sum ×N` so six near-identical reviewer entries do not crowd out everything else; the per-axis figures are kept in full in the WI log file and the ledger.
+Steps are the LLM call sites, not `Stage.name`s: the plan/write split bills to `coder-plan` / `coder`, each reviewer axis to `reviewer:<axis>`, the fixer nested inside `build-and-test` to `test-fixer`, and the PR-message call nested inside `draft-pr-creator` to `pr-message`. Lumping those under their stage is what makes a total unreadable — six reviewer axes and four fix rounds are exactly the spend worth seeing. On the log line, `prefix:sub` steps collapse to `prefix $sum ×N` so six near-identical reviewer entries do not crowd out everything else; the per-axis figures are kept in full in the WI log file and the ledger.
 
 Each work item also gets **its own log file**, `logs/WI<id>.log` (`LOG_DIR`, bind-mounted in Docker). It collects every line the pipeline logged for that WI — including the per-call `agent: $0.2903 | 30 in / 4223 out | 16 turns | test-fixer (attempt 1 of 4)` lines — and appends a new `=== run <ts> ===` block on each cycle, so a resumed work item keeps the earlier cycle that banked most of its spend rather than losing it to the container's log rotation. Every run closes the file with a cost table:
 
@@ -55,16 +55,26 @@ The same per-step breakdown — usd, calls, model and tokens — goes into the `
 ### Pull request format
 
 Draft PRs follow the team's PR house style, the same one the `fw-step4-pullRequest`
-and `fw-create-pr` skills define for hand-made PRs — so a DevopsCoder PR reads
+and `fw-create-pr` commands define for hand-made PRs — so a DevopsCoder PR reads
 like any other:
 
-- **Title** comes from the coder's `prTitle`: imperative, business outcome,
-  50-70 chars, no prefix and no work item number. The WI title is only a
-  fallback (it states a request, not a change).
-- **Description** is change bullets (`prBullets`, past-tense, AL/BC terms),
-  then any non-blocking reviewer findings, then a `**Test Environment**` block.
+- **Title and bullets** come from the **`pr-message` step**, a short read-only
+  call nested in `draft-pr-creator` (`src/prompts/pr-message.md`, the automated
+  port of `fw-step4-pullRequest`). It runs the same procedure the command does:
+  read `git diff <base>..HEAD`, group the hunks by logical change, write one
+  headline per group, then check the output against the command's validation
+  list. Its context is the diff and nothing else — which is what keeps the
+  description short. A stage asked to summarise its own work writes from memory
+  of a long session instead, and the session leaks in ("Reviewer findings
+  addressed: ...", "no compile check was possible").
+- **Fallback chain** when that step is unwired or fails: the coder's own
+  `prBullets`, then its prose `summary` plus the test-author's; the title falls
+  back to the coder's `prTitle`, then the WI title (which states a request, not
+  a change). Failures are logged and never lose a pushed branch.
+- **Then** any non-blocking reviewer findings, then a `**Test Environment**`
+  block — both added by the framework, not by any model.
 - **Deliberately absent:** file-changed lists, per-stage agent narration, and
-  any tool or agent attribution — all three are forbidden by those skills.
+  any tool or agent attribution — all three are forbidden by those commands.
 - **Test Environment** carries the environment name, URL, and the admin
   username/password read from `continia env users` at PR-creation time. Those
   credentials are short-lived DemoPortal sandbox logins and the PR description
@@ -104,7 +114,7 @@ src/
     orchestrator.ts — runPipeline with pause + reject + terminal-error branches
     stages/        — concrete stages: analyzer, worktree-setup, env-provision, coder, reviewer, test-author, build-and-test, draft-pr-creator, worktree-teardown
     agent-stage.ts, revision-loop.ts — factories
-  prompts/         — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, test-fixer.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
+  prompts/         — Claude system-prompt templates (analyzer.md, coder.md, test-author.md, test-fixer.md, pr-message.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
   sdk/             — Azure DevOps REST client
   services/        — Claude SDK wrapper, watcher, processor, pipeline-builder,
                      wi-context fetcher, skill-loader, skill-wiring, worktree-manager,
@@ -243,6 +253,7 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CLAUDE_MODEL_REVIEWER` | no | `CLAUDE_MODEL` | All 6 review axes. Multiplies by 6 — the single largest cost lever here |
 | `CLAUDE_MODEL_TEST_AUTHOR` | no | `CLAUDE_MODEL` | The test-author's write call |
 | `CLAUDE_MODEL_TEST_FIXER` | no | `CLAUDE_MODEL` | The build-and-test fix loop |
+| `CLAUDE_MODEL_PR_MESSAGE` | no | `CLAUDE_MODEL` | The PR-message step nested in `draft-pr-creator`: reads the branch diff, writes the PR title and bullets. One short read-only call — a cheap model is usually right |
 | `PLAN_MAX_TURNS` | no | 30 | Turn budget for a plan call (read-only work, so well below `CODER_MAX_TURNS`) |
 | `STAGE_TIMEOUT_MS_PLAN` | no | 600000 (10 min) | Per plan call. Added to `revision-loop` (× `MAX_REVISIONS`) and `test-author` only when that stage has a plan model |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
@@ -254,7 +265,7 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `STAGE_TIMEOUT_MS_REVIEWER` | no | 900000 (15 min) | Per revision iteration; sizes the revision-loop default |
 | `STAGE_TIMEOUT_MS_REVISION_LOOP` | no | `MAX_REVISIONS × (PLAN? + CODER + REVIEWER)` (135 min without a plan step) | Wall-clock cap on the whole coder⇄reviewer loop |
 | `STAGE_TIMEOUT_MS_TEST_AUTHOR` | no | 1200000 (20 min) | |
-| `STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR` | no | 120000 (2 min) | |
+| `STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR` | no | 600000 (10 min) | Push + the nested PR-message call + the ADO calls |
 | `STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN` | no | 60000 (1 min) | |
 | `MAX_REVISIONS` | no | 3 | Max coder/reviewer iterations per WI |
 | `MAX_REJECT_CYCLES` | no | 3 | Max analyzer reject cycles before need-input lockout |

@@ -31,6 +31,12 @@ import type {
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { AnalyzerOutput } from '../../../src/pipeline/stages/analyzer.ts';
 import type { AdoClient } from '../../../src/sdk/azure-devops-client.ts';
+import type {
+  AgentRunArgs,
+  AgentRunner,
+  AgentRunResult,
+} from '../../../src/pipeline/agent-stage.ts';
+import { TEST_USAGE } from '../../helpers/agent-usage.ts';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -721,5 +727,171 @@ describe('createDraftPrCreatorStage', () => {
     });
     expect(desc.length).toBeLessThanOrEqual(MAX_PR_DESCRIPTION_LENGTH);
     expect(desc).toContain('https://bc/env-9');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The nested pr-message step (the port of fw-step4-pullRequest)
+// ---------------------------------------------------------------------------
+
+describe('draft-pr-creator: the pr-message step', () => {
+  interface RecordingRunner extends AgentRunner {
+    calls: AgentRunArgs<unknown>[];
+  }
+
+  function makeRunner(
+    impl: (args: AgentRunArgs<unknown>) => unknown,
+    costUsd = 0.03,
+  ): RecordingRunner {
+    const calls: AgentRunArgs<unknown>[] = [];
+    return {
+      calls,
+      async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
+        calls.push(args as AgentRunArgs<unknown>);
+        return {
+          value: impl(args as AgentRunArgs<unknown>) as T,
+          costUsd,
+          toolUsage: { Bash: 3, Read: 1 },
+          usage: TEST_USAGE,
+        };
+      },
+    };
+  }
+
+  const goodMessage = {
+    title: 'Fix the login button so it submits the form',
+    bullets: [
+      'Fixed the login button handler to submit the form',
+      'Added tests covering the empty and disabled button states',
+    ],
+  };
+
+  function makeStage(runner: AgentRunner | undefined, ado = makeAdoClient()) {
+    return createDraftPrCreatorStage({
+      config: baseConfig,
+      ado,
+      prDescriptionTemplate: MINIMAL_TEMPLATE,
+      pushBranch: mock(async () => {}),
+      ...(runner ? { runner, prMessagePromptTemplate: 'PR-MSG-PROMPT' } : {}),
+    });
+  }
+
+  it('writes the description from the diff-derived bullets and drops the stage summaries', async () => {
+    let captured = '';
+    let title = '';
+    const ado = makeAdoClient({
+      createPullRequest: mock(async (opts) => {
+        captured = opts.description;
+        title = opts.title;
+        return { id: 1, url: 'u', sourceRefName: '', targetRefName: '' };
+      }),
+    });
+    const runner = makeRunner(() => goodMessage);
+
+    await makeStage(runner, ado).execute(makeState(), makeCtx());
+
+    expect(title).toBe(goodMessage.title);
+    for (const b of goodMessage.bullets) expect(captured).toContain(`- ${b}`);
+    // The coder's and test-author's own prose never reaches a PR that has a
+    // diff-derived message — the test commits are one of that message's groups.
+    expect(captured).not.toContain(sampleCoder.summary);
+    expect(captured).not.toContain(sampleTestAuthor.summary);
+    // Reviewer findings and the env block are the framework's, not the step's.
+    expect(captured).toContain('Review notes');
+  });
+
+  it('runs read-only, in the worktree, against the branch base', async () => {
+    const runner = makeRunner(() => goodMessage);
+    await makeStage(runner).execute(makeState(), makeCtx());
+
+    const call = runner.calls[0];
+    expect(call?.label).toBe('pr-message');
+    expect(call?.cwd).toBe(sampleWorktree.path);
+    expect(call?.systemPromptAppend).toBe('PR-MSG-PROMPT');
+    expect(call?.disallowedTools).toContain('Edit');
+    expect(call?.disallowedTools).toContain('Write');
+    expect(call?.tools).not.toContain('Edit');
+    // The prompt has to name the base commit, or the model diffs the wrong range.
+    expect(call?.prompt).toContain(sampleWorktree.baseSha);
+    expect(call?.prompt).toContain(sampleWorktree.branch);
+  });
+
+  it('bills the step to its own cost key and records its tool usage', async () => {
+    const runner = makeRunner(() => goodMessage, 0.12);
+    const state = await makeStage(runner).execute(makeState(), makeCtx());
+
+    const cost = state.outputs.cost as { perStage: Record<string, { usd: number; calls: number }> };
+    expect(cost.perStage['pr-message']?.usd).toBeCloseTo(0.12, 5);
+    expect(cost.perStage['pr-message']?.calls).toBe(1);
+    // Tool usage is a flat WI-wide map, not a per-stage breakdown.
+    expect(state.outputs.toolUsage).toEqual({ Bash: 3, Read: 1 });
+  });
+
+  it('falls back to the coder bullets when the step fails, and still opens the PR', async () => {
+    let captured = '';
+    let title = '';
+    const ado = makeAdoClient({
+      createPullRequest: mock(async (opts) => {
+        captured = opts.description;
+        title = opts.title;
+        return { id: 1, url: 'u', sourceRefName: '', targetRefName: '' };
+      }),
+    });
+    const runner = makeRunner(() => {
+      throw new Error('model unavailable');
+    });
+
+    const state = makeState({
+      outputs: {
+        wiContext: sampleWiCtx,
+        analyzer: sampleAnalyzer,
+        coder: { ...sampleCoder, prTitle: 'Fix the login button', prBullets: ['Fixed the handler'] },
+        testAuthor: sampleTestAuthor,
+        worktree: sampleWorktree,
+      },
+    });
+    const result = await makeStage(runner, ado).execute(state, makeCtx());
+
+    expect(title).toBe('Fix the login button');
+    expect(captured).toContain('- Fixed the handler');
+    // Fallback path: the test-author's line is appended again, since no
+    // diff-derived message covered the tests.
+    expect(captured).toContain(sampleTestAuthor.summary);
+    expect((result.outputs.draftPr as DraftPrOutput).id).toBe(1);
+    expect(result.outputs.prMessage).toBeUndefined();
+  });
+
+  it('reuses a persisted message instead of paying for it twice on re-entry', async () => {
+    const runner = makeRunner(() => goodMessage);
+    const state = makeState();
+    state.outputs.prMessage = { title: 'Kept from the first run', bullets: ['Kept bullet'] };
+
+    let title = '';
+    const ado = makeAdoClient({
+      createPullRequest: mock(async (opts) => {
+        title = opts.title;
+        return { id: 1, url: 'u', sourceRefName: '', targetRefName: '' };
+      }),
+    });
+
+    await makeStage(runner, ado).execute(state, makeCtx());
+
+    expect(runner.calls).toHaveLength(0);
+    expect(title).toBe('Kept from the first run');
+  });
+
+  it('stays a pure assembly stage when no runner is wired', async () => {
+    let captured = '';
+    const ado = makeAdoClient({
+      createPullRequest: mock(async (opts) => {
+        captured = opts.description;
+        return { id: 1, url: 'u', sourceRefName: '', targetRefName: '' };
+      }),
+    });
+
+    const result = await makeStage(undefined, ado).execute(makeState(), makeCtx());
+
+    expect(captured).toContain(sampleCoder.summary);
+    expect(result.outputs.prMessage).toBeUndefined();
   });
 });

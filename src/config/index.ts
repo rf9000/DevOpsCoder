@@ -46,7 +46,9 @@ const envSchema = z.object({
   MAX_TEST_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
   CONTINIA_TEST_TIMEOUT_S: z.coerce.number().int().positive().default(600),
   STAGE_TIMEOUT_MS_TEST_AUTHOR: z.coerce.number().int().positive().default(1_200_000),
-  STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR: z.coerce.number().int().positive().default(120_000),
+  // Push + the nested `pr-message` LLM call + the ADO calls. The push and the
+  // API calls alone fit in two minutes; the message step is what sizes this.
+  STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR: z.coerce.number().int().positive().default(600_000),
   STAGE_TIMEOUT_MS_WORKTREE_SETUP: z.coerce.number().int().positive().default(60_000),
   STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN: z.coerce.number().int().positive().default(60_000),
   CLAUDE_MODEL: z.string().default('claude-opus-4-7'),
@@ -61,6 +63,9 @@ const envSchema = z.object({
   CLAUDE_MODEL_TEST_AUTHOR_PLAN: z.string().optional(),
   CLAUDE_MODEL_TEST_AUTHOR: z.string().optional(),
   CLAUDE_MODEL_TEST_FIXER: z.string().optional(),
+  // The PR-message step (nested in draft-pr-creator) reads one diff and writes
+  // a title plus a handful of bullets — a cheap model is usually the right one.
+  CLAUDE_MODEL_PR_MESSAGE: z.string().optional(),
   PLAN_MAX_TURNS: z.coerce.number().int().positive().default(30),
   STAGE_TIMEOUT_MS_PLAN: z.coerce.number().int().positive().default(600_000),
   STATE_DIR: z.string().default('.state'),
@@ -139,6 +144,7 @@ export function loadConfig(
   setStep('test-author-plan', testPlanModel);
   setStep('test-author', model(p.CLAUDE_MODEL_TEST_AUTHOR));
   setStep('test-fixer', model(p.CLAUDE_MODEL_TEST_FIXER));
+  setStep('pr-message', model(p.CLAUDE_MODEL_PR_MESSAGE));
 
   // A configured plan step adds one read-only call to the stage it fronts, so
   // the stage's wall-clock budget has to grow with it or the split would start

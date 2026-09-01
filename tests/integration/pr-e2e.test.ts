@@ -137,6 +137,7 @@ function makeBuildPipelineWrapper(
       getCurrentHeadSha: async () => sampleWorktree.baseSha,
       resetWorktree: async () => {},
       prDescriptionTemplate: 'D',
+      prMessagePromptTemplate: 'P',
       pushBranch,
     });
 }
@@ -172,6 +173,7 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
       if (sys === 'C') return { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] };
       if (sys === 'T') return { summary: 'tested', testFilesChanged: ['x.test.ts'], commits: ['def'] };
       if (sys.startsWith('R\n\n')) return { findings: [] };
+      if (sys === 'P') return { title: 'Fix the login button handler', bullets: ['Fixed the login button handler', 'Added tests for the login button'] };
       throw new Error(`unexpected stage prompt: ${sys}`);
     });
 
@@ -210,7 +212,8 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
     expect(prArgs?.repositoryName).toBe('test-repo');
     expect(prArgs?.sourceRefName).toBe('refs/heads/agent/wi-101-fix-login');
     expect(prArgs?.targetRefName).toBe('refs/heads/main');
-    expect(prArgs?.title).toBe('WI 101');
+    // Title comes from the pr-message step, not the WI title (that is the last fallback).
+    expect(prArgs?.title).toBe('Fix the login button handler');
     expect(prArgs?.isDraft).toBe(true);
 
     // pushBranch called with branch + worktree path
@@ -230,8 +233,8 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
     });
     expect(typeof (saved.outputs.draftPr as { createdAt: string }).createdAt).toBe('string');
 
-    // Runner call count: 1 analyzer + 1 coder + 6 axes + 1 test-author = 9
-    expect(runner.calls).toHaveLength(9);
+    // Runner call count: 1 analyzer + 1 coder + 6 axes + 1 test-author + 1 pr-message = 10
+    expect(runner.calls).toHaveLength(10);
   });
 
   it('scenario 2: revisionLoop iterates — reviewer rejects attempt 1, approves attempt 2', async () => {
@@ -267,6 +270,7 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
         // All other axis calls (2–6 for attempt 1, 7–12 for attempt 2): no findings
         return { findings: [] };
       }
+      if (sys === 'P') return { title: 'Fix the login button handler', bullets: ['Fixed the login button handler', 'Added tests for the login button'] };
       throw new Error(`unexpected stage prompt: ${sys}`);
     });
 
@@ -317,8 +321,8 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
     const secondCoderCall = coderCalls[1];
     expect(secondCoderCall?.prompt).toContain('Previous reviewer findings');
 
-    // Total runner calls: 1 analyzer + (1 coder + 6 axes) × 2 + 1 test-author = 16
-    expect(runner.calls).toHaveLength(16);
+    // Total runner calls: 1 analyzer + (1 coder + 6 axes) × 2 + 1 test-author + 1 pr-message = 17
+    expect(runner.calls).toHaveLength(17);
 
     // Worktree torn down after success
     expect(worktreeManager.removeWorktree).toHaveBeenCalledTimes(1);
@@ -347,6 +351,7 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
           ],
         };
       }
+      if (sys === 'P') return { title: 'Fix the login button handler', bullets: ['Fixed the login button handler', 'Added tests for the login button'] };
       throw new Error(`unexpected stage prompt: ${sys}`);
     });
 
@@ -416,6 +421,7 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
       if (sys === 'C') return { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] };
       if (sys === 'T') return { summary: 'tested', testFilesChanged: ['x.test.ts'], commits: ['def'] };
       if (sys.startsWith('R\n\n')) return { findings: [] };
+      if (sys === 'P') return { title: 'Fix the login button handler', bullets: ['Fixed the login button handler', 'Added tests for the login button'] };
       throw new Error(`unexpected stage prompt: ${sys}`);
     });
 

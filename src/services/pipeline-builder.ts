@@ -38,6 +38,7 @@ const TEST_PLANNER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-planner.md`
 const TEST_FIXER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-fixer.md`;
 const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
 const DRAFT_PR_DESCRIPTION_PROMPT_PATH = `${import.meta.dir}/../prompts/draft-pr-description.md`;
+const PR_MESSAGE_PROMPT_PATH = `${import.meta.dir}/../prompts/pr-message.md`;
 const REVIEWER_AXIS_PROMPT_PATHS: Record<typeof REVIEW_AXES[number], string> = {
   'safety-correctness': `${import.meta.dir}/../prompts/reviewers/safety-correctness.md`,
   'performance': `${import.meta.dir}/../prompts/reviewers/performance.md`,
@@ -88,6 +89,8 @@ export interface PipelineBuilderDeps {
   resetWorktree?: (worktreePath: string, baselineSha: string) => Promise<void>;
   /** Optional draft-PR description template override. Default reads from src/prompts/draft-pr-description.md. */
   prDescriptionTemplate?: string;
+  /** Optional PR-message prompt body override. Default reads from src/prompts/pr-message.md. */
+  prMessagePromptTemplate?: string;
   /** Optional pushBranch override for the draft-PR creator. Defaults to a real `git push origin <branch>` call. */
   pushBranch?: (branch: string, cwd: string) => Promise<void>;
 }
@@ -156,6 +159,8 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     ) as Record<typeof REVIEW_AXES[number], string>;
   const prDescriptionTemplate =
     deps.prDescriptionTemplate ?? readFileSync(DRAFT_PR_DESCRIPTION_PROMPT_PATH, 'utf-8');
+  const prMessagePromptTemplate =
+    deps.prMessagePromptTemplate ?? readFileSync(PR_MESSAGE_PROMPT_PATH, 'utf-8');
 
   const coder = createCoderStage({
     config: deps.config,
@@ -236,6 +241,10 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       config: deps.config,
       ado: deps.ado,
       prDescriptionTemplate,
+      // The nested `pr-message` step: writes title + bullets from the branch
+      // diff, the way the team's fw-step4-pullRequest command does by hand.
+      runner,
+      prMessagePromptTemplate,
       pushBranch: deps.pushBranch,
       // Read-only here: used solely to fetch the environment login for the
       // description's Test Environment block.

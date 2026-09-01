@@ -70,8 +70,16 @@ Respond with **ONLY a single valid JSON object** matching this schema. No prose 
 
 ### `prTitle` and `prBullets` — the team's PR house style
 
-These two fields become the pull request's title and description verbatim, so
-they must read like every other PR in this repository — not like an agent report.
+These two fields are the **fallback** title and description for the pull
+request: a later step normally rewrites them from the branch diff, and yours are
+used verbatim when it can't run. So they must read like every other PR in this
+repository — not like an agent report.
+
+**Write them about the branch, not about your session.** No revision rounds
+("Reviewer findings addressed: ..."), no verification caveats ("no compile check
+was possible", "the tests were not executed"), no alternatives you rejected and
+why, nothing about the work item's answered questions, the worktree or the
+analyzer. Those belong in `summary`, which the framework routes elsewhere.
 
 **`prTitle`** — one line, 50-70 characters:
 
@@ -83,8 +91,9 @@ they must read like every other PR in this repository — not like an agent repo
 **`prBullets`** — 2 to 6 items:
 
 - One bullet per logical change group, not per file. Merge trivial follow-on edits into the bullet they belong to.
-- Each starts with a past-tense action word: `Added`, `Fixed`, `Updated`, `Removed`, `Refactored`, `Replaced`, `Moved`.
-- One line each, specific, using AL/Business Central terminology (table, page, codeunit, event, enum, job queue, upgrade codeunit) and object names where they help the reader.
+- Each starts with a past-tense action word: `Added`, `Fixed`, `Updated`, `Removed`, `Refactored`, `Replaced`, `Moved`, `Guarded`.
+- **One line each — a bullet is a headline, not a paragraph.** One clause, roughly 8-20 words. No second sentence, no `so that ...` rationale, no parenthetical asides, no semicolon joining two thoughts. A bullet needing a second clause is two change groups: split it.
+- Specific, using AL/Business Central terminology (table, page, codeunit, event, enum, job queue, upgrade codeunit) and object names where they help the reader.
 - Do **not** write the leading `- ` — supply the text only; the framework renders the list.
 - Never list file paths or line numbers. Never describe formatting-only churn.
 - Never mention Claude, an agent, or any tool name.

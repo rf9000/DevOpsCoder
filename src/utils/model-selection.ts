@@ -2,8 +2,9 @@ import type { AppConfig } from '../types/index.ts';
 
 /**
  * One LLM-calling step of the pipeline. Not the same set as `Stage.name`: the
- * coder and test-author each split into a plan step and a write step, and the
- * test-fixer runs nested inside `build-and-test`. These strings are the keys of
+ * coder and test-author each split into a plan step and a write step, the
+ * test-fixer runs nested inside `build-and-test`, and `pr-message` runs nested
+ * inside `draft-pr-creator`. These strings are the keys of
  * `config.stepModel`, the cost-ledger keys, and the runner log labels.
  */
 export type PipelineStep =
@@ -13,7 +14,8 @@ export type PipelineStep =
   | 'reviewer'
   | 'test-author-plan'
   | 'test-author'
-  | 'test-fixer';
+  | 'test-fixer'
+  | 'pr-message';
 
 /** Steps whose model, when configured, turns on a plan-then-write split. */
 export type PlanStep = 'coder-plan' | 'test-author-plan';
