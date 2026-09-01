@@ -20,6 +20,13 @@ export interface AgentRunArgs<T> {
   canUseTool?: CanUseToolFn;
   /** Optional AbortSignal. When aborted, the runner throws an AbortError. */
   signal?: AbortSignal;
+  /**
+   * Which pipeline step this call belongs to, appended to the runner's cost log
+   * line. Without it every `agent: $x.xx ...` line is anonymous and a spend
+   * spike cannot be attributed while tailing the container log. Reviewer axes
+   * use `reviewer:<axis>` so the six parallel calls stay distinguishable.
+   */
+  label?: string;
 }
 
 export interface AgentRunResult<T> {

@@ -124,6 +124,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
 
       const { value: output, costUsd, toolUsage } = await deps.runner.run<AnalyzerOutput>({
         prompt,
+        label: 'analyzer',
         schema: analyzerOutputSchema,
         tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill'],
         disallowedTools: ['Edit', 'Write', 'NotebookEdit'],

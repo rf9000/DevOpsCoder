@@ -135,6 +135,11 @@ describe('buildQueryOptions', () => {
     expect(opts.pathToClaudeCodeExecutable).toBe('/home/claude/.local/bin/claude');
   });
 
+  it('label is not forwarded to the SDK — it is only for the cost log line', () => {
+    const opts = buildQueryOptions({ ...minimalArgs, label: 'analyzer' }, deps);
+    expect('label' in opts).toBe(false);
+  });
+
   it('systemPrompt uses claude_code preset with STRUCTURED_OUTPUT_INSTRUCTION when no append is given', () => {
     const opts = buildQueryOptions(minimalArgs, deps);
     const sp = opts.systemPrompt as { type: string; preset: string; append: string };
@@ -190,6 +195,37 @@ describe('buildQueryOptions', () => {
 // createClaudeAgentRunner — cost and AbortSignal tests
 // ---------------------------------------------------------------------------
 describe('createClaudeAgentRunner', () => {
+  it('appends the label to the cost log line so spend is attributable', async () => {
+    const lines: string[] = [];
+    const logger = { ...createLogger(), info: (m: string) => lines.push(m) };
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result', subtype: 'success', result: '{}',
+        total_cost_usd: 1.25, usage: { input_tokens: 7, output_tokens: 9 }, num_turns: 4,
+      } as const;
+    });
+    await createClaudeAgentRunner({ config: baseConfig, logger }).run({
+      prompt: 'x', schema: z.unknown(), label: 'reviewer:security',
+    });
+    expect(lines.some((l) => l.endsWith('| reviewer:security'))).toBe(true);
+    expect(lines.some((l) => l.includes('$1.2500'))).toBe(true);
+  });
+
+  it('omits the trailing separator when no label is given', async () => {
+    const lines: string[] = [];
+    const logger = { ...createLogger(), info: (m: string) => lines.push(m) };
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result', subtype: 'success', result: '{}',
+        total_cost_usd: 0.5, usage: { input_tokens: 1, output_tokens: 1 }, num_turns: 1,
+      } as const;
+    });
+    await createClaudeAgentRunner({ config: baseConfig, logger }).run({
+      prompt: 'x', schema: z.unknown(),
+    });
+    expect(lines.some((l) => l.endsWith('turns'))).toBe(true);
+  });
+
   const VerdictSchema = z.object({ verdict: z.enum(['proceed', 'reject']) });
 
   afterEach(() => {

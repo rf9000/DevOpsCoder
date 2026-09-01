@@ -424,6 +424,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
           try {
             const { costUsd, toolUsage } = await deps.runner.run<CoderOutput>({
               prompt,
+              label: `test-fixer (attempt ${attempt} of ${config.maxTestFixAttempts})`,
               schema: coderOutputSchema,
               tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
               disallowedTools: ['NotebookEdit'],

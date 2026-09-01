@@ -223,6 +223,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
         try {
           const { value: output, costUsd, toolUsage } = await deps.runner.run<CoderOutput>({
             prompt,
+            label: `coder (attempt ${attempt + 1})`,
             schema: coderOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
             disallowedTools: ['NotebookEdit'],

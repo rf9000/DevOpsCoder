@@ -191,6 +191,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
         try {
           const { value: output, costUsd, toolUsage } = await deps.runner.run<TestAuthorOutput>({
             prompt,
+            label: 'test-author',
             schema: testAuthorOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
             disallowedTools: ['NotebookEdit'],

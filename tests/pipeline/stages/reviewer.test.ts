@@ -199,6 +199,15 @@ describe('createReviewerStage', () => {
   // T3 — systemPromptAppend = shared + '\n\n' + axisPrompt
   // -------------------------------------------------------------------------
 
+  it('each axis labels its runner call so the six parallel cost lines stay distinguishable', async () => {
+    const runner = makeRunner();
+    const stage = createReviewerStage(makeDeps(runner));
+    await stage.execute(makeState(), makeCtx());
+    expect(runner.calls.map((c) => c.label).sort()).toEqual(
+      [...REVIEW_AXES].map((a) => `reviewer:${a}`).sort(),
+    );
+  });
+
   it('T3: each axis call has systemPromptAppend = sharedPrompt + "\\n\\n" + axisPrompt', async () => {
     const runner = makeRunner();
     const deps = makeDeps(runner);

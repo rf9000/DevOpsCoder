@@ -233,6 +233,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         REVIEW_AXES.map((axis) =>
           deps.runner.run<{ findings: Finding[] }>({
             prompt,
+            label: `reviewer:${axis}`,
             schema: axisOutputSchema,
             tools: ['Read', 'Grep', 'Glob', 'Bash'],
             disallowedTools: ['Edit', 'Write', 'NotebookEdit'],

@@ -104,7 +104,8 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           // 0 so a missing cost never breaks the orchestrator's cap arithmetic.
           costUsd = (message.total_cost_usd as number | undefined) ?? 0;
           deps.logger.info(
-            `agent: $${costUsd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns`,
+            `agent: $${costUsd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns` +
+              (args.label ? ` | ${args.label}` : ''),
           );
           if (message.subtype === 'success') {
             result = message.result;
