@@ -32,7 +32,9 @@ import { createWorktreeTeardownStage } from '../pipeline/stages/worktree-teardow
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
 const CODER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder.md`;
+const CODER_PLANNER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder-planner.md`;
 const TEST_AUTHOR_PROMPT_PATH = `${import.meta.dir}/../prompts/test-author.md`;
+const TEST_PLANNER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-planner.md`;
 const TEST_FIXER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-fixer.md`;
 const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
 const DRAFT_PR_DESCRIPTION_PROMPT_PATH = `${import.meta.dir}/../prompts/draft-pr-description.md`;
@@ -68,8 +70,12 @@ export interface PipelineBuilderDeps {
   analyzerPromptTemplate?: string;
   /** Optional coder prompt body override. */
   coderPromptTemplate?: string;
+  /** Optional code-planner prompt body override (plan step). */
+  coderPlannerPromptTemplate?: string;
   /** Optional test-author prompt body override. */
   testAuthorPromptTemplate?: string;
+  /** Optional test-planner prompt body override (plan step). */
+  testPlannerPromptTemplate?: string;
   /** Optional reviewer shared-prompt body override. */
   reviewerSharedPromptTemplate?: string;
   /** Optional per-axis reviewer prompt body overrides. Default reads from src/prompts/reviewers/*.md. */
@@ -127,9 +133,13 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     deps.analyzerPromptTemplate ?? readFileSync(ANALYZER_PROMPT_PATH, 'utf-8');
   const coderPromptTemplate =
     deps.coderPromptTemplate ?? readFileSync(CODER_PROMPT_PATH, 'utf-8');
+  const coderPlannerPromptTemplate =
+    deps.coderPlannerPromptTemplate ?? readFileSync(CODER_PLANNER_PROMPT_PATH, 'utf-8');
   const testAuthorPromptTemplate =
     deps.testAuthorPromptTemplate ??
     readFileSync(TEST_AUTHOR_PROMPT_PATH, 'utf-8');
+  const testPlannerPromptTemplate =
+    deps.testPlannerPromptTemplate ?? readFileSync(TEST_PLANNER_PROMPT_PATH, 'utf-8');
   const testFixerPromptTemplate =
     deps.testFixerPromptTemplate ?? readFileSync(TEST_FIXER_PROMPT_PATH, 'utf-8');
   const reviewerSharedPromptTemplate =
@@ -151,6 +161,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     config: deps.config,
     runner,
     promptTemplate: coderPromptTemplate,
+    plannerPromptTemplate: coderPlannerPromptTemplate,
     discoveredSkills,
     getCurrentHeadSha: deps.getCurrentHeadSha,
     resetWorktree: deps.resetWorktree,
@@ -201,6 +212,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       config: deps.config,
       runner,
       promptTemplate: testAuthorPromptTemplate,
+      plannerPromptTemplate: testPlannerPromptTemplate,
       discoveredSkills,
       getCurrentHeadSha: deps.getCurrentHeadSha,
       resetWorktree: deps.resetWorktree,

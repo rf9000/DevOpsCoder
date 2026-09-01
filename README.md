@@ -203,6 +203,16 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `TEST_SELECTION` | no | `related` | Which discovered test codeunits a round runs: `changed` (tests in files this run touched), `related` (those + tests referencing a changed AL object), `all`. Codeunits run strictly sequentially, so `all` on a real AL suite is hours and a guaranteed stage timeout |
 | `COST_LOG_PATH` | no | `<STATE_DIR>/cost-ledger.jsonl` | Append-only JSONL spend log: one record per finished WI with `workItemId`, `outcome`, `costUsd`, `prId`, `prUrl`, and a per-stage breakdown. Dry runs never write to it |
 | `CONTINIA_MAX_TEST_CODEUNITS` | no | 25 | Hard ceiling per round; 0 = unlimited. Dropped codeunits are logged as a WARNING — a capped green round does not mean everything passed |
+| `CLAUDE_MODEL_PLANNING` | no | none | Model for both plan steps. **Setting it (or either var below) turns the plan-then-write split on**: the coder and test-author each get a read-only plan call on this model, then write on their own model. Unset → no plan step, single call per stage as before |
+| `CLAUDE_MODEL_CODER_PLAN` | no | `CLAUDE_MODEL_PLANNING` | Overrides the planning model for the coder's plan step only |
+| `CLAUDE_MODEL_TEST_AUTHOR_PLAN` | no | `CLAUDE_MODEL_PLANNING` | Overrides the planning model for the test-author's plan step only |
+| `CLAUDE_MODEL_ANALYZER` | no | `CLAUDE_MODEL` | Readiness-gate call |
+| `CLAUDE_MODEL_CODER` | no | `CLAUDE_MODEL` | The coder's write call (also used for each revision) |
+| `CLAUDE_MODEL_REVIEWER` | no | `CLAUDE_MODEL` | All 6 review axes. Multiplies by 6 — the single largest cost lever here |
+| `CLAUDE_MODEL_TEST_AUTHOR` | no | `CLAUDE_MODEL` | The test-author's write call |
+| `CLAUDE_MODEL_TEST_FIXER` | no | `CLAUDE_MODEL` | The build-and-test fix loop |
+| `PLAN_MAX_TURNS` | no | 30 | Turn budget for a plan call (read-only work, so well below `CODER_MAX_TURNS`) |
+| `STAGE_TIMEOUT_MS_PLAN` | no | 600000 (10 min) | Per plan call. Added to `revision-loop` (× `MAX_REVISIONS`) and `test-author` only when that stage has a plan model |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; only sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default |
 | `STAGE_TIMEOUT_MS_BUILD_AND_TEST` | no | derived (105 min) | `(MAX_TEST_FIX_ATTEMPTS+1) × VERIFY_PASS + MAX_TEST_FIX_ATTEMPTS × CODER` |
@@ -210,7 +220,7 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `STAGE_TIMEOUT_MS_WORKTREE_SETUP` | no | 60000 (1 min) | |
 | `STAGE_TIMEOUT_MS_CODER` | no | 1800000 (30 min) | Per revision iteration; sizes the revision-loop default |
 | `STAGE_TIMEOUT_MS_REVIEWER` | no | 900000 (15 min) | Per revision iteration; sizes the revision-loop default |
-| `STAGE_TIMEOUT_MS_REVISION_LOOP` | no | `MAX_REVISIONS × (CODER + REVIEWER)` (135 min) | Wall-clock cap on the whole coder⇄reviewer loop |
+| `STAGE_TIMEOUT_MS_REVISION_LOOP` | no | `MAX_REVISIONS × (PLAN? + CODER + REVIEWER)` (135 min without a plan step) | Wall-clock cap on the whole coder⇄reviewer loop |
 | `STAGE_TIMEOUT_MS_TEST_AUTHOR` | no | 1200000 (20 min) | |
 | `STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR` | no | 120000 (2 min) | |
 | `STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN` | no | 60000 (1 min) | |

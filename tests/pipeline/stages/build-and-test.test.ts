@@ -157,7 +157,17 @@ const baseConfig: AppConfig = {
 
 const greenDeploy: DeployAppResult[] = [{ app: 'A', compiled: true, published: true }];
 const redDeploy: DeployAppResult[] = [
-  { app: 'A', compiled: false, published: false, error: 'AL0118: missing symbol' },
+  { app: 'A', compiled: false, published: false, code: 'compile-failed', error: 'AL0118: missing symbol' },
+];
+/** An environment problem, not a source problem — no AL edit can fix it. */
+const infraDeploy: DeployAppResult[] = [
+  {
+    app: 'Continia Software_Continia Banking - Export',
+    compiled: false,
+    published: false,
+    code: 'dependency-not-on-env',
+    error: 'Continia Core is not installed on env-9',
+  },
 ];
 
 const greenRun: TestRunResult = {
@@ -410,6 +420,34 @@ describe('createBuildAndTestStage', () => {
     });
     await expect(stage.execute(makeStageState(), makeStageCtx())).rejects.toThrow('runner exploded');
     expect(resets).toEqual(['base-sha']);
+  });
+
+  // An unpublished dependency / stale symbol cache is an environment problem.
+  // Feeding it to the test-fixer burns every fix attempt (and the money) on an
+  // agent that cannot possibly fix it by editing AL, then reports the wrong
+  // cause. Stop immediately with the CLI's own actionable message instead.
+  it('an environment-level deploy failure stops immediately without a fix call', async () => {
+    const { stage, runnerCalls } = makeHarness({ deployQueue: [infraDeploy] });
+    const err: unknown = await stage
+      .execute(makeStageState(), makeStageCtx())
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toContain('dependency-not-on-env');
+    expect(message).toContain('Continia Core is not installed');
+    // Not a verification failure: the change was never actually verified.
+    expect(message).not.toContain('verification failed');
+    expect(runnerCalls).toHaveLength(0);
+  });
+
+  it('a compile failure is still a red round that feeds the fix loop', async () => {
+    const { stage, runnerCalls } = makeHarness({
+      deployQueue: [redDeploy, redDeploy, greenDeploy],
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]!.prompt).toContain('AL0118');
   });
 
   it('throws when required upstream outputs are missing', async () => {

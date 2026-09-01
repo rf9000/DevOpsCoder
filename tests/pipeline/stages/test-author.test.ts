@@ -15,6 +15,7 @@ import type {
   CoderOutput,
   PipelineCostInfo,
   PipelineState,
+  PlanOutput,
   TestAuthorOutput,
   WorktreeContext,
 } from '../../../src/types/index.ts';
@@ -244,5 +245,92 @@ describe('createTestAuthorStage', () => {
     expect((await canUseTool('Bash', { command: 'npm test' })).behavior).toBe('allow');
     expect((await canUseTool('Bash', { command: 'git push' })).behavior).toBe('deny');
     expect((await canUseTool('Bash', { command: 'rm src/login.ts' })).behavior).toBe('deny');
+  });
+});
+
+describe('createTestAuthorStage — plan step', () => {
+  const samplePlan: PlanOutput = {
+    approach: 'Cover the submit handler and the double-submit guard',
+    steps: ['test: submits once', 'test: ignores the second click'],
+    filesToTouch: ['tests/login.test.ts'],
+    risks: [],
+  };
+
+  function makeSplitRunner(): RecordingRunner {
+    const calls: AgentRunArgs<unknown>[] = [];
+    return {
+      calls,
+      async run<T>(
+        args: AgentRunArgs<T>,
+      ): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
+        calls.push(args as AgentRunArgs<unknown>);
+        const isPlan = args.label === 'test-author:plan';
+        return {
+          value: (isPlan ? samplePlan : successOutput) as unknown as T,
+          costUsd: isPlan ? 0.20 : 0.10,
+          toolUsage: isPlan ? { Read: 3 } : { Write: 1 },
+        };
+      },
+    };
+  }
+
+  const planConfig: AppConfig = {
+    ...baseConfig,
+    claudeModel: 'claude-sonnet-5',
+    stepModel: { 'test-author-plan': 'claude-opus-5', 'test-author': 'claude-sonnet-5' },
+    planMaxTurns: 20,
+  };
+
+  function makeStage(config: AppConfig, runner: RecordingRunner) {
+    return createTestAuthorStage({
+      config,
+      runner,
+      promptTemplate: 'TA_PROMPT',
+      plannerPromptTemplate: 'TEST_PLANNER_PROMPT',
+      discoveredSkills: [],
+      getCurrentHeadSha: async () => 'sha',
+      resetWorktree: async () => {},
+    });
+  }
+
+  it('no plan model configured → single write call, as before', async () => {
+    const runner = makeSplitRunner();
+    await makeStage(baseConfig, runner).execute(makeState(), makeCtx());
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.label).toBe('test-author');
+  });
+
+  it('plan model configured → read-only plan call first, then the write call', async () => {
+    const runner = makeSplitRunner();
+    const state = await makeStage(planConfig, runner).execute(makeState(), makeCtx());
+
+    expect(runner.calls).toHaveLength(2);
+    const plan = runner.calls[0]!;
+    expect(plan.label).toBe('test-author:plan');
+    expect(plan.model).toBe('claude-opus-5');
+    expect(plan.maxTurns).toBe(20);
+    expect(plan.systemPromptAppend).toBe('TEST_PLANNER_PROMPT');
+    expect(plan.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
+    expect(plan.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+
+    const write = runner.calls[1]!;
+    expect(write.model).toBe('claude-sonnet-5');
+    expect(write.prompt).toContain('## Approved test plan');
+    expect(write.prompt).toContain('test: ignores the second click');
+    expect(state.outputs.testPlan).toEqual(samplePlan);
+
+    const cost = state.outputs.cost as PipelineCostInfo;
+    expect(cost.perStage['test-author-plan']).toBeCloseTo(0.20, 4);
+    expect(cost.perStage['test-author']).toBeCloseTo(0.10, 4);
+    expect(state.outputs.toolUsage).toEqual({ Read: 3, Write: 1 });
+  });
+
+  it('reuses a stored plan on re-entry', async () => {
+    const runner = makeSplitRunner();
+    const state = makeState();
+    state.outputs.testPlan = samplePlan;
+    await makeStage(planConfig, runner).execute(state, makeCtx());
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.prompt).toContain('## Approved test plan');
   });
 });

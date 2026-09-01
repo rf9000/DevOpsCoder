@@ -221,6 +221,64 @@ describe('createContiniaCli', () => {
       expect(result[0]?.compiled).toBe(false);
       expect(result[0]?.error).toContain('AL0118');
     });
+
+    // The real CLI exits 1 on a failed deploy and still writes the per-app rows
+    // to stdout. Those rows carry `code` and alc's full output in `error` — the
+    // only copy of why the build broke. Throwing on the exit code alone
+    // destroyed it and turned a fixable red round into a terminal pipeline stop.
+    it('exit 1 with per-app failure rows on stdout is a red result, not an exception', async () => {
+      const { cli } = makeCli([
+        {
+          exitCode: 1,
+          stdout: JSON.stringify([
+            { app: 'Continia Software_Continia Banking - Export', compiled: false, published: false,
+              code: 'compile-failed',
+              error: "Export/src/Foo.al(12,5): error AL0118: The name 'Bar' does not exist" },
+          ]),
+          stderr: 'Error: Compilation failed for Continia Software_Continia Banking - Export',
+        },
+      ]);
+      const result = await cli.deployApp('env-1', 'export', opts);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.compiled).toBe(false);
+      expect(result[0]?.code).toBe('compile-failed');
+      expect(result[0]?.error).toContain('AL0118');
+    });
+
+    // A run that never reaches the per-app loop emits one object, not an array.
+    it('exit 1 with a run-level failure object becomes a single failed row carrying the code', async () => {
+      const { cli } = makeCli([
+        {
+          exitCode: 1,
+          stdout: JSON.stringify({
+            success: false,
+            error: { code: 'dependency-not-on-env', message: 'Continia Core is not installed on env-1' },
+          }),
+          stderr: 'Error: dependency not on environment',
+        },
+      ]);
+      const result = await cli.deployApp('env-1', 'export', opts);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.code).toBe('dependency-not-on-env');
+      expect(result[0]?.compiled).toBe(false);
+      expect(result[0]?.error).toContain('Continia Core is not installed');
+      expect(result[0]?.app).toBe('export');
+    });
+
+    it('exit 1 with unparseable stdout throws, keeping BOTH stderr and stdout', async () => {
+      const { cli } = makeCli([
+        { exitCode: 1, stdout: 'alc crashed hard', stderr: 'Error: Compilation failed' },
+      ]);
+      const err = await cli.deployApp('env-1', 'export', opts).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ContiniaCliError);
+      expect((err as ContiniaCliError).message).toContain('Compilation failed');
+      expect((err as ContiniaCliError).message).toContain('alc crashed hard');
+    });
+
+    it('exit 0 with an unexpected JSON shape still throws rather than green-washing', async () => {
+      const { cli } = makeCli([ok('{"unexpected":true}')]);
+      expect(cli.deployApp('env-1', 'export', opts)).rejects.toThrow(ContiniaCliError);
+    });
   });
 
   describe('runTests', () => {

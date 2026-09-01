@@ -5,6 +5,7 @@ import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
 import type {
   AppConfig,
   CoderOutput,
+  PlanOutput,
   TestAuthorOutput,
   WorktreeContext,
 } from '../../types/index.ts';
@@ -19,6 +20,8 @@ import {
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
 } from './_stage-helpers.ts';
+import { modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
+import { renderPlanSection, runPlanStep } from './_plan.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -86,6 +89,9 @@ export interface TestAuthorStageDeps {
   runner: AgentRunner;
   /** The contents of `src/prompts/test-author.md`. */
   promptTemplate: string;
+  /** The contents of `src/prompts/test-planner.md`. Only read when a
+   * `test-author-plan` model is configured; without one there is no plan step. */
+  plannerPromptTemplate?: string;
   discoveredSkills: DiscoveredSkill[];
   /** Test override for the HEAD-sha lookup. */
   getCurrentHeadSha?: (worktreePath: string) => Promise<string>;
@@ -102,6 +108,7 @@ export function buildTestAuthorUserPrompt(
   wiCtx: WorkItemContext,
   worktree: WorktreeContext,
   skills: DiscoveredSkill[],
+  plan?: PlanOutput,
 ): string {
   const sections: string[] = [];
   sections.push(`# Writing tests for Work Item ${wiCtx.id}: ${wiCtx.title}`);
@@ -145,6 +152,17 @@ export function buildTestAuthorUserPrompt(
       sections.push(`- **${s.name}**: ${s.description}`);
     }
   }
+  if (plan) {
+    sections.push(
+      renderPlanSection(
+        plan,
+        'Approved test plan',
+        'A planning agent read the diff and produced this test plan. Write these ' +
+          'tests. If a case turns out to be untestable or already covered, say so in ' +
+          'your summary rather than dropping it silently.',
+      ),
+    );
+  }
   return sections.join('\n');
 }
 
@@ -171,12 +189,45 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
       }
 
       const baselineSha = await getHead(worktree.path);
+
+      // Plan step — only when a plan model is configured. The test-author runs
+      // once per pipeline, so a stored plan means this is a re-entry: reuse it.
+      const planModel = planModelFor(deps.config, 'test-author-plan');
+      let plan = state.outputs.testPlan as PlanOutput | undefined;
+      if (
+        planModel !== undefined &&
+        deps.plannerPromptTemplate !== undefined &&
+        plan === undefined
+      ) {
+        const planned = await runPlanStep({
+          runner: deps.runner,
+          step: 'test-author-plan',
+          label: 'test-author:plan',
+          model: planModel,
+          maxTurns: planMaxTurns(deps.config),
+          prompt: buildTestAuthorUserPrompt(
+            analyzer,
+            coder,
+            wiCtx,
+            worktree,
+            deps.discoveredSkills,
+          ),
+          systemPromptAppend: deps.plannerPromptTemplate,
+          worktreePath: worktree.path,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        });
+        createCostTracker(state).add('test-author-plan', planned.costUsd);
+        createToolUsageTracker(state).add('test-author-plan', planned.toolUsage);
+        plan = planned.plan;
+        state.outputs.testPlan = plan;
+      }
       const prompt = buildTestAuthorUserPrompt(
         analyzer,
         coder,
         wiCtx,
         worktree,
         deps.discoveredSkills,
+        plan,
       );
       const canUseTool = composeCanUseTool([
         createBashAllowlist({
@@ -193,6 +244,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
             prompt,
             label: 'test-author',
             schema: testAuthorOutputSchema,
+            model: modelFor(deps.config, 'test-author'),
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
             disallowedTools: ['NotebookEdit'],
             cwd: worktree.path,

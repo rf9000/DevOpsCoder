@@ -22,6 +22,7 @@ import {
 } from '../../utils/al-test-discovery.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
+import { modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 import {
@@ -198,6 +199,41 @@ export function resolveAppPaths(args: ResolveAppPathsArgs): string[] {
   return resolveDeployOrder(args.apps, [...seeds]);
 }
 
+/**
+ * Deploy failure codes whose cause is the app's own source, so a fix agent can
+ * actually do something about them. See `.claude/skills/continia-deploy`
+ * "Result Interpretation" for the full code list.
+ *
+ * Everything else — `unpublished-sibling`, `dependency-not-on-env`,
+ * `symbol-fetch-failed`, `superseded-package-retained`, `app-lock-*`,
+ * `higher-version-installed` — is an environment or deploy-set problem. No AL
+ * edit fixes those, so routing them into the fix loop spends every attempt (and
+ * the money) proving that, then reports the wrong cause. An unrecognised code
+ * is treated as environmental for the same reason: a terminal error naming the
+ * code is more useful than a fix loop that cannot converge.
+ */
+export const CODER_FIXABLE_DEPLOY_CODES = new Set([
+  'compile-failed',
+  'compile-produced-no-app',
+  'publish-failed',
+]);
+
+/**
+ * The first deploy row that failed for a reason the coder cannot fix, if any.
+ * A failed row carrying no `code` is treated as coder-fixable — that is the
+ * pre-`code` shape, and a compile error is the overwhelmingly common case.
+ */
+export function findEnvironmentDeployFailure(
+  deploy: DeployAppResult[],
+): DeployAppResult | undefined {
+  return deploy.find(
+    (e) =>
+      !(e.compiled && e.published) &&
+      e.code !== undefined &&
+      !CODER_FIXABLE_DEPLOY_CODES.has(e.code),
+  );
+}
+
 function summarize(failure: VerificationFailure): string {
   if (!failure.compiled) {
     const firstRed = failure.deploy.find((e) => !e.compiled || !e.published);
@@ -369,6 +405,26 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         for (const appPath of appPaths) {
           deploy.push(...(await deps.continiaCli.deployApp(env.envId, appPath, callOpts)));
         }
+
+        // Stop before the fix loop when the deploy failed for a reason no
+        // source edit can address. Persist the round first so the failure is
+        // diagnosable from state rather than only from the log.
+        const blocker = findEnvironmentDeployFailure(deploy);
+        if (blocker) {
+          state.outputs.verification = {
+            attempts: attempt,
+            compiled: false,
+            deploy,
+            testRuns: [],
+            passed: false,
+          } satisfies VerificationOutput;
+          throw new Error(
+            `build-and-test could not deploy ${blocker.app}: ${blocker.code} — an environment ` +
+              `or deploy-set problem, not something the code can fix. ` +
+              `${blocker.error ?? '(no detail from the CLI)'}`,
+          );
+        }
+
         const compiled = deploy.every((e) => e.compiled && e.published);
 
         const testRuns: TestRunRecord[] = [];
@@ -426,6 +482,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
               prompt,
               label: `test-fixer (attempt ${attempt} of ${config.maxTestFixAttempts})`,
               schema: coderOutputSchema,
+              model: modelFor(config, 'test-fixer'),
               tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
               disallowedTools: ['NotebookEdit'],
               cwd: worktree!.path,

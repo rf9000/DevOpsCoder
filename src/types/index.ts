@@ -20,7 +20,18 @@ export interface AppConfig {
   testAuthorMaxTurns: number;
   maxCostUsdPerWi: number;
   stageTimeoutMs: Record<string, number>;
+  /** Global model default; every step falls back to this. */
   claudeModel: string;
+  /**
+   * Per-step model overrides keyed by `PipelineStep`
+   * (src/utils/model-selection.ts), resolved from `CLAUDE_MODEL_*` env vars.
+   * A missing key means "use claudeModel"; a missing `coder-plan` /
+   * `test-author-plan` key additionally means "no plan step". Read it through
+   * `modelFor()` / `planModelFor()`, never directly.
+   */
+  stepModel?: Record<string, string>;
+  /** Turn budget for a plan call. Unset → DEFAULT_PLAN_MAX_TURNS. */
+  planMaxTurns?: number;
   stateDir: string;
   assignedToFilter: string[];
   /** Path to continia.exe. Absolute, or relative to the per-WI worktree. */
@@ -170,6 +181,20 @@ export class StageTimeoutError extends Error {
 }
 
 /**
+ * Written to `state.outputs.coderPlan` / `.testPlan` by the plan step that runs
+ * ahead of the coder and test-author when a plan model is configured.
+ *
+ * One shape serves both: the code planner fills `steps` with implementation
+ * steps, the test planner fills it with the test cases to write.
+ */
+export interface PlanOutput {
+  approach: string;
+  steps: string[];
+  filesToTouch: string[];
+  risks: string[];
+}
+
+/**
  * Written to `state.outputs.environment` by the env-provision stage.
  * Never torn down — DemoPortal environments auto-delete ~10 days after
  * creation; the URL is surfaced in the draft-PR description for manual tests.
@@ -189,7 +214,14 @@ export interface DeployAppResult {
   app: string;
   compiled: boolean;
   published: boolean;
+  /** Free prose — alc's full output on a compile failure. Never regex it. */
   error?: string;
+  /**
+   * Machine-readable failure kind, present on every failed row. Branch on this,
+   * not on `error`: it is what separates a compile failure the coder can fix
+   * from an environment problem it cannot. See `.claude/skills/continia-deploy`.
+   */
+  code?: string;
 }
 
 /** One test case from `continia test run --json`. */

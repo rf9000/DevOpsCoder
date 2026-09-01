@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import { loadConfig } from '../../src/config/index.ts';
+import {
+  DEFAULT_PLAN_MAX_TURNS,
+  modelFor,
+  planMaxTurns,
+  planModelFor,
+} from '../../src/utils/model-selection.ts';
 
 const validEnv: Record<string, string> = {
   AZURE_DEVOPS_PAT: 'test-pat',
@@ -170,6 +176,99 @@ describe('loadConfig', () => {
     const config = loadConfig(validEnv);
     expect(config.stageTimeoutMs['coder']).toBeUndefined();
     expect(config.stageTimeoutMs['reviewer']).toBeUndefined();
+  });
+
+  describe('per-step model overrides', () => {
+    it('no CLAUDE_MODEL_* set → every step resolves to CLAUDE_MODEL, no plan step', () => {
+      const config = loadConfig({ ...validEnv, CLAUDE_MODEL: 'claude-opus-5' });
+      expect(config.stepModel).toEqual({});
+      for (const step of ['analyzer', 'coder', 'reviewer', 'test-author', 'test-fixer'] as const) {
+        expect(modelFor(config, step)).toBe('claude-opus-5');
+      }
+      expect(planModelFor(config, 'coder-plan')).toBeUndefined();
+      expect(planModelFor(config, 'test-author-plan')).toBeUndefined();
+    });
+
+    it('resolves each step to its own override and leaves the rest on CLAUDE_MODEL', () => {
+      const config = loadConfig({
+        ...validEnv,
+        CLAUDE_MODEL: 'claude-sonnet-5',
+        CLAUDE_MODEL_ANALYZER: 'claude-opus-5',
+        CLAUDE_MODEL_REVIEWER: 'claude-opus-5',
+        CLAUDE_MODEL_TEST_FIXER: 'claude-haiku-4-5',
+      });
+      expect(modelFor(config, 'analyzer')).toBe('claude-opus-5');
+      expect(modelFor(config, 'reviewer')).toBe('claude-opus-5');
+      expect(modelFor(config, 'test-fixer')).toBe('claude-haiku-4-5');
+      expect(modelFor(config, 'coder')).toBe('claude-sonnet-5');
+      expect(modelFor(config, 'test-author')).toBe('claude-sonnet-5');
+    });
+
+    it('CLAUDE_MODEL_PLANNING turns on both plan steps; a specific plan var wins', () => {
+      const both = loadConfig({
+        ...validEnv,
+        CLAUDE_MODEL: 'claude-sonnet-5',
+        CLAUDE_MODEL_PLANNING: 'claude-opus-5',
+      });
+      expect(planModelFor(both, 'coder-plan')).toBe('claude-opus-5');
+      expect(planModelFor(both, 'test-author-plan')).toBe('claude-opus-5');
+
+      const specific = loadConfig({
+        ...validEnv,
+        CLAUDE_MODEL_PLANNING: 'claude-opus-5',
+        CLAUDE_MODEL_TEST_AUTHOR_PLAN: 'claude-sonnet-5',
+      });
+      expect(planModelFor(specific, 'coder-plan')).toBe('claude-opus-5');
+      expect(planModelFor(specific, 'test-author-plan')).toBe('claude-sonnet-5');
+    });
+
+    it('one plan var enables only that stage plan step', () => {
+      const config = loadConfig({ ...validEnv, CLAUDE_MODEL_CODER_PLAN: 'claude-opus-5' });
+      expect(planModelFor(config, 'coder-plan')).toBe('claude-opus-5');
+      expect(planModelFor(config, 'test-author-plan')).toBeUndefined();
+    });
+
+    it('a blank override reads as unset rather than as an empty model name', () => {
+      const config = loadConfig({
+        ...validEnv,
+        CLAUDE_MODEL: 'claude-opus-5',
+        CLAUDE_MODEL_CODER: '   ',
+        CLAUDE_MODEL_PLANNING: '',
+      });
+      expect(config.stepModel).toEqual({});
+      expect(modelFor(config, 'coder')).toBe('claude-opus-5');
+      expect(planModelFor(config, 'coder-plan')).toBeUndefined();
+    });
+
+    it('PLAN_MAX_TURNS defaults to DEFAULT_PLAN_MAX_TURNS and is overridable', () => {
+      expect(planMaxTurns(loadConfig(validEnv))).toBe(DEFAULT_PLAN_MAX_TURNS);
+      expect(planMaxTurns(loadConfig({ ...validEnv, PLAN_MAX_TURNS: '12' }))).toBe(12);
+    });
+
+    it('a configured plan step widens the stage budget it fronts', () => {
+      const base = loadConfig({ ...validEnv, MAX_REVISIONS: '2' });
+      const withPlan = loadConfig({
+        ...validEnv,
+        MAX_REVISIONS: '2',
+        CLAUDE_MODEL_PLANNING: 'claude-opus-5',
+        STAGE_TIMEOUT_MS_PLAN: '100000',
+      });
+      expect(withPlan.stageTimeoutMs['revision-loop']).toBe(
+        (base.stageTimeoutMs['revision-loop'] ?? 0) + 2 * 100_000,
+      );
+      expect(withPlan.stageTimeoutMs['test-author']).toBe(
+        (base.stageTimeoutMs['test-author'] ?? 0) + 100_000,
+      );
+    });
+
+    it('an explicit STAGE_TIMEOUT_MS_REVISION_LOOP still pins the budget', () => {
+      const config = loadConfig({
+        ...validEnv,
+        CLAUDE_MODEL_PLANNING: 'claude-opus-5',
+        STAGE_TIMEOUT_MS_REVISION_LOOP: '55000',
+      });
+      expect(config.stageTimeoutMs['revision-loop']).toBe(55_000);
+    });
   });
 
   describe('Plan 10 — verification gate config', () => {

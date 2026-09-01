@@ -174,9 +174,27 @@ const deployResultSchema = z.array(
       compiled: z.boolean().default(false),
       published: z.boolean().default(false),
       error: z.string().optional(),
+      // Present on every failed row and the field to branch on — `error` is
+      // free prose (alc's full output on a compile failure) and must never be
+      // regexed. See `.claude/skills/continia-deploy` "Result Interpretation".
+      code: z.string().optional(),
     })
     .passthrough(),
 );
+
+/**
+ * A deploy run that never reached the per-app loop emits one object instead of
+ * the per-app array. Same JSON, same exit code — different shape.
+ */
+const deployRunErrorSchema = z
+  .object({
+    success: z.literal(false),
+    error: z
+      .object({ code: z.string().optional(), message: z.string().optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
 
 // `summary` and `tests` are REQUIRED, with required counters: lenient defaults
 // here green-wash a red run (a renamed `summary.failed` would default to 0 and
@@ -273,8 +291,15 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
 
   function assertZeroExit(args: string[], result: ExecResult & { argv: string[] }): void {
     if (result.exitCode !== 0) {
+      // Both streams, never `stderr || stdout`: under --json the CLI puts the
+      // one-line summary on stderr and the diagnostics (alc output, the failure
+      // `code`) on stdout, so picking one drops the half that says why.
+      const detail = [result.stderr.trim(), result.stdout.trim()]
+        .filter((s) => s.length > 0)
+        .join('\n')
+        .slice(0, 4000);
       throw new ContiniaCliError(
-        `continia ${args.join(' ')} failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
+        `continia ${args.join(' ')} failed (exit ${result.exitCode}): ${detail}`,
         result.argv,
         result.exitCode,
         result.stdout,
@@ -421,8 +446,58 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         ? appPathRel
         : resolve(opts.worktreePath, appPathRel);
       const args = ['deploy', envId, appPathAbs, '--allow-downgrade', '--json'];
-      const raw = await runJson(args, opts);
-      return deployResultSchema.parse(raw) as DeployAppResult[];
+
+      // The CLI exits 1 when a deploy FAILS but still writes the failure JSON
+      // to stdout — the per-app rows carry `code` and alc's full output in
+      // `error`, which is the only copy of why the build broke. Parse stdout
+      // first (same contract as runTests): a red deploy is a verification
+      // result the fix loop can act on, not an infra error. Only fall back to
+      // the exit-code error path when there is no usable JSON at all.
+      const result = await run(args, opts);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(result.stdout);
+      } catch {
+        assertZeroExit(args, result);
+        throw new ContiniaCliError(
+          `continia ${args.join(' ')} returned invalid JSON: ${result.stdout.slice(0, 500)}`,
+          result.argv,
+          result.exitCode,
+          result.stdout,
+          result.stderr,
+        );
+      }
+
+      const rows = deployResultSchema.safeParse(raw);
+      if (rows.success) return rows.data as DeployAppResult[];
+
+      // A run that never reached the per-app loop: one object, not an array.
+      // Normalize it to a single failed row so callers have one shape to read.
+      const runLevel = deployRunErrorSchema.safeParse(raw);
+      if (runLevel.success) {
+        return [
+          {
+            app: appPathRel,
+            compiled: false,
+            published: false,
+            error:
+              runLevel.data.error?.message ??
+              result.stderr.trim() ??
+              'deploy failed without a message',
+            code: runLevel.data.error?.code,
+          },
+        ];
+      }
+
+      assertZeroExit(args, result);
+      throw new ContiniaCliError(
+        `continia ${args.join(' ')} returned an unexpected deploy-result shape ` +
+          `(refusing to guess pass/fail): ${result.stdout.slice(0, 500)}`,
+        result.argv,
+        result.exitCode,
+        result.stdout,
+        result.stderr,
+      );
     },
 
     async runTests(envId, codeunitId, opts) {

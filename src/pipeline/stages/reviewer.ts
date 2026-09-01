@@ -13,6 +13,7 @@ import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { composeCanUseTool, aggregateReviewerFindings } from './_stage-helpers.ts';
+import { modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker, mergeToolUsage } from '../../utils/tool-usage-tracker.ts';
 
@@ -235,6 +236,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
             prompt,
             label: `reviewer:${axis}`,
             schema: axisOutputSchema,
+            model: modelFor(deps.config, 'reviewer'),
             tools: ['Read', 'Grep', 'Glob', 'Bash'],
             disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
             cwd: worktree.path,

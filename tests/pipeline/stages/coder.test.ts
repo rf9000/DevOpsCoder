@@ -16,6 +16,7 @@ import type {
   Finding,
   PipelineCostInfo,
   PipelineState,
+  PlanOutput,
   ReviewerOutput,
   WorktreeContext,
 } from '../../../src/types/index.ts';
@@ -403,5 +404,131 @@ describe('createCoderStage', () => {
       file_path: `${sampleWorktree.path}/src/foo.ts`,
     });
     expect(insideWrite.behavior).toBe('allow');
+  });
+});
+
+describe('createCoderStage — plan step', () => {
+  const samplePlan: PlanOutput = {
+    approach: 'Wire the submit handler to the form',
+    steps: ['Add onSubmit', 'Guard double-submit'],
+    filesToTouch: ['src/login.ts'],
+    risks: ['Double-submit regression'],
+  };
+
+  /** Runner that answers the plan call with a PlanOutput and the write call with a CoderOutput. */
+  function makeSplitRunner(): RecordingRunner {
+    const calls: AgentRunArgs<unknown>[] = [];
+    return {
+      calls,
+      async run<T>(
+        args: AgentRunArgs<T>,
+      ): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
+        calls.push(args as AgentRunArgs<unknown>);
+        const isPlan = args.label === 'coder:plan';
+        return {
+          value: (isPlan ? samplePlan : successOutput) as unknown as T,
+          costUsd: isPlan ? 0.30 : 0.12,
+          toolUsage: isPlan ? { Read: 4 } : { Edit: 2 },
+        };
+      },
+    };
+  }
+
+  const planConfig: AppConfig = {
+    ...baseConfig,
+    claudeModel: 'claude-sonnet-5',
+    stepModel: { 'coder-plan': 'claude-opus-5', 'coder': 'claude-sonnet-5' },
+    planMaxTurns: 25,
+  };
+
+  function makeStage(config: AppConfig, runner: RecordingRunner) {
+    return createCoderStage({
+      config,
+      runner,
+      promptTemplate: 'CODER_PROMPT_BODY',
+      plannerPromptTemplate: 'PLANNER_PROMPT_BODY',
+      discoveredSkills: [],
+      getCurrentHeadSha: async () => 'baselinesha',
+      resetWorktree: async () => {},
+    });
+  }
+
+  it('no plan model configured → single write call, as before', async () => {
+    const runner = makeSplitRunner();
+    await makeStage(baseConfig, runner).execute(makeState(), makeCtx());
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.label).toBe('coder (attempt 1)');
+    expect(runner.calls[0]?.prompt).not.toContain('## Approved plan');
+  });
+
+  it('plan model configured → read-only plan call on the plan model, then the write call', async () => {
+    const runner = makeSplitRunner();
+    const state = await makeStage(planConfig, runner).execute(makeState(), makeCtx());
+
+    expect(runner.calls).toHaveLength(2);
+    const plan = runner.calls[0]!;
+    expect(plan.label).toBe('coder:plan');
+    expect(plan.model).toBe('claude-opus-5');
+    expect(plan.maxTurns).toBe(25);
+    expect(plan.systemPromptAppend).toBe('PLANNER_PROMPT_BODY');
+    expect(plan.cwd).toBe(sampleWorktree.path);
+    // The planner must not be able to write: no Edit/Write in tools, and both
+    // explicitly disallowed so a preset-provided tool cannot slip through.
+    expect(plan.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
+    expect(plan.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+
+    const write = runner.calls[1]!;
+    expect(write.label).toBe('coder (attempt 1)');
+    expect(write.model).toBe('claude-sonnet-5');
+    expect(write.tools).toContain('Edit');
+    expect(write.prompt).toContain('## Approved plan');
+    expect(write.prompt).toContain('Wire the submit handler to the form');
+    expect(write.prompt).toContain('Add onSubmit');
+    expect(state.outputs.coderPlan).toEqual(samplePlan);
+  });
+
+  it('attributes plan spend and tool usage to the coder-plan step', async () => {
+    const runner = makeSplitRunner();
+    const state = await makeStage(planConfig, runner).execute(makeState(), makeCtx());
+    const cost = state.outputs.cost as PipelineCostInfo;
+    expect(cost.perStage['coder-plan']).toBeCloseTo(0.30, 4);
+    expect(cost.perStage['coder']).toBeCloseTo(0.12, 4);
+    expect(cost.total).toBeCloseTo(0.42, 4);
+    expect(state.outputs.toolUsage).toEqual({ Read: 4, Edit: 2 });
+  });
+
+  it('reuses a stored plan instead of re-planning when nothing was rejected', async () => {
+    const runner = makeSplitRunner();
+    const state = makeState();
+    state.outputs.coderPlan = samplePlan;
+    await makeStage(planConfig, runner).execute(state, makeCtx());
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.label).toBe('coder (attempt 1)');
+    expect(runner.calls[0]?.prompt).toContain('## Approved plan');
+  });
+
+  it('re-plans when the reviewer rejected the previous attempt', async () => {
+    const runner = makeSplitRunner();
+    const state = makeState();
+    state.outputs.coderPlan = samplePlan;
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      attempts: 1,
+      findings: [
+        {
+          axis: 'safety-correctness',
+          severity: 'blocking',
+          file: 'src/login.ts',
+          title: 'Unhandled null',
+          description: 'boom',
+        } as Finding,
+      ],
+    };
+    state.outputs.reviewer = reviewerOutput;
+    await makeStage(planConfig, runner).execute(state, makeCtx());
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[0]?.label).toBe('coder:plan');
+    // The planner sees the findings it has to plan around.
+    expect(runner.calls[0]?.prompt).toContain('Unhandled null');
   });
 });

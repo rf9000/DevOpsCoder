@@ -6,6 +6,7 @@ import type {
   AppConfig,
   CoderOutput,
   Finding,
+  PlanOutput,
   ReviewerOutput,
   WorktreeContext,
 } from '../../types/index.ts';
@@ -20,6 +21,9 @@ import {
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
 } from './_stage-helpers.ts';
+import { CODER_BASH_ALLOW, CODER_BASH_DENY } from './coder-policy.ts';
+import { modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
+import { renderPlanSection, runPlanStep } from './_plan.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -36,49 +40,18 @@ export const coderOutputSchema = z.object({
   prBullets: z.array(z.string()).optional(),
 }) satisfies z.ZodType<CoderOutput>;
 
-// Exported for reuse by the build-and-test stage's fix calls, which run the
-// same kind of agent under the same policy.
-export const CODER_BASH_ALLOW: RegExp[] = [
-  /^git (status|diff|log|show|blame)\b/,
-  /^git add (?!-A\b|\.\s*$|--all\b|:\/)/,
-  /^git commit\b/,
-  /^git rm\b/,
-  /^git mv\b/,
-  /^(bun |npm |npx )(run )?(typecheck|build|lint)\b/,
-  /^bun (run )?typecheck\b/,
-  /^ls\b/,
-  /^cat\b/,
-  /^echo\b/,
-  /^pwd\b/,
-];
-
-export const CODER_BASH_DENY: RegExp[] = [
-  /^git push\b/,
-  /^git checkout\b/,
-  /^git switch\b/,
-  /^git reset\b/,
-  /^git rebase\b/,
-  /^git merge\b/,
-  /^git branch (-d|-D|-m)\b/,
-  /^git stash\b/,
-  /^git clean\b/,
-  /^git config\b/,
-  /^git remote\b/,
-  /^git commit --amend\b/,
-  /^rm\b/,
-  /^cd\b/,
-  /^bun add\b/,
-  /^bun remove\b/,
-  /^npm install\b/,
-  /^npm i\b/,
-  /^pip install\b/,
-];
+// Re-exported for the build-and-test stage's fix calls (same agent, same
+// policy) and for the read-only plan step, which reuses the deny half.
+export { CODER_BASH_ALLOW, CODER_BASH_DENY } from './coder-policy.ts';
 
 export interface CoderStageDeps {
   config: AppConfig;
   runner: AgentRunner;
   /** The contents of `src/prompts/coder.md`. */
   promptTemplate: string;
+  /** The contents of `src/prompts/coder-planner.md`. Only read when a
+   * `coder-plan` model is configured; without one there is no plan step. */
+  plannerPromptTemplate?: string;
   discoveredSkills: DiscoveredSkill[];
   /** Test override for the HEAD-sha lookup. */
   getCurrentHeadSha?: (worktreePath: string) => Promise<string>;
@@ -106,6 +79,7 @@ export function buildCoderUserPrompt(
   worktree: WorktreeContext,
   skills: DiscoveredSkill[],
   previousReviewerFeedback?: Finding[],
+  plan?: PlanOutput,
 ): string {
   const sections: string[] = [];
   sections.push(`# Implementing Work Item ${wiCtx.id}: ${wiCtx.title}`);
@@ -184,6 +158,17 @@ export function buildCoderUserPrompt(
       }
     }
   }
+  if (plan) {
+    sections.push(
+      renderPlanSection(
+        plan,
+        'Approved plan',
+        'A planning agent produced this plan for the change. Implement it. If the ' +
+          'codebase contradicts a step, follow the codebase and say so in your summary — ' +
+          'do not silently redesign the approach.',
+      ),
+    );
+  }
   return sections.join('\n');
 }
 
@@ -211,12 +196,48 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
       const baselineSha = await getHead(worktree.path);
       const reviewer = state.outputs.reviewer as ReviewerOutput | undefined;
       const previousFindings = reviewer?.findings;
+
+      // Plan step — only when a plan model is configured. Re-planned on a
+      // revision, because findings that reject an *approach* would otherwise be
+      // re-implemented from the same stale plan; reused as-is on a plain re-entry
+      // (resume after a crash or timeout) so the expensive call is not repeated
+      // for nothing.
+      const planModel = planModelFor(deps.config, 'coder-plan');
+      let plan = state.outputs.coderPlan as PlanOutput | undefined;
+      if (
+        planModel !== undefined &&
+        deps.plannerPromptTemplate !== undefined &&
+        (plan === undefined || (previousFindings?.length ?? 0) > 0)
+      ) {
+        const planned = await runPlanStep({
+          runner: deps.runner,
+          step: 'coder-plan',
+          label: 'coder:plan',
+          model: planModel,
+          maxTurns: planMaxTurns(deps.config),
+          prompt: buildCoderUserPrompt(
+            analyzer,
+            wiCtx,
+            worktree,
+            deps.discoveredSkills,
+            previousFindings,
+          ),
+          systemPromptAppend: deps.plannerPromptTemplate,
+          worktreePath: worktree.path,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        });
+        createCostTracker(state).add('coder-plan', planned.costUsd);
+        createToolUsageTracker(state).add('coder-plan', planned.toolUsage);
+        plan = planned.plan;
+        state.outputs.coderPlan = plan;
+      }
       const prompt = buildCoderUserPrompt(
         analyzer,
         wiCtx,
         worktree,
         deps.discoveredSkills,
         previousFindings,
+        plan,
       );
       const canUseTool = composeCanUseTool([
         createBashAllowlist({ allow: CODER_BASH_ALLOW, deny: CODER_BASH_DENY }),
@@ -230,6 +251,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
             prompt,
             label: `coder (attempt ${attempt + 1})`,
             schema: coderOutputSchema,
+            model: modelFor(deps.config, 'coder'),
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
             disallowedTools: ['NotebookEdit'],
             cwd: worktree.path,

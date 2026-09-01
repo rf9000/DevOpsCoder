@@ -50,6 +50,19 @@ const envSchema = z.object({
   STAGE_TIMEOUT_MS_WORKTREE_SETUP: z.coerce.number().int().positive().default(60_000),
   STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN: z.coerce.number().int().positive().default(60_000),
   CLAUDE_MODEL: z.string().default('claude-opus-4-7'),
+  // Per-step model overrides. Blank/unset → CLAUDE_MODEL. CLAUDE_MODEL_PLANNING
+  // is the one-knob default for both plan steps; naming any plan model is what
+  // turns the plan-then-write split on (see src/utils/model-selection.ts).
+  CLAUDE_MODEL_PLANNING: z.string().optional(),
+  CLAUDE_MODEL_ANALYZER: z.string().optional(),
+  CLAUDE_MODEL_CODER_PLAN: z.string().optional(),
+  CLAUDE_MODEL_CODER: z.string().optional(),
+  CLAUDE_MODEL_REVIEWER: z.string().optional(),
+  CLAUDE_MODEL_TEST_AUTHOR_PLAN: z.string().optional(),
+  CLAUDE_MODEL_TEST_AUTHOR: z.string().optional(),
+  CLAUDE_MODEL_TEST_FIXER: z.string().optional(),
+  PLAN_MAX_TURNS: z.coerce.number().int().positive().default(30),
+  STAGE_TIMEOUT_MS_PLAN: z.coerce.number().int().positive().default(600_000),
   STATE_DIR: z.string().default('.state'),
   ASSIGNED_TO_FILTER: z.string().optional(),
   SKILLS_SOURCE_DIR: z.string().optional(),
@@ -105,6 +118,33 @@ export function loadConfig(
   const continiaAppPaths = splitPaths(p.CONTINIA_APP_PATHS);
   const continiaTestAppPaths = splitPaths(p.CONTINIA_TEST_APP_PATHS ?? '');
 
+  // A blank env var reads as "not set" so an operator can comment a model out
+  // by emptying it without the empty string reaching the SDK as a model name.
+  const model = (raw: string | undefined): string | undefined => {
+    const trimmed = raw?.trim();
+    return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
+  };
+  const planningModel = model(p.CLAUDE_MODEL_PLANNING);
+  const coderPlanModel = model(p.CLAUDE_MODEL_CODER_PLAN) ?? planningModel;
+  const testPlanModel = model(p.CLAUDE_MODEL_TEST_AUTHOR_PLAN) ?? planningModel;
+  const stepModel: Record<string, string> = {};
+  const setStep = (step: string, value: string | undefined): void => {
+    if (value !== undefined) stepModel[step] = value;
+  };
+  setStep('analyzer', model(p.CLAUDE_MODEL_ANALYZER));
+  setStep('coder-plan', coderPlanModel);
+  setStep('coder', model(p.CLAUDE_MODEL_CODER));
+  setStep('reviewer', model(p.CLAUDE_MODEL_REVIEWER));
+  setStep('test-author-plan', testPlanModel);
+  setStep('test-author', model(p.CLAUDE_MODEL_TEST_AUTHOR));
+  setStep('test-fixer', model(p.CLAUDE_MODEL_TEST_FIXER));
+
+  // A configured plan step adds one read-only call to the stage it fronts, so
+  // the stage's wall-clock budget has to grow with it or the split would start
+  // timing out runs that used to fit.
+  const coderPlanBudget = coderPlanModel !== undefined ? p.STAGE_TIMEOUT_MS_PLAN : 0;
+  const testPlanBudget = testPlanModel !== undefined ? p.STAGE_TIMEOUT_MS_PLAN : 0;
+
   return {
     orgUrl: `https://dev.azure.com/${p.AZURE_DEVOPS_ORG}`,
     project: p.AZURE_DEVOPS_PROJECT,
@@ -130,7 +170,8 @@ export function loadConfig(
       // vars act as per-iteration budgets that size the loop's default.
       'revision-loop':
         p.STAGE_TIMEOUT_MS_REVISION_LOOP ??
-        p.MAX_REVISIONS * (p.STAGE_TIMEOUT_MS_CODER + p.STAGE_TIMEOUT_MS_REVIEWER),
+        p.MAX_REVISIONS *
+          (coderPlanBudget + p.STAGE_TIMEOUT_MS_CODER + p.STAGE_TIMEOUT_MS_REVIEWER),
       'env-provision': p.STAGE_TIMEOUT_MS_ENV_PROVISION,
       // The build-and-test stage runs up to (fixAttempts+1) deterministic
       // deploy+test passes (VERIFY_PASS budget each) interleaved with up to
@@ -139,11 +180,13 @@ export function loadConfig(
         p.STAGE_TIMEOUT_MS_BUILD_AND_TEST ??
         (p.MAX_TEST_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
           p.MAX_TEST_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER,
-      'test-author': p.STAGE_TIMEOUT_MS_TEST_AUTHOR,
+      'test-author': p.STAGE_TIMEOUT_MS_TEST_AUTHOR + testPlanBudget,
       'draft-pr-creator': p.STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR,
       'worktree-teardown': p.STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN,
     },
     claudeModel: p.CLAUDE_MODEL,
+    stepModel,
+    planMaxTurns: p.PLAN_MAX_TURNS,
     stateDir: p.STATE_DIR,
     costLogPath: p.COST_LOG_PATH ?? `${p.STATE_DIR}/cost-ledger.jsonl`,
     assignedToFilter,

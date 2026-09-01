@@ -10,6 +10,7 @@ import {
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AppConfig } from '../../types/index.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
+import { modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -126,6 +127,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
         prompt,
         label: 'analyzer',
         schema: analyzerOutputSchema,
+        model: modelFor(deps.config, 'analyzer'),
         tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill'],
         disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
         cwd: deps.config.targetRepoPath,
