@@ -8,22 +8,27 @@ import {
   WorktreeError,
 } from '../../src/services/worktree-manager.ts';
 import type { AppConfig, WorktreeContext } from '../../src/types/index.ts';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
+const execFileAsync = promisify(execFile);
+
+// Deliberately node:child_process, not Bun.spawn. Bun.spawn races on Windows
+// once the test process has accumulated event-loop state from earlier test
+// files, surfacing as `ENOTCONN` from spawn itself or as corrupted child argv
+// (git reporting `unknown option: \initial-b #?Bv?'`). It only reproduces in
+// the full suite, never for this file alone. See the runGit helper in
+// skill-wiring.test.ts, which is fixed the same way.
 async function runGit(args: string[], cwd: string): Promise<string> {
-  const proc = Bun.spawn(['git', ...args], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const code = await proc.exited;
-  if (code !== 0) {
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, encoding: 'utf-8' });
+    return stdout;
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string };
     throw new Error(
-      `git ${args.join(' ')} (in ${cwd}) failed: ${stderr || stdout}`,
+      `git ${args.join(' ')} (in ${cwd}) failed: ${e.stderr || e.stdout || String(err)}`,
     );
   }
-  return stdout;
 }
 
 async function setupTestRepo(): Promise<{

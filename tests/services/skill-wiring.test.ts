@@ -3,13 +3,21 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { wireOrchestratorSkills } from '../../src/services/skill-wiring.ts';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
+const execFileAsync = promisify(execFile);
+
+// Deliberately node:child_process, not Bun.spawn — see the runGit helper in
+// worktree-manager.test.ts for why (Bun.spawn races on Windows in the full suite).
 async function runGit(args: string[], cwd: string): Promise<string> {
-  const proc = Bun.spawn(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  if ((await proc.exited) !== 0) throw new Error(`git ${args.join(' ')} failed: ${stderr || stdout}`);
-  return stdout;
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, encoding: 'utf-8' });
+    return stdout;
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string };
+    throw new Error(`git ${args.join(' ')} failed: ${e.stderr || e.stdout || String(err)}`);
+  }
 }
 
 describe('wireOrchestratorSkills', () => {
