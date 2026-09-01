@@ -174,19 +174,43 @@ describe('createContiniaCli', () => {
   });
 
   describe('deployApp', () => {
-    it('deploys with --workspace-root and --allow-downgrade from the worktree root; never --with-deps or --all', async () => {
+    it('deploys one absolute app path with --allow-downgrade from the worktree root; never --workspace-root, --with-deps or --all', async () => {
       const { cli, calls } = makeCli([
         ok('[{"app":"Continia_Core","compiled":true,"published":true}]'),
       ]);
       const result = await cli.deployApp('env-1', 'Core/Cloud', opts);
       const call = calls[0]!;
+      const absApp = resolve(WORKTREE, 'Core/Cloud');
       expect(call.cwd).toBe(WORKTREE);
       expect(call.argv.slice(1)).toEqual([
-        'deploy', 'env-1', 'Core/Cloud', '--workspace-root', 'Core/Cloud', '--allow-downgrade', '--json',
+        'deploy', 'env-1', absApp, '--allow-downgrade', '--json',
       ]);
+      expect(call.argv).not.toContain('--workspace-root');
       expect(call.argv).not.toContain('--with-deps');
       expect(call.argv).not.toContain('--all');
       expect(result).toEqual([{ app: 'Continia_Core', compiled: true, published: true }]);
+    });
+
+    // The CLI resolves the positional appPath against --workspace-root (default
+    // cwd), so the same relative path in both slots was joined onto itself
+    // ("permission-sets/permission-sets" -> "No app.json found").
+    it('never emits a path whose app segment is doubled onto the workspace root', async () => {
+      const { cli, calls } = makeCli([ok('[]')]);
+      await cli.deployApp('env-1', 'permission-sets', opts);
+      const argv = calls[0]!.argv;
+      for (const arg of argv.slice(1)) {
+        expect(arg).not.toContain(join('permission-sets', 'permission-sets'));
+      }
+      expect(argv).toContain(resolve(WORKTREE, 'permission-sets'));
+    });
+
+    it('passes an already-absolute app path through unchanged', async () => {
+      const { cli, calls } = makeCli([ok('[]')]);
+      const abs = resolve(WORKTREE, 'Core/Cloud');
+      await cli.deployApp('env-1', abs, opts);
+      expect(calls[0]!.argv.slice(1)).toEqual([
+        'deploy', 'env-1', abs, '--allow-downgrade', '--json',
+      ]);
     });
 
     it('a result entry with an error is a valid result, not an exception', async () => {
