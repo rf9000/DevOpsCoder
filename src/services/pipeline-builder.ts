@@ -225,6 +225,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       ado: deps.ado,
       prDescriptionTemplate,
       pushBranch: deps.pushBranch,
+      // Read-only here: used solely to fetch the environment login for the
+      // description's Test Environment block.
+      continiaCli,
     }),
     createWorktreeTeardownStage({
       worktreeManager,

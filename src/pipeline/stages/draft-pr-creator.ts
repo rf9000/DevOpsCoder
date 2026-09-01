@@ -13,6 +13,7 @@ import type { AdoClient } from '../../sdk/azure-devops-client.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { buildGitAuthArgs, redactPat } from '../../utils/git-auth.ts';
 import { findTagAdder, formatAdoMentionMarkdown } from '../../utils/tag-history.ts';
+import { pickAdminUser, type ContiniaCli } from '../../services/continia-cli.ts';
 
 // ---------------------------------------------------------------------------
 // Deps interface
@@ -25,6 +26,11 @@ export interface DraftPrCreatorStageDeps {
   prDescriptionTemplate: string;
   /** Test override for `git push origin <branch>` (production default uses Bun.spawn). */
   pushBranch?: (branch: string, cwd: string) => Promise<void>;
+  /**
+   * Used only to read the environment login for the description's Test
+   * Environment block. Optional: without it the block omits credentials.
+   */
+  continiaCli?: ContiniaCli;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,12 +74,12 @@ async function defaultPushBranch(branch: string, cwd: string, pat: string): Prom
 /** ADO rejects PR descriptions over 4000 chars with a 400 (seen on a real WI). */
 export const MAX_PR_DESCRIPTION_LENGTH = 4000;
 const TRUNCATION_NOTICE = '\n\n_(earlier sections truncated to fit ADO’s 4000-char description limit)_\n';
-const TAIL_MARKER = '\n## Test environment';
+const TAIL_MARKER = '\n**Test Environment**';
 
 /**
  * Cap the rendered description. Truncation sacrifices the head (summaries) and
- * preserves everything from the "## Test environment" heading down — the env
- * URL is the part a human tester cannot reconstruct.
+ * preserves everything from the "**Test Environment**" heading down — the env
+ * URL and credentials are the part a human tester cannot reconstruct.
  */
 export function capPrDescription(full: string): string {
   if (full.length <= MAX_PR_DESCRIPTION_LENGTH) return full;
@@ -97,6 +103,11 @@ export function capPrDescription(full: string): string {
 // PR description builder (exported for testability)
 // ---------------------------------------------------------------------------
 
+/** One bullet line. Strips a leading marker the model was told to omit. */
+function bullet(text: string): string {
+  return `- ${text.trim().replace(/^[-*]\s+/, '')}`;
+}
+
 export function buildPrDescription(args: {
   wiCtx: WorkItemContext;
   analyzer: AnalyzerOutput;
@@ -106,66 +117,83 @@ export function buildPrDescription(args: {
   worktree: WorktreeContext;
   /** The per-WI BC environment the verification ran on (defensive-optional). */
   environment?: EnvironmentOutput;
+  /**
+   * Login for that environment, fetched at PR-creation time. Never sourced from
+   * pipeline state — credentials are deliberately not persisted.
+   */
+  environmentUser?: { username: string; password?: string };
   template: string;
   config: AppConfig;
 }): string {
-  const { wiCtx, analyzer, coder, testAuthor, reviewer, worktree, environment, template, config } = args;
+  const { wiCtx, analyzer, coder, testAuthor, reviewer, worktree, environment, template, config } =
+    args;
 
-  // Build the WI URL
+  // Change bullets in the team's house style. prBullets is what the coder is
+  // asked for; the prose summary is the fallback when a model omits them.
+  const changeBullets: string[] = [];
+  if (coder.prBullets && coder.prBullets.length > 0) {
+    changeBullets.push(...coder.prBullets.map(bullet));
+  } else if (coder.summary.trim().length > 0) {
+    changeBullets.push(bullet(coder.summary));
+  }
+  // The convention asks for tests to be mentioned. The coder cannot do it —
+  // test-author runs after it.
+  if (testAuthor !== undefined && testAuthor.summary.trim().length > 0) {
+    changeBullets.push(bullet(testAuthor.summary));
+  }
+  const coderBullets =
+    changeBullets.length > 0 ? changeBullets.join('\n') : bullet('No changes reported.');
+
+  // Findings only when a human should look at something. An approval with no
+  // findings needs no section — silence is the good outcome.
+  let reviewerSection = '';
+  if (reviewer !== undefined && reviewer.findings.length > 0) {
+    const heading = reviewer.approved
+      ? `**Review notes** (${reviewer.findings.length} non-blocking)`
+      : `**Review notes** (${reviewer.findings.length} unresolved — reviewer did not approve)`;
+    const list = reviewer.findings
+      .map((f) => {
+        const loc = f.line !== undefined ? `${f.file}:${f.line}` : f.file;
+        return `- ${f.severity} — ${loc}: ${f.title}`;
+      })
+      .join('\n');
+    reviewerSection = `\n${heading}\n\n${list}\n`;
+  }
+
+  // Test-environment block in the exact shape the `fw-create-pr` skill defines,
+  // so a DevopsCoder PR reads like a hand-made one. Username and password are
+  // included deliberately: without them a reviewer cannot log in and reproduce
+  // the change. These are short-lived DemoPortal sandbox logins, and an
+  // API-delivered PR description is the sanctioned channel for them — they
+  // never reach a commit message, a work item, the state file, or a log line.
+  let testEnvironmentSection = '';
+  if (environment !== undefined) {
+    const lines = ['\n---\n', '**Test Environment**', ''];
+    lines.push(`- Environment: ${environment.name || environment.envId}`);
+    if (environment.url) lines.push(`- URL: ${environment.url}`);
+    if (args.environmentUser?.username) {
+      lines.push(`- Username: ${args.environmentUser.username}`);
+      if (args.environmentUser.password) {
+        lines.push(`- Password: ${args.environmentUser.password}`);
+      }
+    }
+    lines.push('');
+    lines.push('_The environment auto-deletes ~10 days after creation._');
+    testEnvironmentSection = lines.join('\n');
+  }
+
   const wiUrl = `${config.orgUrl}/${encodeURIComponent(config.project)}/_workitems/edit/${wiCtx.id}`;
 
-  // Build coder files changed
-  const coderFilesChanged =
-    coder.filesChanged.length > 0
-      ? coder.filesChanged.map((f) => `- ${f}`).join('\n')
-      : '(no files reported)';
-
-  // Build test-author section
-  let testAuthorSection = '';
-  if (testAuthor !== undefined) {
-    const testFilesList =
-      testAuthor.testFilesChanged.length > 0
-        ? testAuthor.testFilesChanged.map((f) => `- ${f}`).join('\n')
-        : '(no test files reported)';
-    testAuthorSection = [
-      '## Test-author summary',
-      '',
-      testAuthor.summary,
-      '',
-      '**Test files changed:**',
-      '',
-      testFilesList,
-    ].join('\n');
-  }
-
-  // Build reviewer note
-  let reviewerNote: string;
-  if (reviewer === undefined || (reviewer.approved === true && reviewer.findings.length === 0)) {
-    reviewerNote = 'Approved with no findings.';
-  } else if (reviewer.approved === true && reviewer.findings.length > 0) {
-    const N = reviewer.findings.length;
-    const list = reviewer.findings
-      .map((f) => `- **${f.file}${f.line !== undefined ? `:${f.line}` : ''}** (${f.severity}): ${f.title}`)
-      .join('\n');
-    reviewerNote = `Approved with ${N} non-blocking findings:\n\n${list}`;
-  } else {
-    // reviewer.approved === false — defensive rendering
-    const N = reviewer.findings.length;
-    const list = reviewer.findings
-      .map((f) => `- **${f.file}${f.line !== undefined ? `:${f.line}` : ''}** (${f.severity}): ${f.title}`)
-      .join('\n');
-    reviewerNote = `Reviewer did NOT approve. ${N} findings remain:\n\n${list}`;
-  }
-
   const substitutions: Record<string, string> = {
+    '{{coder-bullets}}': coderBullets,
+    '{{reviewer-section}}': reviewerSection,
+    '{{test-environment-section}}': testEnvironmentSection,
+    // Retained so an older or custom template still renders.
     '{{wi-id}}': String(wiCtx.id),
     '{{wi-title}}': wiCtx.title,
     '{{wi-url}}': wiUrl,
     '{{analyzer-summary}}': analyzer.summary,
     '{{coder-summary}}': coder.summary,
-    '{{coder-files-changed}}': coderFilesChanged,
-    '{{test-author-section}}': testAuthorSection,
-    '{{reviewer-note}}': reviewerNote,
     '{{branch}}': worktree.branch,
     '{{base-sha}}': worktree.baseSha,
     '{{environment-id}}': environment?.envId ?? '(none)',
@@ -176,7 +204,9 @@ export function buildPrDescription(args: {
   for (const [placeholder, value] of Object.entries(substitutions)) {
     result = result.replaceAll(placeholder, value);
   }
-  return capPrDescription(result);
+  // Drop the maintainer comment the template carries at the top.
+  result = result.replace(/^<!--[\s\S]*?-->\s*/, '');
+  return capPrDescription(result.trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +238,33 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
       // logs the stage name, so the original error message is already actionable.
       await push(branch, worktree.path);
 
-      // 2. Build PR description
+      // 2. Environment login for the description's Test Environment block.
+      // Fetched here, at PR time, and never written to state: credentials must
+      // not land in .state/<id>.json. Best-effort — a PR without credentials is
+      // still a PR, so a CLI failure degrades to name + URL only.
+      let environmentUser: { username: string; password?: string } | undefined;
+      if (environment !== undefined && deps.continiaCli !== undefined) {
+        try {
+          const users = await deps.continiaCli.getEnvironmentUsers(environment.envId, {
+            worktreePath: worktree.path,
+            signal: ctx.signal,
+          });
+          const picked = pickAdminUser(users);
+          if (picked) {
+            environmentUser = picked.password !== undefined
+              ? { username: picked.username, password: picked.password }
+              : { username: picked.username };
+          }
+        } catch (err) {
+          // Never log the error body — a CLI failure can echo its own stdout,
+          // and that stdout may contain the plaintext passwords.
+          ctx.logger.info(
+            `WI ${wiCtx.id}: could not read environment logins for the PR description (${err instanceof Error ? err.name : 'error'})`,
+          );
+        }
+      }
+
+      // 3. Build PR description
       const prDescription = buildPrDescription({
         wiCtx,
         analyzer,
@@ -217,21 +273,23 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         reviewer,
         worktree,
         environment,
+        ...(environmentUser ? { environmentUser } : {}),
         template: deps.prDescriptionTemplate,
         config: deps.config,
       });
 
-      // 3. Create the PR — let AzureDevOpsError propagate; its message already
+      // 4. Create the PR — let AzureDevOpsError propagate; its message already
       // carries the URL, status, and ADO response body.
       const prResult = await deps.ado.createPullRequest(
         {
           repositoryName: deps.config.repositoryName,
           sourceRefName: `refs/heads/${branch}`,
           targetRefName: 'refs/heads/main',
-          // Plain WI title — no "[Agent]" prefix. The PR is already identifiable
-          // as agent-authored: it opens as a draft, is linked to the WI via
-          // workItemRefs, and the description carries the agent's summary.
-          title: wiCtx.title,
+          // The coder writes the title in the team's house style (imperative,
+          // business outcome, 50-70 chars). The WI title is the fallback: it is
+          // a request ("Handling of BACS payments"), not a change description.
+          // No "[Agent]" prefix — the PR opens as a draft and is WI-linked.
+          title: coder.prTitle?.trim() || wiCtx.title,
           description: prDescription,
           isDraft: true,
           workItemId: wiCtx.id,
@@ -239,7 +297,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         { signal: ctx.signal },
       );
 
-      // 4. Notify whoever asked for the work, as a PR comment thread.
+      // 5. Notify whoever asked for the work, as a PR comment thread.
       // Best-effort and deliberately after the PR exists: the PR is the
       // deliverable, and neither the identity lookup nor the thread post is
       // worth failing a successful run over. Failures are logged, not thrown.
@@ -265,7 +323,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         );
       }
 
-      // 5. Store output
+      // 6. Store output
       const output: DraftPrOutput = {
         id: prResult.id,
         url: prResult.url,

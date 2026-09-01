@@ -29,6 +29,11 @@ export const coderOutputSchema = z.object({
   summary: z.string(),
   filesChanged: z.array(z.string()),
   commits: z.array(z.string()),
+  // Optional so a state file written before these existed still validates on
+  // re-entry, and so a model that omits them degrades to the WI title +
+  // summary rather than failing the stage.
+  prTitle: z.string().optional(),
+  prBullets: z.array(z.string()).optional(),
 }) satisfies z.ZodType<CoderOutput>;
 
 // Exported for reuse by the build-and-test stage's fix calls, which run the

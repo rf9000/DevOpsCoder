@@ -24,6 +24,25 @@ Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome al
 
 Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys the apps this change actually needs (derived per WI from the changed files and the selected tests) and runs the test codeunits `TEST_SELECTION` picks — not the whole suite, which on a real AL repo is hundreds of sequential runs. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID` and `CONTINIA_API_TOKEN` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without them otherwise. `CONTINIA_APP_PATHS` is optional; leave it unset to let the deploy set be derived per work item.**
 
+### Pull request format
+
+Draft PRs follow the team's PR house style, the same one the `fw-step4-pullRequest`
+and `fw-create-pr` skills define for hand-made PRs — so a DevopsCoder PR reads
+like any other:
+
+- **Title** comes from the coder's `prTitle`: imperative, business outcome,
+  50-70 chars, no prefix and no work item number. The WI title is only a
+  fallback (it states a request, not a change).
+- **Description** is change bullets (`prBullets`, past-tense, AL/BC terms),
+  then any non-blocking reviewer findings, then a `**Test Environment**` block.
+- **Deliberately absent:** file-changed lists, per-stage agent narration, and
+  any tool or agent attribution — all three are forbidden by those skills.
+- **Test Environment** carries the environment name, URL, and the admin
+  username/password read from `continia env users` at PR-creation time. Those
+  credentials are short-lived DemoPortal sandbox logins and the PR description
+  is where reviewers expect them; they are never written to a commit message,
+  a work item comment, the state file, or a log line.
+
 ## Tech stack
 
 - Bun (TypeScript)

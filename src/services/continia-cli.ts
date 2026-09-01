@@ -59,6 +59,20 @@ export interface EnvironmentInfo {
   url?: string;
 }
 
+/**
+ * One environment login returned by `continia env users --json`.
+ *
+ * These are short-lived DemoPortal sandbox credentials, shared knowledge on the
+ * team — the PR description is where reviewers expect them (see the
+ * `fw-create-pr` skill). They are still kept out of git history, the pipeline
+ * state file, and every log line: fetched at PR-creation time and used once.
+ */
+export interface EnvironmentUser {
+  username: string;
+  password?: string;
+  isAdmin: boolean;
+}
+
 export interface TestRunResult {
   status: string;
   passed: boolean;
@@ -96,6 +110,8 @@ export interface ContiniaCli {
     codeunitId: number,
     opts: ContiniaCallOpts & { timeoutSeconds?: number },
   ): Promise<TestRunResult>;
+  /** Logins for an environment. Works regardless of environment status. */
+  getEnvironmentUsers(envId: string, opts: ContiniaCallOpts): Promise<EnvironmentUser[]>;
 }
 
 export interface ContiniaCliDeps {
@@ -119,6 +135,30 @@ const environmentInfoSchema = z
     webUrl: z.string().optional(),
   })
   .passthrough();
+
+/**
+ * Deliberately permissive: the CLI's exact field names for users are not pinned
+ * anywhere, so match every spelling the `fw-start` skill tells operators to try
+ * rather than throwing on an unexpected shape.
+ */
+const environmentUserSchema = z
+  .object({
+    username: z.string().optional(),
+    userName: z.string().optional(),
+    name: z.string().optional(),
+    email: z.string().optional(),
+    password: z.string().optional(),
+    role: z.string().optional(),
+    isAdmin: z.boolean().optional(),
+    admin: z.boolean().optional(),
+    permissions: z.union([z.string(), z.array(z.string())]).optional(),
+  })
+  .passthrough();
+
+const environmentUsersSchema = z.union([
+  z.array(environmentUserSchema),
+  z.object({ users: z.array(environmentUserSchema).default([]) }).passthrough(),
+]);
 
 const depsInstallSchema = z
   .object({
@@ -423,5 +463,42 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         tests: parsed.tests,
       };
     },
+
+    async getEnvironmentUsers(envId, opts) {
+      const args = ['env', 'users', envId, '--json'];
+      const raw = await runJson(args, opts);
+      const shape = environmentUsersSchema.safeParse(raw ?? []);
+      // Never throw: the env block is optional decoration on a PR that already
+      // exists. An unexpected shape degrades to "no credentials", not a failure.
+      if (!shape.success) return [];
+      const rows = Array.isArray(shape.data) ? shape.data : shape.data.users;
+
+      return rows
+        .map((u) => {
+          const username = u.username ?? u.userName ?? u.name ?? u.email;
+          if (!username) return undefined;
+          const perms = Array.isArray(u.permissions)
+            ? u.permissions.join(',')
+            : (u.permissions ?? '');
+          const isAdmin =
+            u.isAdmin === true ||
+            u.admin === true ||
+            (u.role ?? '').toLowerCase() === 'admin' ||
+            perms.toLowerCase().includes('admin');
+          const out: EnvironmentUser = { username, isAdmin };
+          if (u.password !== undefined) out.password = u.password;
+          return out;
+        })
+        .filter((u): u is EnvironmentUser => u !== undefined);
+    },
   };
+}
+
+/**
+ * Pick the login to publish in a PR description: an admin if one is
+ * identifiable, otherwise the first user (matching the `fw-start` skill's
+ * documented fallback). Undefined when there is nothing usable.
+ */
+export function pickAdminUser(users: EnvironmentUser[]): EnvironmentUser | undefined {
+  return users.find((u) => u.isAdmin) ?? users[0];
 }

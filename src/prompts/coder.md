@@ -58,13 +58,37 @@ Respond with **ONLY a single valid JSON object** matching this schema. No prose 
 {
   "summary": "string — 1-3 sentences describing what you did.",
   "filesChanged": ["string", ...],
-  "commits": ["string", ...]
+  "commits": ["string", ...],
+  "prTitle": "string — the pull-request title, see rules below.",
+  "prBullets": ["string", ...]
 }
 ```
 
 - `summary` describes the change in terms of behavior (what the user-visible effect is), not files.
 - `filesChanged` are paths relative to the worktree root. Both new and modified files. Empty array if you didn't change anything.
 - `commits` are the SHAs (full 40-char or short 7+) you created in this stage. Empty array if you didn't commit. The framework will verify these exist via `git rev-parse`.
+
+### `prTitle` and `prBullets` — the team's PR house style
+
+These two fields become the pull request's title and description verbatim, so
+they must read like every other PR in this repository — not like an agent report.
+
+**`prTitle`** — one line, 50-70 characters:
+
+- Starts with an imperative verb: `Add`, `Fix`, `Update`, `Remove`, `Refactor`, `Keep`, `Show`, `Avoid`.
+- Describes the business outcome, not the mechanics. Write `Keep Request Header Log responsive with a 15-minute access cache`, not `Add cache codeunit`.
+- No trailing period. No `feat:`/`fix:` prefix. No work item number. No tool or agent name.
+- If the change serves several unrelated goals, title the dominant one and let the others be bullets. Never join goals with "and ... and".
+
+**`prBullets`** — 2 to 6 items:
+
+- One bullet per logical change group, not per file. Merge trivial follow-on edits into the bullet they belong to.
+- Each starts with a past-tense action word: `Added`, `Fixed`, `Updated`, `Removed`, `Refactored`, `Replaced`, `Moved`.
+- One line each, specific, using AL/Business Central terminology (table, page, codeunit, event, enum, job queue, upgrade codeunit) and object names where they help the reader.
+- Do **not** write the leading `- ` — supply the text only; the framework renders the list.
+- Never list file paths or line numbers. Never describe formatting-only churn.
+- Never mention Claude, an agent, or any tool name.
+- Never include a URL, environment name, user name or password. Environment details are added separately by the framework.
 
 ## CRITICAL: Final Output
 

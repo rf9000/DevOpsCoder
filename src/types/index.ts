@@ -361,6 +361,19 @@ export interface CoderOutput {
   filesChanged: string[];
   /** Commit SHAs the coder created in this attempt. */
   commits: string[];
+  /**
+   * PR title in the team's house style (see the `fw-step4-pullRequest` skill):
+   * 50-70 chars, imperative verb, business outcome, no trailing period, no
+   * `feat:` prefix, no work item number. Optional — the draft-PR creator falls
+   * back to the work item title.
+   */
+  prTitle?: string;
+  /**
+   * PR description bullets, same house style: 2-6 items, each a single line
+   * starting with a past-tense action word, AL/BC terminology, no file paths or
+   * line numbers. Optional — falls back to the coder summary.
+   */
+  prBullets?: string[];
 }
 
 export interface TestAuthorOutput {

@@ -6,6 +6,7 @@ import {
   CONTINIA_TOKEN_ENV_VAR,
   DEFAULT_TEST_RUN_TIMEOUT_S,
   ACTIVATION_APP_ID,
+  pickAdminUser,
   type ExecFn,
   type ExecResult,
 } from '../../src/services/continia-cli.ts';
@@ -303,5 +304,84 @@ describe('createContiniaCli', () => {
         cli.waitForRunning('env-1', { ...opts, signal: ctrl.signal }),
       ).rejects.toThrow(/abort/i);
     });
+  });
+});
+
+describe('getEnvironmentUsers', () => {
+  it('calls `env users <id> --json` and maps the rows', async () => {
+    const { cli, calls } = makeCli([
+      ok('[{"username":"Rf","password":"Rf1234!","role":"Admin"}]'),
+    ]);
+    const users = await cli.getEnvironmentUsers('env-9', opts);
+    expect(calls[0]?.argv.slice(-4)).toEqual(['env', 'users', 'env-9', '--json']);
+    expect(users).toEqual([{ username: 'Rf', password: 'Rf1234!', isAdmin: true }]);
+  });
+
+  it('accepts a { users: [...] } envelope as well as a bare array', async () => {
+    const { cli } = makeCli([ok('{"users":[{"userName":"A","password":"p"}]}')]);
+    expect((await cli.getEnvironmentUsers('env-9', opts))[0]?.username).toBe('A');
+  });
+
+  it('reads the username from whichever field the CLI populated', async () => {
+    const { cli } = makeCli([
+      ok('[{"name":"ByName"},{"email":"by@mail"},{"userName":"ByUserName"}]'),
+    ]);
+    const users = await cli.getEnvironmentUsers('env-9', opts);
+    expect(users.map((u) => u.username)).toEqual(['ByName', 'by@mail', 'ByUserName']);
+  });
+
+  it('detects admin from any of the documented spellings', async () => {
+    const { cli } = makeCli([
+      ok(
+        '[{"username":"a","role":"admin"},{"username":"b","isAdmin":true},' +
+          '{"username":"c","admin":true},{"username":"d","permissions":["Admin","Read"]},' +
+          '{"username":"e"}]',
+      ),
+    ]);
+    const users = await cli.getEnvironmentUsers('env-9', opts);
+    expect(users.map((u) => u.isAdmin)).toEqual([true, true, true, true, false]);
+  });
+
+  it('drops rows with no usable username rather than inventing one', async () => {
+    const { cli } = makeCli([ok('[{"password":"orphan"},{"username":"ok"}]')]);
+    const users = await cli.getEnvironmentUsers('env-9', opts);
+    expect(users).toHaveLength(1);
+    expect(users[0]?.username).toBe('ok');
+  });
+
+  it('returns [] for an unexpected shape — the env block is optional decoration', async () => {
+    const { cli } = makeCli([ok('{"unexpected":true}')]);
+    expect(await cli.getEnvironmentUsers('env-9', opts)).toEqual([]);
+  });
+
+  it('omits password when the CLI did not return one', async () => {
+    const { cli } = makeCli([ok('[{"username":"NoPass"}]')]);
+    const users = await cli.getEnvironmentUsers('env-9', opts);
+    expect(users[0]).toEqual({ username: 'NoPass', isAdmin: false });
+    expect('password' in (users[0] as object)).toBe(false);
+  });
+});
+
+describe('pickAdminUser', () => {
+  it('prefers an admin', () => {
+    expect(
+      pickAdminUser([
+        { username: 'plain', isAdmin: false },
+        { username: 'boss', isAdmin: true },
+      ])?.username,
+    ).toBe('boss');
+  });
+
+  it('falls back to the first user when no admin is identifiable', () => {
+    expect(
+      pickAdminUser([
+        { username: 'first', isAdmin: false },
+        { username: 'second', isAdmin: false },
+      ])?.username,
+    ).toBe('first');
+  });
+
+  it('returns undefined for an empty list', () => {
+    expect(pickAdminUser([])).toBeUndefined();
   });
 });
