@@ -1,7 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { buildFixPrompt, createBuildAndTestStage } from '../../../src/pipeline/stages/build-and-test.ts';
 import { AgentOutputParseError } from '../../../src/services/claude-agent-runner.ts';
-import { createLogger } from '../../../src/utils/logger.ts';
+import { createLogger, type Logger } from '../../../src/utils/logger.ts';
 import type { AgentRunArgs, AgentRunner } from '../../../src/pipeline/agent-stage.ts';
 import type { ContiniaCli, TestRunResult } from '../../../src/services/continia-cli.ts';
 import type {
@@ -190,6 +190,7 @@ interface StageHarness {
   runnerCalls: AgentRunArgs<unknown>[];
   resets: string[];
   testOpts: Array<number | undefined>;
+  warnings: string[];
 }
 
 function makeHarness(opts: {
@@ -254,11 +255,18 @@ function makeHarness(opts: {
   };
 
   const resets: string[] = [];
+  const warnings: string[] = [];
+  const logger: Logger = {
+    ...createLogger(),
+    warn: (m: string) => {
+      warnings.push(m);
+    },
+  };
   const stage = createBuildAndTestStage({
     config: opts.config ?? baseConfig,
     continiaCli: cli,
     runner,
-    logger: createLogger(),
+    logger,
     fixerPromptTemplate: 'FIXER_PROMPT',
     discoveredSkills: opts.skills ?? [],
     getCurrentHeadSha: async () => 'base-sha',
@@ -272,7 +280,7 @@ function makeHarness(opts: {
     discoverAlApps: () => opts.apps ?? [],
   });
 
-  return { stage, cli, callOrder, runnerCalls, resets, testOpts };
+  return { stage, cli, callOrder, runnerCalls, resets, testOpts, warnings };
 }
 
 function makeStageState(): PipelineState {
@@ -538,6 +546,30 @@ describe('createBuildAndTestStage', () => {
       const deploys = callOrder.filter((c) => c.startsWith('deploy:'));
       expect(deploys).toEqual(['deploy:base-application', 'deploy:export', 'deploy:export-test']);
       expect(deploys).not.toContain('deploy:base-application-test');
+    });
+
+    it('warns that the per-WI derivation is off when CONTINIA_APP_PATHS is pinned', async () => {
+      // The pin replaces the derivation wholesale, so a test the test-author
+      // wrote into an app outside the list is never published and the round
+      // then runs a codeunit that isn't on the environment. Must not be silent.
+      const { stage, warnings } = makeHarness(); // baseConfig pins two apps
+      await stage.execute(makeStageState(), makeStageCtx());
+
+      const pinWarning = warnings.find((w) => w.includes('CONTINIA_APP_PATHS'));
+      expect(pinWarning).toBeDefined();
+      expect(pinWarning).toContain('NOT derived');
+    });
+
+    it('says nothing about the pin when the deploy set is derived', async () => {
+      const { stage, warnings } = makeHarness({
+        config: { ...baseConfig, continiaAppPaths: [], testSelection: 'changed' },
+        apps: [{ dir: 'export', name: 'Continia Banking - Export', dependencies: [] }],
+        codeunits: [{ id: 148001, name: 'Export Tests', file: `${worktree.path}/export/T.al` }],
+        changedFiles: ['export/T.al'],
+      });
+      await stage.execute(makeStageState(), makeStageCtx());
+
+      expect(warnings.filter((w) => w.includes('CONTINIA_APP_PATHS'))).toEqual([]);
     });
 
     it('fails loudly rather than passing when the selection is empty', async () => {

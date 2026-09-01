@@ -12,9 +12,12 @@
 #   docker compose up -d devops-coder
 #   docker compose logs -f devops-coder
 #
-# .env.devops-coder must now also define CONTINIA_ENV_PROFILE_ID,
-# CONTINIA_API_TOKEN, CONTINIA_APP_PATHS (or SKIP_BUILD_TEST=true for a
-# smoke bring-up without the verification gate).
+# .env.devops-coder must now also define CONTINIA_ENV_PROFILE_ID and
+# CONTINIA_API_TOKEN (or SKIP_BUILD_TEST=true for a smoke bring-up without the
+# verification gate). Leave CONTINIA_APP_PATHS unset: build-and-test derives the
+# deploy set per work item from the changed files plus the apps owning the
+# selected tests. A pin silently disables that, so a test written into a test app
+# outside the list never gets deployed.
 
 services:
   devops-coder:

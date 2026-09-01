@@ -366,10 +366,22 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
             'files or the selected tests. Set CONTINIA_APP_PATHS to pin the deploy set explicitly.',
         );
       }
+      const pinned = config.continiaAppPaths.length > 0;
       deps.logger.info(
         `build-and-test: deploying ${appPaths.length} app(s) in dependency order — ${appPaths.join(' → ')}` +
-          (config.continiaAppPaths.length > 0 ? ' (pinned via CONTINIA_APP_PATHS)' : ' (derived)'),
+          (pinned ? ' (pinned via CONTINIA_APP_PATHS)' : ' (derived)'),
       );
+      if (pinned) {
+        // Never silent, same reasoning as the dropped-codeunit warning above: a
+        // pin replaces the per-WI derivation wholesale, so a test the
+        // test-author wrote into a test app outside the list is never published
+        // and this round runs a codeunit that isn't on the environment.
+        deps.logger.warn(
+          'build-and-test: WARNING CONTINIA_APP_PATHS is pinned, so the deploy set was NOT derived ' +
+            'for this work item — apps outside the pin are not deployed, including test apps holding ' +
+            'newly written tests. Unset it unless you are deliberately overriding the derivation.',
+        );
+      }
 
       for (const appPath of appPaths) {
         const info = await deps.continiaCli.installDependencies(env.envId, appPath, callOpts);
