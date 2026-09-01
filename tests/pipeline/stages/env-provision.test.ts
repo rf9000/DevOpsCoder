@@ -12,7 +12,7 @@ const baseConfig: AppConfig = {
   pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
   coderMaxTurns: 80, testAuthorMaxTurns: 50,
   maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-  claudeModel: 'm', stateDir: '.state', assignedToFilter: [],
+  claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
   continiaApiToken: 'tok',

@@ -249,9 +249,13 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         ),
       );
 
-      // Sum costUsd from all 6 axis runs and record as a single per-stage entry.
-      const totalCostUsd = axisResults.reduce((sum, r) => sum + r.costUsd, 0);
-      createCostTracker(state).add('reviewer', totalCostUsd);
+      // Bill each axis to its own key. One lumped `reviewer` number hides which
+      // axis is expensive, and the axes are the whole of the reviewer's cost —
+      // six independent full-context reads of the same diff.
+      const costTracker = createCostTracker(state);
+      axisResults.forEach((r, i) => {
+        costTracker.add(`reviewer:${REVIEW_AXES[i]}`, r.costUsd, r.usage);
+      });
 
       const mergedToolUsage = mergeToolUsage(axisResults.map((r) => r.toolUsage));
       createToolUsageTracker(state).add('reviewer', mergedToolUsage);

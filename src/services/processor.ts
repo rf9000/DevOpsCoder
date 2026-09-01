@@ -19,8 +19,11 @@ import type { PipelineStateStore } from '../state/state-store.ts';
 import type { Stage, AbortFlag } from '../pipeline/stage.ts';
 import { DEFAULT_STAGE_TIMEOUT_MS, createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
 import { slugify } from '../utils/slug.ts';
+import { normalizePerStage } from '../utils/cost-tracker.ts';
 import { findTagAdder, formatAdoMention } from '../utils/tag-history.ts';
 import type { CostLedger } from './cost-ledger.ts';
+import type { WiLog, WiLogFactory } from './wi-log.ts';
+import { renderCostReport } from '../utils/cost-report.ts';
 import type { PipelineBuilderDeps } from './pipeline-builder.ts';
 import { REVISION_LOOP_EXHAUSTED } from './pipeline-builder.ts';
 
@@ -33,6 +36,12 @@ export interface ProcessorDeps {
   abortFlag: AbortFlag;
   /** Append-only spend log. Omitted in tests and dry runs. */
   ledger?: CostLedger;
+  /**
+   * Per-work-item log files. When present, each run gets a WI-scoped logger
+   * (console output unchanged, lines also teed to `WI<id>.log`) and the spend
+   * report is appended there when the run ends. Omitted in tests and dry runs.
+   */
+  wiLogs?: WiLogFactory;
 }
 
 export interface Processor {
@@ -128,7 +137,7 @@ export function renderCostExhaustionMarkdown(
       `The pipeline exceeded the configured cost cap ($${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
     );
     lines.push('');
-    lines.push(`### Per-stage spend`);
+    lines.push(`### Per-step spend`);
     lines.push('');
     lines.push('(no cost data recorded)');
   } else {
@@ -136,16 +145,22 @@ export function renderCostExhaustionMarkdown(
       `The pipeline spent $${cost.total.toFixed(4)} (cap: $${config.maxCostUsdPerWi.toFixed(4)}) and was hard-killed to prevent further charges.`,
     );
     lines.push('');
-    lines.push(`### Per-stage spend`);
+    lines.push(`### Per-step spend`);
     lines.push('');
-    lines.push('| Stage | USD |');
-    lines.push('|---|---|');
-    const sortedStages = Object.keys(cost.perStage).sort();
-    for (const stage of sortedStages) {
-      const usd = cost.perStage[stage] ?? 0;
-      lines.push(`| ${stage} | $${usd.toFixed(4)} |`);
+    lines.push('| Step | USD | Calls | Model |');
+    lines.push('|---|---|---|---|');
+    // Most-expensive first: a cap-exceeded comment exists to answer "what ate
+    // the budget", and that answer belongs at the top of the table.
+    const perStage = normalizePerStage(cost.perStage);
+    const sortedStages = Object.entries(perStage).sort(
+      (a, b) => b[1].usd - a[1].usd || a[0].localeCompare(b[0]),
+    );
+    for (const [stage, spend] of sortedStages) {
+      lines.push(
+        `| ${stage} | $${spend.usd.toFixed(4)} | ${spend.calls} | ${spend.models.join(', ')} |`,
+      );
     }
-    lines.push(`| **Total** | **$${cost.total.toFixed(4)}** |`);
+    lines.push(`| **Total** | **$${cost.total.toFixed(4)}** | | |`);
   }
 
   lines.push('');
@@ -371,7 +386,7 @@ async function safeAdoOp(
 }
 
 export function createProcessor(deps: ProcessorDeps): Processor {
-  const { config, logger, ado, store, buildPipeline, abortFlag, ledger } = deps;
+  const { config, logger, ado, store, buildPipeline, abortFlag, ledger, wiLogs } = deps;
 
   async function dispatchRejection(
     state: PipelineState,
@@ -449,28 +464,53 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       rejectCount: newCount,
       costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
       toolUsage: (state.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+      perStage: normalizePerStage((state.outputs.cost as PipelineCostInfo | undefined)?.perStage),
     };
   }
 
   // One choke point for the spend log: every terminal outcome funnels through
   // the wrapper below, so the ledger cannot drift from the outcomes the watcher
   // reports. `skipped` is excluded — nothing ran, so there is nothing to bill.
-  function recordSpend(outcome: ProcessOutcome): void {
-    if (!ledger || outcome.kind === 'skipped') return;
+  function recordSpend(outcome: ProcessOutcome, wiLog?: WiLog): void {
+    if (outcome.kind === 'skipped') return;
     const persisted = store.load(outcome.workItemId);
     const cost = persisted?.outputs.cost as PipelineCostInfo | undefined;
     const draftPr = persisted?.outputs.draftPr as DraftPrOutput | undefined;
-    ledger.record({
-      at: new Date().toISOString(),
+    // Normalize on the way out: a state file written before per-step detail
+    // existed holds bare numbers, and one ledger carrying two shapes is worse
+    // than one carrying slightly thin rows.
+    const perStage = normalizePerStage(cost?.perStage);
+    const at = new Date().toISOString();
+    const pr = draftPr ? { prId: draftPr.id, prUrl: draftPr.url } : {};
+
+    ledger?.record({
+      at,
       workItemId: outcome.workItemId,
       outcome: outcome.kind,
-      costUsd: 'costUsd' in outcome ? outcome.costUsd : 0,
-      ...(draftPr ? { prId: draftPr.id, prUrl: draftPr.url } : {}),
-      ...(cost?.perStage ? { perStage: cost.perStage } : {}),
+      costUsd: outcome.costUsd,
+      ...pr,
+      ...(cost?.perStage ? { perStage } : {}),
     });
+
+    // The WI's own file closes with the same breakdown, so the file that holds
+    // the run's log lines also holds the answer to what those lines cost.
+    wiLog?.append(
+      renderCostReport({
+        workItemId: outcome.workItemId,
+        outcome: outcome.kind,
+        at,
+        totalUsd: outcome.costUsd,
+        perStage,
+        toolUsage: outcome.toolUsage,
+        ...pr,
+      }),
+    );
   }
 
-  const inner = {
+  // Built per work item so that every line the pipeline logs is teed into that
+  // work item's own file. Shadowing `logger` here is what threads the WI-scoped
+  // logger through every call site inside without passing it by hand.
+  const makeInner = (logger: Logger) => ({
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
       if (abortFlag.aborted) {
         return { kind: 'skipped', workItemId, reason: 'aborted' };
@@ -573,6 +613,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             workItemId,
             costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
             toolUsage: (final.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+            perStage: normalizePerStage((final.outputs.cost as PipelineCostInfo | undefined)?.perStage),
           };
         }
 
@@ -588,6 +629,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           stage: pausedStage,
           costUsd: (final.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
           toolUsage: (final.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+          perStage: normalizePerStage((final.outputs.cost as PipelineCostInfo | undefined)?.perStage),
         };
       } catch (err) {
         const persisted = store.load(workItemId);
@@ -676,15 +718,17 @@ export function createProcessor(deps: ProcessorDeps): Processor {
           error: terminalError,
           costUsd: (persisted?.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
           toolUsage: (persisted?.outputs.toolUsage as Record<string, number> | undefined) ?? {},
+          perStage: normalizePerStage((persisted?.outputs.cost as PipelineCostInfo | undefined)?.perStage),
         };
       }
     },
-  };
+  });
 
   return {
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
-      const outcome = await inner.processWorkItem(workItemId);
-      recordSpend(outcome);
+      const wiLog = wiLogs?.open(workItemId);
+      const outcome = await makeInner(wiLog?.logger ?? logger).processWorkItem(workItemId);
+      recordSpend(outcome, wiLog);
       return outcome;
     },
   };

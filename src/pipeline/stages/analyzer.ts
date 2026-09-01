@@ -123,7 +123,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
       const wiCtx = await fetcher(deps.ado, state.workItemId);
       const prompt = buildAnalyzerUserPrompt(wiCtx, deps.discoveredSkills);
 
-      const { value: output, costUsd, toolUsage } = await deps.runner.run<AnalyzerOutput>({
+      const { value: output, costUsd, toolUsage, usage } = await deps.runner.run<AnalyzerOutput>({
         prompt,
         label: 'analyzer',
         schema: analyzerOutputSchema,
@@ -138,7 +138,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
         signal: ctx.signal,
       });
 
-      createCostTracker(state).add('analyzer', costUsd);
+      createCostTracker(state).add('analyzer', costUsd, usage);
       createToolUsageTracker(state).add('analyzer', toolUsage);
       state.outputs.wiContext = wiCtx;
 

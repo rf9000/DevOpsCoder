@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { Logger } from '../utils/logger.ts';
+import type { StepSpend } from '../types/index.ts';
 
 /** One line of the ledger. Serialised as JSON, one record per line (JSONL). */
 export interface CostRecord {
@@ -14,8 +15,11 @@ export interface CostRecord {
   /** Draft PR id, when one was opened. */
   prId?: number;
   prUrl?: string;
-  /** Per-stage USD breakdown, so a spend spike can be attributed. */
-  perStage?: Record<string, number>;
+  /**
+   * Per-step breakdown — USD, call count, model and tokens — so a spend spike
+   * can be attributed without opening the work item's state file.
+   */
+  perStage?: Record<string, StepSpend>;
 }
 
 export interface CostLedger {

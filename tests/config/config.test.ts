@@ -41,6 +41,7 @@ describe('loadConfig', () => {
     expect(config.maxRejectCycles).toBe(3);
     expect(config.claudeModel).toBe('claude-opus-4-7');
     expect(config.stateDir).toBe('.state');
+    expect(config.logDir).toBe('logs');
     expect(config.assignedToFilter).toEqual([]);
     expect(config.dryRun).toBe(false);
   });
@@ -396,5 +397,17 @@ describe('loadConfig', () => {
       delete env.CONTINIA_ENV_PROFILE_ID;
       expect(() => loadConfig(env)).toThrow(/CONTINIA_ENV_PROFILE_ID.*SKIP_BUILD_TEST/);
     });
+  });
+});
+
+describe('LOG_DIR', () => {
+  it('defaults to logs/ beside the working directory', () => {
+    expect(loadConfig(validEnv).logDir).toBe('logs');
+  });
+
+  it('honours an explicit override', () => {
+    expect(loadConfig({ ...validEnv, LOG_DIR: '/var/log/devops-coder' }).logDir).toBe(
+      '/var/log/devops-coder',
+    );
   });
 });

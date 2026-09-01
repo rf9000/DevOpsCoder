@@ -33,7 +33,7 @@ const baseConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '.state',
+  stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 } satisfies AppConfig;
@@ -159,6 +159,7 @@ describe('createProcessor', () => {
       stage: 'await-human',
       costUsd: 0,
       toolUsage: {},
+      perStage: {},
     });
     expect(ado.removeTagFromWorkItem).not.toHaveBeenCalled();
     expect(ado.addTagToWorkItem).not.toHaveBeenCalled();
@@ -190,6 +191,151 @@ describe('createProcessor', () => {
     expect(ado.addTagToWorkItem).toHaveBeenCalledWith(101, 'agent-blocked');
     // Blocking also un-triggers — see the dedicated test below.
     expect(ado.removeTagFromWorkItem).toHaveBeenCalledWith(101, 'agent implement');
+  });
+
+  describe('per-work-item log', () => {
+    function makeCostStage(cost: unknown): Stage {
+      return {
+        name: 'draft-pr-creator',
+        canRun: () => true,
+        execute: async (state) => {
+          state.outputs.cost = cost;
+          return state;
+        },
+      };
+    }
+
+    function makeWiLogs() {
+      const opened: number[] = [];
+      const appended: string[] = [];
+      const logged: string[] = [];
+      return {
+        opened,
+        appended,
+        logged,
+        factory: {
+          open(workItemId: number) {
+            opened.push(workItemId);
+            return {
+              logger: {
+                info: (m: string) => logged.push(m),
+                warn: (m: string) => logged.push(m),
+                error: (m: string) => logged.push(m),
+              },
+              append: (b: string) => appended.push(b),
+            };
+          },
+        },
+      };
+    }
+
+    it('opens the log for the work item being processed', async () => {
+      const wiLogs = makeWiLogs();
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [makeCostStage({ total: 0, perStage: {} })],
+        abortFlag: { aborted: false },
+        wiLogs: wiLogs.factory,
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(wiLogs.opened).toEqual([101]);
+    });
+
+    // Stage lines land in the WI's own file rather than only in the interleaved
+    // container log, which is what makes a resumed run's spend readable later.
+    it('gives the pipeline the work-item-scoped logger', async () => {
+      const wiLogs = makeWiLogs();
+      const seen: string[] = [];
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: (deps) => {
+          deps.logger.info('stage line');
+          return [makeCostStage({ total: 0, perStage: {} })];
+        },
+        abortFlag: { aborted: false },
+        wiLogs: wiLogs.factory,
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(wiLogs.logged).toContain('stage line');
+      expect(seen).toEqual([]);
+    });
+
+    it('appends the cost report when the run ends', async () => {
+      const wiLogs = makeWiLogs();
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [
+          makeCostStage({
+            total: 8.45,
+            perStage: {
+              coder: { usd: 8.14, calls: 2, inputTokens: 400, outputTokens: 40, turns: 12, models: ['claude-opus-5'] },
+              analyzer: { usd: 0.31, calls: 1, inputTokens: 20, outputTokens: 2, turns: 3, models: ['claude-sonnet-5'] },
+            },
+          }),
+        ],
+        abortFlag: { aborted: false },
+        wiLogs: wiLogs.factory,
+      });
+
+      await proc.processWorkItem(101);
+
+      const report = wiLogs.appended.join('');
+      expect(report).toContain('=== outcome: completed · cost $8.4500');
+      expect(report).toContain('| coder | $8.1400 | 2 | claude-opus-5 |');
+      expect(report).toContain('claude-sonnet-5');
+    });
+
+    it('appends the cost report for a failed run too', async () => {
+      const wiLogs = makeWiLogs();
+      const failing: Stage = {
+        name: 'coder',
+        canRun: () => true,
+        execute: async () => {
+          throw new Error('boom');
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [failing],
+        abortFlag: { aborted: false },
+        wiLogs: wiLogs.factory,
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(wiLogs.appended.join('')).toContain('=== outcome: failed');
+    });
+
+    it('runs normally when no log factory is configured', async () => {
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [makeCostStage({ total: 0, perStage: {} })],
+        abortFlag: { aborted: false },
+      });
+
+      const outcome = await proc.processWorkItem(101);
+
+      expect(outcome.kind).toBe('completed');
+    });
   });
 
   describe('cost ledger', () => {
@@ -229,7 +375,12 @@ describe('createProcessor', () => {
         prId: 42,
         prUrl: 'https://dev.azure.com/o/p/_git/r/pullrequest/42',
       });
-      expect(records[0]?.perStage).toEqual({ analyzer: 0.31, coder: 8.14 });
+      // A stage that recorded spend before per-step detail existed still lands
+      // in the ledger as the current shape, rather than two shapes in one file.
+      expect(records[0]?.perStage).toEqual({
+        analyzer: { usd: 0.31, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
+        coder: { usd: 8.14, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
+      });
     });
 
     it('records spend for a failed run too — money is spent either way', async () => {
@@ -328,6 +479,7 @@ describe('createProcessor', () => {
       rejectCount: 1,
       costUsd: 0,
       toolUsage: {},
+      perStage: {},
     });
     const saved = store.load(101)!;
     expect(saved.rejectCount).toBe(1);

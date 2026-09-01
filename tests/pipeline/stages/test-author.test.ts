@@ -9,6 +9,7 @@ import { createLogger } from '../../../src/utils/logger.ts';
 import type {
   AgentRunArgs,
   AgentRunner,
+  AgentRunResult,
 } from '../../../src/pipeline/agent-stage.ts';
 import type {
   AppConfig,
@@ -21,6 +22,7 @@ import type {
 } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { AnalyzerOutput } from '../../../src/pipeline/stages/analyzer.ts';
+import { TEST_USAGE } from '../../helpers/agent-usage.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x',
@@ -41,7 +43,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '.state',
+  stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -117,10 +119,10 @@ function makeRunner(
   let i = 0;
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result(i++) : result;
-      return { value: out as unknown as T, costUsd, toolUsage };
+      return { value: out as unknown as T, costUsd, toolUsage, usage: TEST_USAGE };
     },
   };
 }
@@ -162,7 +164,7 @@ describe('createTestAuthorStage', () => {
     expect(result.outputs.testAuthor).toEqual(successOutput);
     // Cost tracking: test-author records costUsd returned by the runner
     expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
-    expect((result.outputs.cost as PipelineCostInfo).perStage['test-author']).toBeCloseTo(0.42, 4);
+    expect((result.outputs.cost as PipelineCostInfo).perStage['test-author']!.usd).toBeCloseTo(0.42, 4);
     // Tool-usage tracking: test-author records toolUsage returned by the runner
     expect(result.outputs.toolUsage).toEqual({ Write: 2, Bash: 1 });
   });
@@ -262,13 +264,14 @@ describe('createTestAuthorStage — plan step', () => {
       calls,
       async run<T>(
         args: AgentRunArgs<T>,
-      ): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
+      ): Promise<AgentRunResult<T>> {
         calls.push(args as AgentRunArgs<unknown>);
         const isPlan = args.label === 'test-author:plan';
         return {
           value: (isPlan ? samplePlan : successOutput) as unknown as T,
           costUsd: isPlan ? 0.20 : 0.10,
           toolUsage: isPlan ? { Read: 3 } : { Write: 1 },
+          usage: TEST_USAGE,
         };
       },
     };
@@ -320,8 +323,8 @@ describe('createTestAuthorStage — plan step', () => {
     expect(state.outputs.testPlan).toEqual(samplePlan);
 
     const cost = state.outputs.cost as PipelineCostInfo;
-    expect(cost.perStage['test-author-plan']).toBeCloseTo(0.20, 4);
-    expect(cost.perStage['test-author']).toBeCloseTo(0.10, 4);
+    expect(cost.perStage['test-author-plan']!.usd).toBeCloseTo(0.20, 4);
+    expect(cost.perStage['test-author']!.usd).toBeCloseTo(0.10, 4);
     expect(state.outputs.toolUsage).toEqual({ Read: 3, Write: 1 });
   });
 

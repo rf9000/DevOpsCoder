@@ -20,6 +20,7 @@ import type {
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
+import { TEST_USAGE } from '../helpers/agent-usage.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x',
@@ -40,7 +41,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '',
+  stateDir: '', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
@@ -127,7 +128,7 @@ function makeRunner(): RecordingRunner {
       else if (sys === 'F') value = { summary: 'fixed', filesChanged: ['x.al'], commits: ['fix'] };
       else if (sys.startsWith('R\n\n')) value = { findings: [] };
       else value = {};
-      return { value: value as T, costUsd: 0.1, toolUsage: { Edit: 1 } };
+      return { value: value as T, costUsd: 0.1, toolUsage: { Edit: 1 }, usage: TEST_USAGE };
     },
   };
 }

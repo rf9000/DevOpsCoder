@@ -1,5 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentRunner, AgentRunArgs, AgentRunResult } from '../pipeline/agent-stage.ts';
+import type { AgentRunner, AgentRunArgs, AgentRunResult, AgentUsage } from '../pipeline/agent-stage.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AppConfig } from '../types/index.ts';
 
@@ -82,6 +82,15 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
       let result: string | undefined;
       let costUsd = 0;
       const toolUsage: Record<string, number> = {};
+      // Default to the config model: `model` is optional per call, and a usage
+      // record that omits which model ran is the one thing that makes a spend
+      // line unattributable once per-step overrides are in play.
+      const usage: AgentUsage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        turns: 0,
+        model: args.model ?? deps.config.claudeModel,
+      };
 
       const options = buildQueryOptions(args, deps);
 
@@ -103,6 +112,9 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           // or during partial failures). Cast through `| undefined` and default to
           // 0 so a missing cost never breaks the orchestrator's cap arithmetic.
           costUsd = (message.total_cost_usd as number | undefined) ?? 0;
+          usage.inputTokens = message.usage.input_tokens ?? 0;
+          usage.outputTokens = message.usage.output_tokens ?? 0;
+          usage.turns = message.num_turns ?? 0;
           deps.logger.info(
             `agent: $${costUsd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns` +
               (args.label ? ` | ${args.label}` : ''),
@@ -144,7 +156,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           `Schema validation failed: ${issues}`,
         );
       }
-      return { value: validated.data, costUsd, toolUsage };
+      return { value: validated.data, costUsd, toolUsage, usage };
     },
   };
 }

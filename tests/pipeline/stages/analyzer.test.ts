@@ -6,11 +6,12 @@ import {
 } from '../../../src/pipeline/stages/analyzer.ts';
 import { PipelineRejectError } from '../../../src/pipeline/stage.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
-import type { AgentRunArgs, AgentRunner } from '../../../src/pipeline/agent-stage.ts';
+import type { AgentRunArgs, AgentRunner, AgentRunResult } from '../../../src/pipeline/agent-stage.ts';
 import type { AdoClient } from '../../../src/sdk/azure-devops-client.ts';
 import type { AppConfig, PipelineCostInfo, PipelineState } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
+import { TEST_USAGE } from '../../helpers/agent-usage.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x',
@@ -31,7 +32,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '.state',
+  stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -76,10 +77,10 @@ function makeRunner(
   const calls: AgentRunArgs<unknown>[] = [];
   return {
     calls,
-    async run<T>(args: AgentRunArgs<T>): Promise<{ value: T; costUsd: number; toolUsage: Record<string, number> }> {
+    async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
       const out = typeof result === 'function' ? await result() : result;
-      return { value: out as unknown as T, costUsd, toolUsage };
+      return { value: out as unknown as T, costUsd, toolUsage, usage: TEST_USAGE };
     },
   };
 }
@@ -182,7 +183,7 @@ describe('createAnalyzerStage', () => {
     });
     // Cost tracking: analyzer records costUsd returned by the runner
     expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.42, 4);
-    expect((result.outputs.cost as PipelineCostInfo).perStage['analyzer']).toBeCloseTo(0.42, 4);
+    expect((result.outputs.cost as PipelineCostInfo).perStage['analyzer']!.usd).toBeCloseTo(0.42, 4);
     // Tool-usage tracking: analyzer records toolUsage returned by the runner
     expect(result.outputs.toolUsage).toEqual({ Edit: 2, Bash: 1 });
   });

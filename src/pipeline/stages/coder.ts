@@ -226,7 +226,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
           worktreePath: worktree.path,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
         });
-        createCostTracker(state).add('coder-plan', planned.costUsd);
+        createCostTracker(state).add('coder-plan', planned.costUsd, planned.usage);
         createToolUsageTracker(state).add('coder-plan', planned.toolUsage);
         plan = planned.plan;
         state.outputs.coderPlan = plan;
@@ -247,7 +247,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         try {
-          const { value: output, costUsd, toolUsage } = await deps.runner.run<CoderOutput>({
+          const { value: output, costUsd, toolUsage, usage } = await deps.runner.run<CoderOutput>({
             prompt,
             label: `coder (attempt ${attempt + 1})`,
             schema: coderOutputSchema,
@@ -262,7 +262,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
             signal: ctx.signal,
           });
           // Only record cost on success (failed attempts threw before this line).
-          createCostTracker(state).add('coder', costUsd);
+          createCostTracker(state).add('coder', costUsd, usage);
           createToolUsageTracker(state).add('coder', toolUsage);
           state.outputs.coder = output;
           return state;

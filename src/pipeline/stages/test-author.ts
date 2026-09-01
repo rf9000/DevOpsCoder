@@ -216,7 +216,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
           worktreePath: worktree.path,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
         });
-        createCostTracker(state).add('test-author-plan', planned.costUsd);
+        createCostTracker(state).add('test-author-plan', planned.costUsd, planned.usage);
         createToolUsageTracker(state).add('test-author-plan', planned.toolUsage);
         plan = planned.plan;
         state.outputs.testPlan = plan;
@@ -240,7 +240,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
         try {
-          const { value: output, costUsd, toolUsage } = await deps.runner.run<TestAuthorOutput>({
+          const { value: output, costUsd, toolUsage, usage } = await deps.runner.run<TestAuthorOutput>({
             prompt,
             label: 'test-author',
             schema: testAuthorOutputSchema,
@@ -255,7 +255,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
             signal: ctx.signal,
           });
           // Only record cost on success (failed attempts threw before this line).
-          createCostTracker(state).add('test-author', costUsd);
+          createCostTracker(state).add('test-author', costUsd, usage);
           createToolUsageTracker(state).add('test-author', toolUsage);
           state.outputs.testAuthor = output;
           return state;

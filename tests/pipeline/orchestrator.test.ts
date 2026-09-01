@@ -28,7 +28,7 @@ function makeContext(overrides: Partial<PipelineContext> = {}): PipelineContext 
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
+    claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
   };
   const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}) };
   return {
@@ -403,7 +403,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     let stage2Called = false;
     const stages: Stage[] = [
       makeStage('stage1', async (s) => {
-        s.outputs.cost = { total: 6.00, perStage: { stage1: 6.00 } };
+        s.outputs.cost = { total: 6.00, perStage: { stage1: { usd: 6.00, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] } } };
         return s;
       }),
       makeStage('stage2', async (s) => {
@@ -434,7 +434,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { foo: 500 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
+        claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
       },
     });
     // Stage resolves in 50ms, timeout is 500ms
@@ -460,7 +460,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { slow: 50 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
+        claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
       },
     });
 
@@ -497,7 +497,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
         pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
         coderMaxTurns: 80, testAuthorMaxTurns: 50,
         maxCostUsdPerWi: 5.00, stageTimeoutMs: { fast: 200 },
-        claudeModel: 'm', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
+        claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
       },
     });
 

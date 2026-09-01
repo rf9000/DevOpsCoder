@@ -4,6 +4,7 @@ import { createAdoClient } from '../sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../state/state-store.ts';
 import { buildPipeline } from '../services/pipeline-builder.ts';
 import { createProcessor } from '../services/processor.ts';
+import { createWiLogFactory } from '../services/wi-log.ts';
 import { createCostLedger } from '../services/cost-ledger.ts';
 import { createWorktreeManager } from '../services/worktree-manager.ts';
 import {
@@ -43,10 +44,14 @@ function buildDeps() {
   const ado = createAdoClient(config);
   const store = new PipelineStateStore(config.stateDir);
   const abortFlag = createAbortFlag();
-  // Dry runs are rehearsals — they must not pollute the real spend log.
+  // Dry runs are rehearsals — they must not pollute the real spend log, or
+  // leave per-WI log files that look like records of real work.
   const ledger = config.dryRun
     ? undefined
     : createCostLedger({ path: config.costLogPath, logger });
+  const wiLogs = config.dryRun
+    ? undefined
+    : createWiLogFactory({ dir: config.logDir, logger });
   const processor = createProcessor({
     config,
     logger,
@@ -55,6 +60,7 @@ function buildDeps() {
     buildPipeline,
     abortFlag,
     ...(ledger ? { ledger } : {}),
+    ...(wiLogs ? { wiLogs } : {}),
   });
   return { config, logger, ado, store, processor, abortFlag };
 }

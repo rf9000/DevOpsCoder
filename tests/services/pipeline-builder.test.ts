@@ -15,6 +15,7 @@ import type {
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 import type { ContiniaCli } from '../../src/services/continia-cli.ts';
+import { TEST_USAGE } from '../helpers/agent-usage.ts';
 
 const config: AppConfig = {
   orgUrl: 'https://x',
@@ -35,7 +36,7 @@ const config: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '.state',
+  stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -125,7 +126,7 @@ function makeRecordingRunner(
     calls,
     async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
-      return { value: responder(args as AgentRunArgs<unknown>) as unknown as T, costUsd: 0, toolUsage: {} };
+      return { value: responder(args as AgentRunArgs<unknown>) as unknown as T, costUsd: 0, toolUsage: {}, usage: TEST_USAGE };
     },
   };
 }

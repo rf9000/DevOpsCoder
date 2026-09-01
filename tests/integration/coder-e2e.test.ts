@@ -20,6 +20,7 @@ import type {
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
+import { TEST_USAGE } from '../helpers/agent-usage.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x',
@@ -40,7 +41,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '',
+  stateDir: '', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -96,7 +97,7 @@ function makeStagedRunner(
       calls.push(args as AgentRunArgs<unknown>);
       const out = responder(args as AgentRunArgs<unknown>, i++);
       const value = out instanceof Promise ? ((await out) as unknown as T) : (out as unknown as T);
-      return { value, costUsd: 0, toolUsage: {} };
+      return { value, costUsd: 0, toolUsage: {}, usage: TEST_USAGE };
     },
   };
 }

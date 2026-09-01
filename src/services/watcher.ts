@@ -6,6 +6,7 @@ import type { Processor } from './processor.ts';
 import type { AbortFlag } from '../pipeline/stage.ts';
 import { runPool } from '../utils/pool.ts';
 import { formatToolUsage } from '../utils/tool-usage-tracker.ts';
+import { formatSpendLine } from '../utils/cost-report.ts';
 
 export interface WatcherDeps {
   config: AppConfig;
@@ -44,6 +45,12 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
     if (abortFlag.aborted) return;
     try {
       const outcome = await processor.processWorkItem(id);
+      // Second line rather than a longer first one: the outcome line is what
+      // gets grepped, and a six-step split would push the outcome off-screen.
+      if (outcome.kind !== 'skipped') {
+        const split = formatSpendLine(outcome.perStage);
+        if (split) logger.info(`WI ${id}: spend — ${split}`);
+      }
       switch (outcome.kind) {
         case 'completed':
           stats.completed++;

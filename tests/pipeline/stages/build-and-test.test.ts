@@ -17,6 +17,7 @@ import type {
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { DiscoveredSkill } from '../../../src/services/skill-loader.ts';
 import type { AlApp } from '../../../src/utils/al-app-graph.ts';
+import { TEST_USAGE } from '../../helpers/agent-usage.ts';
 
 const wiCtx: WorkItemContext = {
   id: 101,
@@ -143,7 +144,7 @@ const baseConfig: AppConfig = {
   pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
   coderMaxTurns: 80, testAuthorMaxTurns: 50,
   maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-  claudeModel: 'm', stateDir: '.state', assignedToFilter: [],
+  claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
   continiaApiToken: 'tok',
@@ -244,12 +245,12 @@ function makeHarness(opts: {
       callOrder.push('fix-call');
       if (opts.runnerBehavior) {
         const value = (await opts.runnerBehavior()) as T;
-        return { value, costUsd: 0.5, toolUsage: { Edit: 1 } };
+        return { value, costUsd: 0.5, toolUsage: { Edit: 1 }, usage: TEST_USAGE };
       }
       return {
         value: { summary: 'fixed', filesChanged: ['a.al'], commits: ['fix'] } as unknown as T,
         costUsd: 0.5,
-        toolUsage: { Edit: 1 },
+        toolUsage: { Edit: 1 }, usage: TEST_USAGE,
       };
     },
   };
@@ -349,7 +350,7 @@ describe('createBuildAndTestStage', () => {
     expect(verification.passed).toBe(true);
     expect(verification.attempts).toBe(1);
     const cost = result.outputs.cost as PipelineCostInfo;
-    expect(cost.perStage['build-and-test']).toBeCloseTo(0.5, 4);
+    expect(cost.perStage['test-fixer']!.usd).toBeCloseTo(0.5, 4);
     expect((result.outputs.toolUsage as Record<string, number>)['Edit']).toBe(1);
   });
 

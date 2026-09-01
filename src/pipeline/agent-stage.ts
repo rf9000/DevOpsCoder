@@ -1,4 +1,7 @@
 import type { z } from 'zod';
+import type { AgentUsage } from '../types/index.ts';
+
+export type { AgentUsage };
 
 export type CanUseToolFn = (
   toolName: string,
@@ -35,6 +38,13 @@ export interface AgentRunResult<T> {
   costUsd: number;
   /** Tally of tool invocations by tool name. Maps tool name (e.g., 'Edit', 'Bash') to the count of tool_use blocks in assistant messages. */
   toolUsage: Record<string, number>;
+  /**
+   * Tokens, turns and the model this call actually ran on. Cost alone cannot be
+   * read back to a cause — the same dollar figure means something different on
+   * opus than on sonnet — so every call reports what produced it, and the cost
+   * tracker folds it into the step's `StepSpend`.
+   */
+  usage: AgentUsage;
 }
 
 export interface AgentRunner {

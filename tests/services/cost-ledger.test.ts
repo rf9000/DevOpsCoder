@@ -82,9 +82,14 @@ describe('createCostLedger', () => {
       workItemId: 1,
       outcome: 'completed',
       costUsd: 8.4512,
-      perStage: { analyzer: 0.31, 'revision-loop': 5.62, 'test-author': 2.52 },
+      perStage: {
+        analyzer: { usd: 0.31, calls: 1, inputTokens: 20, outputTokens: 2, turns: 3, models: ['claude-sonnet-5'] },
+        'revision-loop': { usd: 5.62, calls: 4, inputTokens: 900, outputTokens: 80, turns: 40, models: ['claude-opus-5'] },
+        'test-author': { usd: 2.52, calls: 1, inputTokens: 300, outputTokens: 30, turns: 9, models: ['claude-opus-5'] },
+      },
     });
     const row = read()[0]!;
-    expect(row.perStage?.['revision-loop']).toBe(5.62);
+    expect(row.perStage?.['revision-loop']?.usd).toBe(5.62);
+    expect(row.perStage?.['revision-loop']?.models).toEqual(['claude-opus-5']);
   });
 });

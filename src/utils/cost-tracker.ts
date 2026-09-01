@@ -1,12 +1,57 @@
-import type { PipelineCostInfo, PipelineState } from '../types/index.ts';
+import type { AgentUsage, PipelineCostInfo, PipelineState, StepSpend } from '../types/index.ts';
 
 export interface CostTracker {
-  /** Add `usd` to the accumulator for `stage` and the running total. */
-  add(stage: string, usd: number): void;
-  /** Cumulative cost across all stages (in USD). */
+  /**
+   * Fold one LLM call into `step`'s accumulator and the running total.
+   * `usage` is optional so a call site with no usage data still records the
+   * spend and the call count rather than dropping the step entirely.
+   */
+  add(step: string, usd: number, usage?: AgentUsage): void;
+  /** Cumulative cost across all steps (in USD). */
   total(): number;
-  /** Defensive shallow copy of the per-stage breakdown. */
-  perStage(): Record<string, number>;
+  /** Deep-enough copy of the per-step breakdown — entries are safe to mutate. */
+  perStage(): Record<string, StepSpend>;
+}
+
+function emptySpend(): StepSpend {
+  return { usd: 0, calls: 0, inputTokens: 0, outputTokens: 0, turns: 0, models: [] };
+}
+
+function cloneSpend(s: StepSpend): StepSpend {
+  return { ...s, models: [...s.models] };
+}
+
+/**
+ * Widen a persisted `perStage` map to the current shape.
+ *
+ * State files written before per-step detail existed hold a bare USD number per
+ * step. Resuming such a WI must neither crash on `entry.usd` nor discard the
+ * spend already banked — a resumed run that forgets the first cycle's cost is
+ * exactly the case that makes a total unattributable. Unrecognised entries are
+ * dropped rather than guessed at.
+ */
+export function normalizePerStage(raw: unknown): Record<string, StepSpend> {
+  const out: Record<string, StepSpend> = {};
+  if (typeof raw !== 'object' || raw === null) return out;
+
+  for (const [step, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof entry === 'number') {
+      out[step] = { ...emptySpend(), usd: entry, calls: 1 };
+      continue;
+    }
+    if (typeof entry === 'object' && entry !== null) {
+      const e = entry as Partial<StepSpend>;
+      out[step] = {
+        usd: typeof e.usd === 'number' ? e.usd : 0,
+        calls: typeof e.calls === 'number' ? e.calls : 0,
+        inputTokens: typeof e.inputTokens === 'number' ? e.inputTokens : 0,
+        outputTokens: typeof e.outputTokens === 'number' ? e.outputTokens : 0,
+        turns: typeof e.turns === 'number' ? e.turns : 0,
+        models: Array.isArray(e.models) ? [...e.models] : [],
+      };
+    }
+  }
+  return out;
 }
 
 /**
@@ -14,30 +59,49 @@ export interface CostTracker {
  * `state.outputs.cost = { total: 0, perStage: {} }`. On subsequent calls
  * (e.g. after a resume), reads the existing PipelineCostInfo and continues
  * to add to it. Always writes through to `state.outputs.cost` so the
- * orchestrator's cap check (task-05) reads the live total.
+ * orchestrator's cap check reads the live total.
  *
  * Pure: no I/O, no logging, no thrown errors. Callers may pass `usd = 0`
- * (no-op on totals but stage key still touched).
+ * (no-op on totals but the step key is still touched, and the call counted).
  */
 export function createCostTracker(state: PipelineState): CostTracker {
-  // Initialize if missing; otherwise reuse the existing PipelineCostInfo.
+  // Initialize if missing; otherwise reuse the existing PipelineCostInfo,
+  // normalizing a legacy bare-number breakdown in place so every later reader
+  // — including ones that go straight to state.outputs.cost — sees one shape.
   let cost = state.outputs.cost as PipelineCostInfo | undefined;
   if (!cost) {
     cost = { total: 0, perStage: {} };
     state.outputs.cost = cost;
+  } else {
+    cost.perStage = normalizePerStage(cost.perStage);
   }
   const c = cost;
 
   return {
-    add(stage, usd) {
+    add(step, usd, usage) {
       c.total += usd;
-      c.perStage[stage] = (c.perStage[stage] ?? 0) + usd;
+      const spend = c.perStage[step] ?? emptySpend();
+      spend.usd += usd;
+      spend.calls += 1;
+      if (usage) {
+        spend.inputTokens += usage.inputTokens;
+        spend.outputTokens += usage.outputTokens;
+        spend.turns += usage.turns;
+        if (usage.model && !spend.models.includes(usage.model)) {
+          spend.models.push(usage.model);
+        }
+      }
+      c.perStage[step] = spend;
     },
     total() {
       return c.total;
     },
     perStage() {
-      return { ...c.perStage };
+      const out: Record<string, StepSpend> = {};
+      for (const [step, spend] of Object.entries(c.perStage)) {
+        out[step] = cloneSpend(spend);
+      }
+      return out;
     },
   };
 }

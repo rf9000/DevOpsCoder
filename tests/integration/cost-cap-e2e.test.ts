@@ -19,6 +19,7 @@ import type {
 } from '../../src/pipeline/agent-stage.ts';
 import type { WorktreeManager } from '../../src/services/worktree-manager.ts';
 import type { PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
+import { TEST_USAGE } from '../helpers/agent-usage.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x',
@@ -39,7 +40,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 0.50,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '',
+  stateDir: '', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -173,14 +174,14 @@ describe('cost-cap e2e', () => {
     const runner = makeStagedRunner((args) => {
       const sys = args.systemPromptAppend ?? '';
       if (sys === 'A') {
-        return { value: { verdict: 'proceed', summary: 'go', reasons: [] }, costUsd: 0.10, toolUsage: {} };
+        return { value: { verdict: 'proceed', summary: 'go', reasons: [] }, costUsd: 0.10, toolUsage: {}, usage: TEST_USAGE };
       }
       if (sys === 'C') {
-        return { value: { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] }, costUsd: 0.45, toolUsage: {} };
+        return { value: { summary: 'coded', filesChanged: ['x.ts'], commits: ['abc'] }, costUsd: 0.45, toolUsage: {}, usage: TEST_USAGE };
       }
       if (sys.startsWith('R\n\n')) {
         // Reviewer axis: return clean findings with zero cost.
-        return { value: { findings: [] }, costUsd: 0, toolUsage: {} };
+        return { value: { findings: [] }, costUsd: 0, toolUsage: {}, usage: TEST_USAGE };
       }
       throw new Error(`unexpected stage prompt: ${sys}`);
     });

@@ -10,6 +10,7 @@ import { PipelinePauseError } from '../../src/pipeline/stage.ts';
 import type { PipelineContext, Stage } from '../../src/pipeline/stage.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
+import { TEST_USAGE } from '../helpers/agent-usage.ts';
 
 const FIXED_NOW = new Date('2026-05-04T12:00:00.000Z');
 
@@ -26,7 +27,7 @@ function makeContext(): PipelineContext {
     pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
     coderMaxTurns: 80, testAuthorMaxTurns: 50,
     maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
-    claudeModel: 'claude-opus-4-7', stateDir: '.state', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
+    claudeModel: 'claude-opus-4-7', stateDir: '.state', logDir: 'logs', assignedToFilter: [], continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
   };
   return {
     config,
@@ -80,13 +81,13 @@ describe('orchestrator end-to-end (mock stages)', () => {
     const ctx = makeContext();
 
     const analyzerRunner: AgentRunner = {
-      run: mock(async () => ({ value: { verdict: 'proceed', taskSummary: 'add a button' }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
+      run: mock(async () => ({ value: { verdict: 'proceed', taskSummary: 'add a button' }, costUsd: 0, toolUsage: {}, usage: TEST_USAGE })) as unknown as AgentRunner['run'],
     };
     const coderRunner: AgentRunner = {
-      run: mock(async () => ({ value: { branch: 'agent/wi-101-add-button', commitsAhead: 1 }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
+      run: mock(async () => ({ value: { branch: 'agent/wi-101-add-button', commitsAhead: 1 }, costUsd: 0, toolUsage: {}, usage: TEST_USAGE })) as unknown as AgentRunner['run'],
     };
     const reviewerRunner: AgentRunner = {
-      run: mock(async () => ({ value: { verdict: 'approve' }, costUsd: 0, toolUsage: {} })) as unknown as AgentRunner['run'],
+      run: mock(async () => ({ value: { verdict: 'approve' }, costUsd: 0, toolUsage: {}, usage: TEST_USAGE })) as unknown as AgentRunner['run'],
     };
 
     const analyzer = runnerStage('analyzer', analyzerRunner, AnalyzerSchema, (s) => `analyze wi=${s.workItemId}`);

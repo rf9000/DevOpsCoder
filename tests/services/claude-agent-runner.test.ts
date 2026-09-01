@@ -65,7 +65,7 @@ const baseConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '.state',
+  stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 } satisfies AppConfig;
@@ -275,6 +275,68 @@ describe('createClaudeAgentRunner', () => {
     const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
     expect(res.costUsd).toBe(0);
     expect(res.value).toEqual({ verdict: 'proceed' });
+  });
+
+  it('returns per-call usage: tokens, turns and the model that ran', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.42,
+        usage: { input_tokens: 1234, output_tokens: 567 },
+        num_turns: 9,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({
+      prompt: 'go',
+      schema: VerdictSchema,
+      model: 'claude-sonnet-5',
+    });
+    expect(res.usage).toEqual({
+      inputTokens: 1234,
+      outputTokens: 567,
+      turns: 9,
+      model: 'claude-sonnet-5',
+    });
+  });
+
+  it('falls back to the configured model in usage when the call names none', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        num_turns: 1,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.usage.model).toBe('claude-opus-4-7');
+  });
+
+  it('reports zero tokens and turns in usage when the SDK omits them', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.1,
+        usage: {},
+        num_turns: 0,
+      } as QueryMessage;
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.usage.inputTokens).toBe(0);
+    expect(res.usage.outputTokens).toBe(0);
+    expect(res.usage.turns).toBe(0);
   });
 
   it('throws AbortError when the provided signal is already aborted', async () => {

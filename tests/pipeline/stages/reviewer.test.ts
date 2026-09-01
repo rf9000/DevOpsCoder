@@ -39,6 +39,7 @@ import type {
 } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { AnalyzerOutput } from '../../../src/pipeline/stages/analyzer.ts';
+import { TEST_USAGE } from '../../helpers/agent-usage.ts';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -63,7 +64,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '.state',
+  stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -164,7 +165,7 @@ function makeRunner(
       const idx = callIdx++;
       calls.push(args);
       const value = resultFn ? await resultFn(args) : { findings: [] };
-      return { value, costUsd: costUsdPerCall, toolUsage: toolUsagePerCall?.[idx] ?? {} };
+      return { value, costUsd: costUsdPerCall, toolUsage: toolUsagePerCall?.[idx] ?? {}, usage: TEST_USAGE };
     }) as AgentRunner['run'],
   };
 }
@@ -190,9 +191,27 @@ describe('createReviewerStage', () => {
     const stage = createReviewerStage(makeDeps(runner));
     const result = await stage.execute(makeState(), makeCtx());
     expect(runner.calls).toHaveLength(6);
-    // Cost tracking: 6 axes × $0.10 each = $0.60 recorded as a single 'reviewer' entry
+    // 6 axes × $0.10 each
     expect((result.outputs.cost as PipelineCostInfo).total).toBeCloseTo(0.60, 4);
-    expect((result.outputs.cost as PipelineCostInfo).perStage['reviewer']).toBeCloseTo(0.60, 4);
+  });
+
+  // One `reviewer` number hides which axis is expensive, and the axes are the
+  // reviewer's whole cost — six full-context reads of the same diff.
+  it('bills each axis to its own step key rather than one lump reviewer entry', async () => {
+    const runner = makeRunner();
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    const perStage = (result.outputs.cost as PipelineCostInfo).perStage;
+    expect(Object.keys(perStage).sort()).toEqual(REVIEW_AXES.map((a) => `reviewer:${a}`).sort());
+    expect(perStage['reviewer:security']!.usd).toBeCloseTo(0.10, 4);
+  });
+
+  it('records the model each axis ran on', async () => {
+    const runner = makeRunner();
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    const perStage = (result.outputs.cost as PipelineCostInfo).perStage;
+    expect(perStage['reviewer:security']!.models).toEqual(['test-model']);
   });
 
   // -------------------------------------------------------------------------

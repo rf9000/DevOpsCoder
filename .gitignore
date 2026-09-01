@@ -4,6 +4,7 @@ coverage/
 .env
 .env.*.local
 .state/
+logs/
 .cache/
 .DS_Store
 .claude/settings*

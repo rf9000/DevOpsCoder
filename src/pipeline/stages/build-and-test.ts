@@ -490,7 +490,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         const baselineSha = await getHead(worktree!.path);
         for (let retry = 0; retry <= MAX_TRANSIENT_RETRIES; retry++) {
           try {
-            const { costUsd, toolUsage } = await deps.runner.run<CoderOutput>({
+            const { costUsd, toolUsage, usage } = await deps.runner.run<CoderOutput>({
               prompt,
               label: `test-fixer (attempt ${attempt} of ${config.maxTestFixAttempts})`,
               schema: coderOutputSchema,
@@ -504,8 +504,11 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
               canUseTool,
               signal: ctx.signal,
             });
-            createCostTracker(state).add('build-and-test', costUsd);
-            createToolUsageTracker(state).add('build-and-test', toolUsage);
+            // `test-fixer`, not `build-and-test`: the stage itself makes no LLM
+            // call, and billing the fixer to the stage buries the one thing worth
+            // seeing — how many rounds of AL fixes a red test round actually cost.
+            createCostTracker(state).add('test-fixer', costUsd, usage);
+            createToolUsageTracker(state).add('test-fixer', toolUsage);
             return;
           } catch (err) {
             await reset(worktree!.path, baselineSha);

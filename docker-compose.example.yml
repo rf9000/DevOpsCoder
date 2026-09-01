@@ -32,6 +32,7 @@ services:
       CONTINIA_ALC_PATH: /opt/al/bin/linux/alc
       CONTINIA_AUTO_INSTALL_ALC: "0"
       SKILLS_SOURCE_DIR: /app/.claude
+      LOG_DIR: /app/logs
       CLAUDE_CODE_EXECUTABLE_PATH: /home/claude/.local/bin/claude
     deploy:
       resources:
@@ -69,6 +70,12 @@ services:
 
       # State (per-WI JSON files)
       - devops-coder-state:/app/.state
+
+      # Per-work-item log files (WI<id>.log) plus the cost ledger's sibling
+      # reading. A bind mount, not a named volume: these exist to be opened by a
+      # human on the host, and `docker cp` out of a named volume every time you
+      # want to know what a work item cost is not a workflow.
+      - ./logs:/app/logs
 
 volumes:
   devops-coder-state:

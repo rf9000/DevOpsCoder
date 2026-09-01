@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AgentRunner } from '../agent-stage.ts';
+import type { AgentRunner, AgentUsage } from '../agent-stage.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
 import type { PlanOutput } from '../../types/index.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
@@ -56,6 +56,8 @@ export interface PlanStepResult {
   plan: PlanOutput;
   costUsd: number;
   toolUsage: Record<string, number>;
+  /** Tokens, turns and model of the plan call, for the `*-plan` cost key. */
+  usage: AgentUsage;
 }
 
 /**
@@ -72,7 +74,7 @@ export async function runPlanStep(args: RunPlanStepArgs): Promise<PlanStepResult
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
     try {
-      const { value, costUsd, toolUsage } = await args.runner.run<PlanOutput>({
+      const { value, costUsd, toolUsage, usage } = await args.runner.run<PlanOutput>({
         prompt: args.prompt,
         label: args.label,
         schema: planOutputSchema,
@@ -86,7 +88,7 @@ export async function runPlanStep(args: RunPlanStepArgs): Promise<PlanStepResult
         canUseTool,
         ...(args.signal ? { signal: args.signal } : {}),
       });
-      return { plan: value, costUsd, toolUsage };
+      return { plan: value, costUsd, toolUsage, usage };
     } catch (err) {
       lastError = err;
       if (err instanceof AgentOutputParseError && attempt < MAX_TRANSIENT_RETRIES) {

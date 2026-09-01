@@ -20,6 +20,7 @@ import type {
 import type {
   PipelineBuilderDeps,
 } from '../../src/services/pipeline-builder.ts';
+import { TEST_USAGE } from '../helpers/agent-usage.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x',
@@ -40,7 +41,7 @@ const baseConfig: AppConfig = {
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
   claudeModel: 'claude-opus-4-7',
-  stateDir: '',
+  stateDir: '', logDir: 'logs',
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 };
@@ -82,7 +83,7 @@ function makeRunner(
     async run<T>(args: AgentRunArgs<T>): Promise<AgentRunResult<T>> {
       calls.push(args as AgentRunArgs<unknown>);
       const result = await out(i++);
-      return { value: result as unknown as T, costUsd: 0, toolUsage: {} };
+      return { value: result as unknown as T, costUsd: 0, toolUsage: {}, usage: TEST_USAGE };
     },
   };
 }

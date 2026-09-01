@@ -24,6 +24,34 @@ Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome al
 
 Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys the apps this change actually needs (derived per WI from the changed files and the selected tests) and runs the test codeunits `TEST_SELECTION` picks — not the whole suite, which on a real AL repo is hundreds of sequential runs. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_ENV_PROFILE_ID` and `CONTINIA_API_TOKEN` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without them otherwise. `CONTINIA_APP_PATHS` is optional; leave it unset to let the deploy set be derived per work item.**
 
+### Where the money went
+
+The watcher's outcome line reports the total; the line after it reports the split, so a spend spike can be read off `docker compose logs -f` without opening anything:
+
+```
+WI 77843: completed (cost: $17.36, tools: Bash×286, Edit×19, Grep×7)
+WI 77843: spend — coder $8.21, reviewer $4.02 ×6, test-fixer $1.90, coder-plan $1.00, analyzer $0.13
+```
+
+Steps are the LLM call sites, not `Stage.name`s: the plan/write split bills to `coder-plan` / `coder`, each reviewer axis to `reviewer:<axis>`, and the fixer nested inside `build-and-test` to `test-fixer`. Lumping those under their stage is what makes a total unreadable — six reviewer axes and four fix rounds are exactly the spend worth seeing. On the log line, `prefix:sub` steps collapse to `prefix $sum ×N` so six near-identical reviewer entries do not crowd out everything else; the per-axis figures are kept in full in the WI log file and the ledger.
+
+Each work item also gets **its own log file**, `logs/WI<id>.log` (`LOG_DIR`, bind-mounted in Docker). It collects every line the pipeline logged for that WI — including the per-call `agent: $0.2903 | 30 in / 4223 out | 16 turns | test-fixer (attempt 1 of 4)` lines — and appends a new `=== run <ts> ===` block on each cycle, so a resumed work item keeps the earlier cycle that banked most of its spend rather than losing it to the container's log rotation. Every run closes the file with a cost table:
+
+```
+=== outcome: completed · cost $17.3600 · 2026-09-01T07:56:40.000Z · PR !4821 https://... ===
+
+| step | usd | calls | model | in / out | turns |
+|---|---|---|---|---|---|
+| coder | $8.2100 | 3 | claude-opus-5 | 412,033 / 38,120 | 96 |
+| reviewer:security | $4.0200 | 1 | claude-sonnet-5 | 88,201 / 4,003 | 12 |
+| test-fixer | $1.9000 | 4 | claude-sonnet-5 | 120,441 / 11,002 | 41 |
+| **Total** | **$17.3600** | **14** | | | |
+
+Tools: Bash×286, Edit×19, Grep×7
+```
+
+The same per-step breakdown — usd, calls, model and tokens — goes into the `COST_LOG_PATH` ledger, one JSONL record per finished WI, for totalling across runs. Log files and ledger are both best-effort: neither can fail a run, and dry runs write to neither.
+
 ### Pull request format
 
 Draft PRs follow the team's PR house style, the same one the `fw-step4-pullRequest`
@@ -115,8 +143,11 @@ DevopsCoder ships into the same Azure VM as the read-only sibling agents under `
   <team-name>/
     docker-compose.yml
     .env.devops-coder
+    logs/                           # Bind-mounted to /app/logs — one WI<id>.log per work item
     DevOpsCoder/                    # This repo (cloned)
 ```
+
+Per-work-item logs are a bind mount rather than a named volume like `.state`, because they exist to be read: `cat ~/teams/<team-name>/logs/WI77843.log` answers what a work item did and what each step of it cost, without `docker cp` or a running container.
 
 ### Initial Setup
 
@@ -201,7 +232,8 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `SKIP_BUILD_TEST` | no | false | Skips `env-provision` + `build-and-test` entirely (6-stage chain instead of 8); when true the `CONTINIA_ENV_PROFILE_ID`/`CONTINIA_API_TOKEN` vars marked `yes*` above become optional |
 | `MAX_TEST_FIX_ATTEMPTS` | no | 2 | Coder fix attempts when deploy/tests are red |
 | `TEST_SELECTION` | no | `related` | Which discovered test codeunits a round runs: `changed` (tests in files this run touched), `related` (those + tests referencing a changed AL object), `all`. Codeunits run strictly sequentially, so `all` on a real AL suite is hours and a guaranteed stage timeout |
-| `COST_LOG_PATH` | no | `<STATE_DIR>/cost-ledger.jsonl` | Append-only JSONL spend log: one record per finished WI with `workItemId`, `outcome`, `costUsd`, `prId`, `prUrl`, and a per-stage breakdown. Dry runs never write to it |
+| `COST_LOG_PATH` | no | `<STATE_DIR>/cost-ledger.jsonl` | Append-only JSONL spend log: one record per finished WI with `workItemId`, `outcome`, `costUsd`, `prId`, `prUrl`, and a per-step breakdown (usd, calls, model, tokens). Dry runs never write to it |
+| `LOG_DIR` | no | `logs` | Directory holding one log file per work item, `WI<id>.log` — every line the pipeline logged for it, across cycles, closing with a per-step cost table. Bind-mount this in Docker. Dry runs never write to it |
 | `CONTINIA_MAX_TEST_CODEUNITS` | no | 25 | Hard ceiling per round; 0 = unlimited. Dropped codeunits are logged as a WARNING — a capped green round does not mean everything passed |
 | `CLAUDE_MODEL_PLANNING` | no | none | Model for both plan steps. **Setting it (or either var below) turns the plan-then-write split on**: the coder and test-author each get a read-only plan call on this model, then write on their own model. Unset → no plan step, single call per stage as before |
 | `CLAUDE_MODEL_CODER_PLAN` | no | `CLAUDE_MODEL_PLANNING` | Overrides the planning model for the coder's plan step only |

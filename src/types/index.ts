@@ -33,6 +33,12 @@ export interface AppConfig {
   /** Turn budget for a plan call. Unset → DEFAULT_PLAN_MAX_TURNS. */
   planMaxTurns?: number;
   stateDir: string;
+  /**
+   * Directory holding one log file per work item (`WI<id>.log`). Separate from
+   * `stateDir` because these are read by a human, not the pipeline — in Docker
+   * that means a bind mount, where state is a named volume.
+   */
+  logDir: string;
   assignedToFilter: string[];
   /** Path to continia.exe. Absolute, or relative to the per-WI worktree. */
   continiaCliPath: string;
@@ -132,8 +138,46 @@ export interface PipelineState {
 export interface PipelineCostInfo {
   /** Cumulative cost across all stages so far, in USD. */
   total: number;
-  /** Per-stage spend, keyed by Stage.name (e.g. 'analyzer', 'coder', 'reviewer'). */
-  perStage: Record<string, number>;
+  /**
+   * Per-step spend, keyed by the LLM call site rather than `Stage.name`: the
+   * plan/write split bills to `coder-plan`/`coder`, the test-fixer nested inside
+   * `build-and-test` bills to `test-fixer`, and each reviewer axis bills to
+   * `reviewer:<axis>`. A stage that lumps its nested calls under its own name
+   * makes the expensive call invisible, which is the whole point of the map.
+   *
+   * State files written before per-step detail existed hold a bare `number`
+   * here; `normalizePerStage` (src/utils/cost-tracker.ts) widens those on read.
+   */
+  perStage: Record<string, StepSpend>;
+}
+
+/**
+ * What one pipeline step spent, accumulated across every call it made.
+ *
+ * `models` is a list rather than a single string because a step can legitimately
+ * run on more than one model across a resumed WI — an operator changing
+ * `CLAUDE_MODEL_CODER` between cycles must not silently overwrite the record of
+ * what the earlier attempt actually cost to run.
+ */
+export interface StepSpend {
+  /** Cumulative USD across every call this step made. */
+  usd: number;
+  /** How many LLM calls this step made (revisions and retries included). */
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Cumulative agent turns, summed across calls. */
+  turns: number;
+  /** Distinct models this step ran on, in first-seen order. */
+  models: string[];
+}
+
+/** Per-call usage the SDK reports alongside cost, folded into `StepSpend`. */
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  turns: number;
+  model: string;
 }
 
 /**
@@ -342,14 +386,20 @@ export interface WorkItemUpdate {
   fields?: Record<string, { oldValue?: unknown; newValue?: unknown }>;
 }
 
+/**
+ * Every non-skipped variant carries `perStage` alongside the total so the
+ * watcher can print the per-step split without reloading the work item's state
+ * file off disk — a grand total on its own cannot be read back to a cause.
+ */
 export type ProcessOutcome =
-  | { kind: 'completed'; workItemId: number; costUsd: number; toolUsage: Record<string, number> }
+  | { kind: 'completed'; workItemId: number; costUsd: number; toolUsage: Record<string, number>; perStage: Record<string, StepSpend> }
   | {
       kind: 'paused';
       workItemId: number;
       stage: string;
       costUsd: number;
       toolUsage: Record<string, number>;
+      perStage: Record<string, StepSpend>;
     }
   | {
       kind: 'failed';
@@ -357,6 +407,7 @@ export type ProcessOutcome =
       error: PipelineTerminalError;
       costUsd: number;
       toolUsage: Record<string, number>;
+      perStage: Record<string, StepSpend>;
     }
   | { kind: 'skipped'; workItemId: number; reason: string }
   | {
@@ -366,6 +417,7 @@ export type ProcessOutcome =
       rejectCount: number;
       costUsd: number;
       toolUsage: Record<string, number>;
+      perStage: Record<string, StepSpend>;
     };
 
 export interface CycleStats {
