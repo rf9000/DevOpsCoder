@@ -314,7 +314,12 @@ describe('createTestAuthorStage — plan step', () => {
     expect(plan.maxTurns).toBe(20);
     expect(plan.systemPromptAppend).toBe('TEST_PLANNER_PROMPT');
     expect(plan.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
-    expect(plan.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+    expect(plan.disallowedTools).toEqual([
+      'Edit',
+      'Write',
+      'NotebookEdit',
+      'ReportFindings',
+    ]);
 
     const write = runner.calls[1]!;
     expect(write.model).toBe('claude-sonnet-5');

@@ -40,6 +40,7 @@ import {
   extractJson,
   buildQueryOptions,
   createClaudeAgentRunner,
+  AgentOutputParseError,
   STRUCTURED_OUTPUT_INSTRUCTION,
 } from '../../src/services/claude-agent-runner.ts';
 
@@ -403,6 +404,63 @@ describe('createClaudeAgentRunner', () => {
     const runner = createClaudeAgentRunner(deps);
     const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
     expect(res.toolUsage).toEqual({ Edit: 1, Bash: 1 });
+  });
+
+  // A malformed reply is not a free one — the tokens are bought before the
+  // JSON is read. The figure the runner has just logged has to reach the stage
+  // that catches the error, or a retrying stage bills a fraction of what it paid.
+  it('carries the spend of the failed call on an AgentOutputParseError', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 't1', name: 'ReportFindings', input: {} }],
+        },
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: 'Reported 3 findings.',
+        total_cost_usd: 0.6665,
+        usage: { input_tokens: 40, output_tokens: 12307 },
+        num_turns: 22,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const err = await runner
+      .run({ prompt: 'go', schema: VerdictSchema })
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AgentOutputParseError);
+    const parseErr = err as AgentOutputParseError;
+    expect(parseErr.message).toContain('Failed to parse JSON');
+    expect(parseErr.spend?.costUsd).toBe(0.6665);
+    expect(parseErr.spend?.toolUsage).toEqual({ ReportFindings: 1 });
+    expect(parseErr.spend?.usage.turns).toBe(22);
+  });
+
+  it('carries the spend of the failed call on a schema validation error', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"maybe"}',
+        total_cost_usd: 0.25,
+        usage: { input_tokens: 10, output_tokens: 5 },
+        num_turns: 3,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const err = await runner
+      .run({ prompt: 'go', schema: VerdictSchema })
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+
+    expect((err as AgentOutputParseError).message).toContain('Schema validation failed');
+    expect((err as AgentOutputParseError).spend?.costUsd).toBe(0.25);
   });
 
   it('returns empty toolUsage when no tool_use blocks are present', async () => {

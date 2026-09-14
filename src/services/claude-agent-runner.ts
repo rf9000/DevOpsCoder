@@ -7,9 +7,28 @@ export const STRUCTURED_OUTPUT_INSTRUCTION =
   'Respond with ONLY a single valid JSON object that satisfies the schema described in the prompt. ' +
   'No prose, no markdown fences, no commentary. Output the JSON object and nothing else.';
 
+/** What one runner call cost, carried on a parse failure so it survives the throw. */
+export interface AgentSpend {
+  costUsd: number;
+  toolUsage: Record<string, number>;
+  usage: AgentUsage;
+}
+
 export class AgentOutputParseError extends Error {
   override readonly name = 'AgentOutputParseError';
-  constructor(public readonly raw: string, message: string) {
+  constructor(
+    public readonly raw: string,
+    message: string,
+    /**
+     * The spend the SDK reported for the call whose output then failed to
+     * parse. A malformed reply is not a free one — the tokens are bought by
+     * the time the JSON is read — so the figure the runner has just logged has
+     * to survive the throw. Without it a stage that retries twice pays for
+     * three calls and bills for one, and the per-WI total silently understates
+     * what the run actually cost.
+     */
+    public readonly spend?: AgentSpend,
+  ) {
     super(message);
   }
 }
@@ -137,13 +156,15 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
         throw new Error('No result received from Claude Agent SDK');
       }
 
+      const spend: AgentSpend = { costUsd, toolUsage, usage };
+
       const json = extractJson(result);
       let parsed: unknown;
       try {
         parsed = JSON.parse(json);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new AgentOutputParseError(result, `Failed to parse JSON: ${msg}`);
+        throw new AgentOutputParseError(result, `Failed to parse JSON: ${msg}`, spend);
       }
 
       const validated = args.schema.safeParse(parsed);
@@ -154,6 +175,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
         throw new AgentOutputParseError(
           result,
           `Schema validation failed: ${issues}`,
+          spend,
         );
       }
       return { value: validated.data, costUsd, toolUsage, usage };

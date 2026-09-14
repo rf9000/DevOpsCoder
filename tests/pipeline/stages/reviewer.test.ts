@@ -12,9 +12,12 @@
  *  T8 — approved is false when any finding is 'blocking'
  *  T9 — approved is false when any finding is 'critical'
  * T10 — attempts counter increments (1 on first run, 2 on second)
- * T11 — Promise.all fail-fast: throws if any axis runner.run rejects
+ * T11 — throws if any axis runner.run rejects
  * T12 — buildReviewerUserPrompt renders expected sections; test-author absent when undefined
  * T13 — toolUsage from all 6 axes is merged into state.outputs.toolUsage
+ * T14 — a malformed axis reply is retried, and gives up after MAX_TRANSIENT_RETRIES
+ * T15 — spend of the surviving axes, and of failed attempts, outlives a failing axis
+ * T16 — a failing axis cancels its siblings, and the real cause is what surfaces
  */
 import { describe, it, expect, mock } from 'bun:test';
 import {
@@ -40,6 +43,7 @@ import type {
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import type { AnalyzerOutput } from '../../../src/pipeline/stages/analyzer.ts';
 import { TEST_USAGE } from '../../helpers/agent-usage.ts';
+import { AgentOutputParseError } from '../../../src/services/claude-agent-runner.ts';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -252,7 +256,12 @@ describe('createReviewerStage', () => {
 
     for (const call of runner.calls) {
       expect(call.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash']);
-      expect(call.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+      expect(call.disallowedTools).toEqual([
+        'Edit',
+        'Write',
+        'NotebookEdit',
+        'ReportFindings',
+      ]);
       expect(call.cwd).toBe(sampleWorktree.path);
     }
   });
@@ -435,10 +444,10 @@ describe('createReviewerStage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // T11 — fail-fast: Promise.all throws if one axis rejects
+  // T11 — one failing axis still fails the stage
   // -------------------------------------------------------------------------
 
-  it('T11: throws if any axis runner.run rejects (Promise.all fail-fast)', async () => {
+  it('T11: throws if any axis runner.run rejects', async () => {
     let callIdx = 0;
     const runner = makeRunner(async () => {
       const idx = callIdx++;
@@ -447,6 +456,135 @@ describe('createReviewerStage', () => {
     });
     const stage = createReviewerStage(makeDeps(runner));
     await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow('axis-failure');
+  });
+
+  // -------------------------------------------------------------------------
+  // T14 — per-axis retry on a malformed reply
+  // -------------------------------------------------------------------------
+
+  it('T14a: retries an axis that answers with unparseable output, then succeeds', async () => {
+    let parseFailures = 0;
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:security' && parseFailures === 0) {
+        parseFailures++;
+        throw new AgentOutputParseError('Reported 3 findings.', 'Failed to parse JSON');
+      }
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    // 6 axes + 1 retry of the axis that failed
+    expect(runner.calls).toHaveLength(7);
+    expect((result.outputs.reviewer as ReviewerOutput).approved).toBe(true);
+  });
+
+  it('T14b: gives up on an axis after MAX_TRANSIENT_RETRIES and fails the stage', async () => {
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:security') {
+        throw new AgentOutputParseError('Reported 3 findings.', 'Failed to parse JSON');
+      }
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow(
+      'Failed to parse JSON',
+    );
+    // 5 clean axes + 3 attempts on the failing one
+    expect(runner.calls).toHaveLength(8);
+  });
+
+  // -------------------------------------------------------------------------
+  // T15 — spend survives a failing axis
+  // -------------------------------------------------------------------------
+
+  it('T15a: keeps the spend of the axes that succeeded when another axis fails', async () => {
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:security') throw new Error('axis-failure');
+      return { findings: [] };
+    });
+    const state = makeState();
+    const stage = createReviewerStage(makeDeps(runner));
+    await expect(stage.execute(state, makeCtx())).rejects.toThrow('axis-failure');
+
+    // The five axes that resolved are billed even though the stage threw —
+    // this is the $3.55 the old post-Promise.all accounting discarded.
+    const cost = state.outputs.cost as PipelineCostInfo;
+    expect(cost.total).toBeCloseTo(0.50, 4);
+    expect(Object.keys(cost.perStage)).not.toContain('reviewer:security');
+    expect(cost.perStage['reviewer:performance']!.usd).toBeCloseTo(0.10, 4);
+  });
+
+  it('T15b: bills an attempt whose output failed to parse', async () => {
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:security') {
+        throw new AgentOutputParseError('Reported 3 findings.', 'Failed to parse JSON', {
+          costUsd: 0.67,
+          toolUsage: { ReportFindings: 1 },
+          usage: TEST_USAGE,
+        });
+      }
+      return { findings: [] };
+    });
+    const state = makeState();
+    const stage = createReviewerStage(makeDeps(runner));
+    await expect(stage.execute(state, makeCtx())).rejects.toThrow('Failed to parse JSON');
+
+    // Three attempts at $0.67, all paid for, plus the five clean axes at $0.10.
+    const cost = state.outputs.cost as PipelineCostInfo;
+    expect(cost.perStage['reviewer:security']!.usd).toBeCloseTo(2.01, 4);
+    expect(cost.perStage['reviewer:security']!.calls).toBe(3);
+    expect(cost.total).toBeCloseTo(2.51, 4);
+    expect((state.outputs.toolUsage as Record<string, number>).ReportFindings).toBe(3);
+  });
+
+  // -------------------------------------------------------------------------
+  // T16 — a failing axis cancels its siblings
+  // -------------------------------------------------------------------------
+
+  it('T16a: aborts the sibling axes when one axis fails', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const runner = makeRunner(async (args) => {
+      signals.push(args.signal);
+      if (args.label === 'reviewer:security') throw new Error('axis-failure');
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow('axis-failure');
+
+    expect(signals).toHaveLength(6);
+    // Every axis shares the fan-out signal, so the survivors stop paying the
+    // moment the stage is doomed instead of running on unbilled.
+    for (const signal of signals) {
+      expect(signal?.aborted).toBe(true);
+    }
+  });
+
+  it('T16b: reports the real failure, not a sibling cancellation', async () => {
+    const runner = makeRunner(async (args) => {
+      // 'integration' is the last axis, so its rejection lands after the
+      // earlier axes have already been cancelled by it.
+      if (args.label === 'reviewer:integration') throw new Error('the-real-cause');
+      const abortErr = new Error('aborted');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow('the-real-cause');
+  });
+
+  it('T16c: an already-aborted stage signal reaches every axis', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const runner = makeRunner(async (args) => {
+      signals.push(args.signal);
+      return { findings: [] };
+    });
+    const controller = new AbortController();
+    controller.abort();
+    const stage = createReviewerStage(makeDeps(runner));
+    await stage.execute(makeState(), { ...makeCtx(), signal: controller.signal });
+    for (const signal of signals) {
+      expect(signal?.aborted).toBe(true);
+    }
   });
 
   // -------------------------------------------------------------------------

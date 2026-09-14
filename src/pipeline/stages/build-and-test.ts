@@ -36,6 +36,7 @@ import {
   defaultGetChangedFiles,
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
+  STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from './_stage-helpers.ts';
 import { selectTestCodeunits } from '../../utils/test-selection.ts';
 import {
@@ -496,7 +497,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
               schema: coderOutputSchema,
               model: modelFor(config, 'test-fixer'),
               tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
-              disallowedTools: ['NotebookEdit'],
+              disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
               cwd: worktree!.path,
               systemPromptAppend: deps.fixerPromptTemplate,
               settingSources: ['project'],

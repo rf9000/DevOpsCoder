@@ -12,7 +12,15 @@ import type {
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
-import { composeCanUseTool, aggregateReviewerFindings } from './_stage-helpers.ts';
+import {
+  composeCanUseTool,
+  aggregateReviewerFindings,
+  isAbortError,
+  runWithParseRetry,
+  STRUCTURED_OUTPUT_DENIED_TOOLS,
+} from './_stage-helpers.ts';
+import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
+import type { AgentRunResult } from '../agent-stage.ts';
 import { modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker, mergeToolUsage } from '../../utils/tool-usage-tracker.ts';
@@ -230,35 +238,91 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       ]);
       const maxTurns = deps.maxTurnsPerAxis ?? 30;
 
-      const axisResults = await Promise.all(
-        REVIEW_AXES.map((axis) =>
-          deps.runner.run<{ findings: Finding[] }>({
-            prompt,
-            label: `reviewer:${axis}`,
-            schema: axisOutputSchema,
-            model: modelFor(deps.config, 'reviewer'),
-            tools: ['Read', 'Grep', 'Glob', 'Bash'],
-            disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
-            cwd: worktree.path,
-            systemPromptAppend: `${deps.sharedPromptTemplate}\n\n${deps.axisPromptTemplates[axis]}`,
-            settingSources: ['project'],
-            maxTurns,
-            canUseTool,
-            signal: ctx.signal,
-          }),
-        ),
-      );
-
       // Bill each axis to its own key. One lumped `reviewer` number hides which
       // axis is expensive, and the axes are the whole of the reviewer's cost —
       // six independent full-context reads of the same diff.
       const costTracker = createCostTracker(state);
-      axisResults.forEach((r, i) => {
-        costTracker.add(`reviewer:${REVIEW_AXES[i]}`, r.costUsd, r.usage);
-      });
+      const toolUsageTracker = createToolUsageTracker(state);
+
+      // One axis failing must not leave the other five running. `Promise.all`
+      // rejects on the first rejection but never cancels its siblings, so a
+      // dead axis used to leave up to five full-context reviews running — and
+      // billing — for minutes after the stage had already failed and written
+      // its outcome. This controller cancels them, and stays chained to the
+      // stage signal so an external abort still reaches every axis.
+      const fanOut = new AbortController();
+      const abortFanOut = (): void => fanOut.abort();
+      if (ctx.signal.aborted) fanOut.abort();
+      else ctx.signal.addEventListener('abort', abortFanOut, { once: true });
+
+      // The first failure that is not a cancellation. Aborting the siblings
+      // makes them reject too, so rethrowing whichever rejection happens to sit
+      // first in axis order would report an AbortError as the cause of a
+      // failure it was only a consequence of.
+      let rootCause: unknown;
+
+      const settled = await Promise.allSettled(
+        REVIEW_AXES.map((axis) =>
+          runWithParseRetry(
+            () =>
+              deps.runner.run<{ findings: Finding[] }>({
+                prompt,
+                label: `reviewer:${axis}`,
+                schema: axisOutputSchema,
+                model: modelFor(deps.config, 'reviewer'),
+                tools: ['Read', 'Grep', 'Glob', 'Bash'],
+                disallowedTools: [
+                  'Edit',
+                  'Write',
+                  'NotebookEdit',
+                  ...STRUCTURED_OUTPUT_DENIED_TOOLS,
+                ],
+                cwd: worktree.path,
+                systemPromptAppend: `${deps.sharedPromptTemplate}\n\n${deps.axisPromptTemplates[axis]}`,
+                settingSources: ['project'],
+                maxTurns,
+                canUseTool,
+                signal: fanOut.signal,
+              }),
+            // Bill the attempts that threw as well. An axis that answers in
+            // prose has still bought its tokens, and it is the expensive
+            // failure mode — three full reviews of the same diff.
+            (err) => {
+              if (err instanceof AgentOutputParseError && err.spend) {
+                costTracker.add(`reviewer:${axis}`, err.spend.costUsd, err.spend.usage);
+                toolUsageTracker.add('reviewer', err.spend.toolUsage);
+              }
+            },
+          )
+            .then((result) => {
+              // Bill on settle rather than after the fan-out: spend recorded
+              // only once all six have resolved is spend discarded the moment
+              // any one of them throws — including axes that finished
+              // successfully minutes before the failure.
+              costTracker.add(`reviewer:${axis}`, result.costUsd, result.usage);
+              return result;
+            })
+            .catch((err: unknown) => {
+              if (rootCause === undefined && !isAbortError(err)) rootCause = err;
+              fanOut.abort();
+              throw err;
+            }),
+        ),
+      );
+
+      ctx.signal.removeEventListener('abort', abortFanOut);
+
+      if (rootCause !== undefined) throw rootCause;
+      const rejected = settled.find((s) => s.status === 'rejected');
+      if (rejected !== undefined) throw (rejected as PromiseRejectedResult).reason;
+
+      const axisResults = settled.map(
+        (s) =>
+          (s as PromiseFulfilledResult<AgentRunResult<{ findings: Finding[] }>>).value,
+      );
 
       const mergedToolUsage = mergeToolUsage(axisResults.map((r) => r.toolUsage));
-      createToolUsageTracker(state).add('reviewer', mergedToolUsage);
+      toolUsageTracker.add('reviewer', mergedToolUsage);
 
       const flat = axisResults.flatMap((r) => r.value.findings);
       const findings = aggregateReviewerFindings(flat);

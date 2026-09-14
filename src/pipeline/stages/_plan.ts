@@ -6,7 +6,11 @@ import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
 import type { PlanStep } from '../../utils/model-selection.ts';
 import { CODER_BASH_DENY } from './coder-policy.ts';
-import { MAX_TRANSIENT_RETRIES, composeCanUseTool } from './_stage-helpers.ts';
+import {
+  MAX_TRANSIENT_RETRIES,
+  composeCanUseTool,
+  STRUCTURED_OUTPUT_DENIED_TOOLS,
+} from './_stage-helpers.ts';
 
 /**
  * Tools a planner gets. No `Edit`/`Write`: the plan step exists so an expensive
@@ -16,7 +20,12 @@ import { MAX_TRANSIENT_RETRIES, composeCanUseTool } from './_stage-helpers.ts';
 export const PLAN_TOOLS = ['Read', 'Grep', 'Glob', 'Bash', 'Skill'] as const;
 
 /** Belt to the tool list's braces — a preset-supplied writer tool still can't run. */
-export const PLAN_DISALLOWED_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const;
+export const PLAN_DISALLOWED_TOOLS = [
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  ...STRUCTURED_OUTPUT_DENIED_TOOLS,
+] as const;
 
 /** Read-only subset of the coder's allowlist: inspect the tree, change nothing. */
 export const PLAN_BASH_ALLOW: RegExp[] = [

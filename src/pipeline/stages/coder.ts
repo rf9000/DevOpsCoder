@@ -20,6 +20,7 @@ import {
   composeCanUseTool,
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
+  STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from './_stage-helpers.ts';
 import { CODER_BASH_ALLOW, CODER_BASH_DENY } from './coder-policy.ts';
 import { modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
@@ -253,7 +254,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
             schema: coderOutputSchema,
             model: modelFor(deps.config, 'coder'),
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
-            disallowedTools: ['NotebookEdit'],
+            disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
             cwd: worktree.path,
             systemPromptAppend: deps.promptTemplate,
             settingSources: ['project'],

@@ -6,7 +6,11 @@ import type { WorkItemContext } from '../../services/wi-context.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
 import { CODER_BASH_DENY } from './coder-policy.ts';
-import { MAX_TRANSIENT_RETRIES, composeCanUseTool } from './_stage-helpers.ts';
+import {
+  MAX_TRANSIENT_RETRIES,
+  composeCanUseTool,
+  STRUCTURED_OUTPUT_DENIED_TOOLS,
+} from './_stage-helpers.ts';
 
 /**
  * The PR-message step: the automated port of the team's
@@ -26,7 +30,12 @@ import { MAX_TRANSIENT_RETRIES, composeCanUseTool } from './_stage-helpers.ts';
 export const PR_MESSAGE_TOOLS = ['Read', 'Grep', 'Glob', 'Bash'] as const;
 
 /** Belt to the tool list's braces — a preset-supplied writer tool still can't run. */
-export const PR_MESSAGE_DISALLOWED_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const;
+export const PR_MESSAGE_DISALLOWED_TOOLS = [
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  ...STRUCTURED_OUTPUT_DENIED_TOOLS,
+] as const;
 
 /** Enough to read a diff and the files it touches. Nothing that mutates. */
 export const PR_MESSAGE_BASH_ALLOW: RegExp[] = [

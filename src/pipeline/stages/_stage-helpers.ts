@@ -1,5 +1,6 @@
 import type { CanUseToolFn } from '../agent-stage.ts';
 import type { Finding, FindingSeverity } from '../../types/index.ts';
+import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
 
 /**
  * Maximum number of times a write-side stage (coder, test-author) retries the
@@ -8,6 +9,53 @@ import type { Finding, FindingSeverity } from '../../types/index.ts';
  * misses transient JSON-format hiccups. 2 retries = 3 total attempts.
  */
 export const MAX_TRANSIENT_RETRIES = 2;
+
+/**
+ * Tools that must never be offered to a stage whose contract is "your last
+ * message is a single JSON object".
+ *
+ * `ReportFindings` is the harness's own code-review reporting tool, present in
+ * the `claude_code` system-prompt preset every stage runs under. Its contract
+ * is the exact inverse of ours: report the findings *through the tool* and do
+ * not also print them as text. A reviewer axis — a code reviewer by
+ * construction — takes that path readily, and then signs off in prose ("Reported
+ * N findings…"), which reaches the runner as unparseable output and fails the
+ * whole revision loop. Listing Edit/Write here would be redundant with each
+ * stage's own read-only policy; this list is only for tools that compete with
+ * the structured-output contract itself.
+ */
+export const STRUCTURED_OUTPUT_DENIED_TOOLS = ['ReportFindings'] as const;
+
+/** True for the rejection an aborted `AbortSignal` produces. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
+/**
+ * Run one LLM call, retrying up to `MAX_TRANSIENT_RETRIES` times when the model
+ * answers with something that is not the JSON the schema wants.
+ *
+ * `onFailedAttempt` fires for every failure, retried or not, and is where a
+ * caller bills the attempt that just threw — the tokens are already paid for
+ * whether or not the reply parsed.
+ */
+export async function runWithParseRetry<T>(
+  attempt: (attemptIndex: number) => Promise<T>,
+  onFailedAttempt?: (err: unknown, attemptIndex: number) => void | Promise<void>,
+): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i <= MAX_TRANSIENT_RETRIES; i++) {
+    try {
+      return await attempt(i);
+    } catch (err) {
+      lastError = err;
+      if (onFailedAttempt) await onFailedAttempt(err, i);
+      if (err instanceof AgentOutputParseError && i < MAX_TRANSIENT_RETRIES) continue;
+      throw err;
+    }
+  }
+  throw lastError;
+}
 
 /**
  * Compose multiple `CanUseToolFn` filters into one. Short-circuits on the first

@@ -292,7 +292,7 @@ describe('createCoderStage', () => {
     const args = runner.calls[0]!;
     expect(args.cwd).toBe(sampleWorktree.path);
     expect(args.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write']);
-    expect(args.disallowedTools).toEqual(['NotebookEdit']);
+    expect(args.disallowedTools).toEqual(['NotebookEdit', 'ReportFindings']);
     expect(args.systemPromptAppend).toBe('CODER_PROMPT_BODY');
     expect(args.settingSources).toEqual(['project']);
     expect(args.maxTurns).toBe(80);
@@ -478,7 +478,12 @@ describe('createCoderStage — plan step', () => {
     // The planner must not be able to write: no Edit/Write in tools, and both
     // explicitly disallowed so a preset-provided tool cannot slip through.
     expect(plan.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
-    expect(plan.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+    expect(plan.disallowedTools).toEqual([
+      'Edit',
+      'Write',
+      'NotebookEdit',
+      'ReportFindings',
+    ]);
 
     const write = runner.calls[1]!;
     expect(write.label).toBe('coder (attempt 1)');

@@ -231,7 +231,12 @@ describe('createAnalyzerStage', () => {
     expect(runner.calls).toHaveLength(1);
     const args = runner.calls[0]!;
     expect(args.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
-    expect(args.disallowedTools).toEqual(['Edit', 'Write', 'NotebookEdit']);
+    expect(args.disallowedTools).toEqual([
+      'Edit',
+      'Write',
+      'NotebookEdit',
+      'ReportFindings',
+    ]);
     expect(args.cwd).toBe('/repos/target');
     expect(args.systemPromptAppend).toBe('PROMPT_BODY');
     expect(args.settingSources).toEqual(['project']);

@@ -19,6 +19,7 @@ import {
   composeCanUseTool,
   defaultGetCurrentHeadSha,
   defaultResetWorktree,
+  STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from './_stage-helpers.ts';
 import { modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
 import { renderPlanSection, runPlanStep } from './_plan.ts';
@@ -246,7 +247,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
             schema: testAuthorOutputSchema,
             model: modelFor(deps.config, 'test-author'),
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
-            disallowedTools: ['NotebookEdit'],
+            disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
             cwd: worktree.path,
             systemPromptAppend: deps.promptTemplate,
             settingSources: ['project'],
