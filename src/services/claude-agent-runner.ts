@@ -14,6 +14,18 @@ export interface AgentSpend {
   usage: AgentUsage;
 }
 
+/**
+ * Tools denied on every call, whatever the stage asked for.
+ *
+ * `AskUserQuestion` is unanswerable here — nothing is watching a container at
+ * 03:00, so the call burns a turn and returns nothing useful. `ToolSearch`
+ * loads schemas for deferred tools that this pipeline does not configure. Both
+ * showed up in a real WI's tool tally (`AskUserQuestion×1, ToolSearch×1`)
+ * despite appearing in no stage's `tools` list, because a deny rule is the only
+ * thing the SDK enforces once permissions are bypassed.
+ */
+export const ALWAYS_DENIED_TOOLS = ['AskUserQuestion', 'ToolSearch'] as const;
+
 export class AgentOutputParseError extends Error {
   override readonly name = 'AgentOutputParseError';
   constructor(
@@ -72,10 +84,24 @@ export function buildQueryOptions<T>(
   const opts: Record<string, unknown> = {
     model: args.model ?? deps.config.claudeModel,
     allowedTools: args.tools ?? [],
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
+    // A stage that supplies `canUseTool` is asking for its filters to decide.
+    // `bypassPermissions` auto-approves every call BEFORE the callback is
+    // consulted — the SDK says so itself, once per call:
+    //
+    //   Warning: canUseTool will not be invoked: permissionMode
+    //   'bypassPermissions' auto-approves every tool call (except explicit
+    //   deny rules) before the callback is consulted.
+    //
+    // which silently disabled the coder's Bash allowlist and its path-escape
+    // filter — the whole of the worktree containment — leaving `disallowedTools`
+    // as the only rule with teeth. 'default' routes those decisions back
+    // through `canUseTool`, which is what every stage already passes.
+    permissionMode: args.canUseTool ? 'default' : 'bypassPermissions',
     systemPrompt: { type: 'preset', preset: 'claude_code', append: fullAppend },
   };
+
+  // Only meaningful for — and only accepted alongside — 'bypassPermissions'.
+  if (args.canUseTool === undefined) opts.allowDangerouslySkipPermissions = true;
 
   // Without this the SDK probes for its own bundled native binary. Under Bun on
   // a glibc image that probe resolves to the *-linux-x64-musl package and throws
@@ -85,7 +111,12 @@ export function buildQueryOptions<T>(
     opts.pathToClaudeCodeExecutable = deps.config.claudeCodeExecutablePath;
   }
 
-  if (args.disallowedTools !== undefined) opts.disallowedTools = args.disallowedTools;
+  // Merged centrally rather than per stage: a deny rule is the one control that
+  // works in every permission mode, and a baseline that each of the eight call
+  // sites has to remember is a baseline that will be forgotten.
+  opts.disallowedTools = [
+    ...new Set([...ALWAYS_DENIED_TOOLS, ...(args.disallowedTools ?? [])]),
+  ];
   if (args.maxTurns !== undefined) opts.maxTurns = args.maxTurns;
   if (args.cwd !== undefined) opts.cwd = args.cwd;
   if (args.canUseTool !== undefined) opts.canUseTool = args.canUseTool;

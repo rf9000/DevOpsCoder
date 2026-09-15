@@ -162,11 +162,40 @@ describe('buildQueryOptions', () => {
 
   it('omits optional fields when undefined', () => {
     const opts = buildQueryOptions(minimalArgs, deps);
-    expect(opts.disallowedTools).toBeUndefined();
     expect(opts.maxTurns).toBeUndefined();
     expect(opts.cwd).toBeUndefined();
     expect(opts.canUseTool).toBeUndefined();
     expect(opts.settingSources).toBeUndefined();
+  });
+
+  // The defect this replaced: every stage passed canUseTool, and every call
+  // set bypassPermissions, which auto-approves before the callback is reached.
+  // The Bash allowlist and the path-escape filter were dead code in production.
+  it('uses default permission mode so a stage canUseTool filter is actually consulted', () => {
+    const canUseTool = async () => ({ behavior: 'allow' as const });
+    const opts = buildQueryOptions({ ...minimalArgs, canUseTool }, deps);
+    expect(opts.permissionMode).toBe('default');
+    expect(opts.canUseTool).toBe(canUseTool);
+    expect('allowDangerouslySkipPermissions' in opts).toBe(false);
+  });
+
+  it('falls back to bypassPermissions only when no filter was supplied', () => {
+    const opts = buildQueryOptions(minimalArgs, deps);
+    expect(opts.permissionMode).toBe('bypassPermissions');
+    expect(opts.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it('denies the unattended-useless tools on every call, even with no stage list', () => {
+    const opts = buildQueryOptions(minimalArgs, deps);
+    expect(opts.disallowedTools).toEqual(['AskUserQuestion', 'ToolSearch']);
+  });
+
+  it('does not duplicate a tool the stage already denied', () => {
+    const opts = buildQueryOptions(
+      { ...minimalArgs, disallowedTools: ['ToolSearch', 'Edit'] },
+      deps,
+    );
+    expect(opts.disallowedTools).toEqual(['AskUserQuestion', 'ToolSearch', 'Edit']);
   });
 
   it('forwards all optional fields when provided', () => {
@@ -184,7 +213,7 @@ describe('buildQueryOptions', () => {
       deps,
     );
     expect(opts.allowedTools).toEqual(['Read', 'Grep']);
-    expect(opts.disallowedTools).toEqual(['Edit', 'Write']);
+    expect(opts.disallowedTools).toEqual(['AskUserQuestion', 'ToolSearch', 'Edit', 'Write']);
     expect(opts.maxTurns).toBe(20);
     expect(opts.cwd).toBe('/repos/continia-banking');
     expect(opts.canUseTool).toBe(canUseTool);

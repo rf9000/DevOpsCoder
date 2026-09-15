@@ -6,6 +6,15 @@ if [ "$(id -u)" = "0" ]; then
   chown -R claude:claude /app/.state
   chown -R claude:claude /home/claude/.claude 2>/dev/null || true
 
+  # LOG_DIR is a host-owned bind mount, so the claude user cannot write it
+  # unless we take ownership first. Missing this chown does not fail a run —
+  # WI log writes are best-effort — it just loses every per-WI log and its cost
+  # table to "EACCES: permission denied", which is the one artefact an operator
+  # goes looking for after an expensive run.
+  mkdir -p "${LOG_DIR:-/app/logs}"
+  chown -R claude:claude "${LOG_DIR:-/app/logs}" 2>/dev/null || \
+    echo "WARNING: could not chown ${LOG_DIR:-/app/logs} — per-WI logs will not be written"
+
   # Verify TARGET_REPO_PATH points at a git repo
   if [ -n "$TARGET_REPO_PATH" ] && [ ! -d "$TARGET_REPO_PATH/.git" ]; then
     echo "ERROR: Target repo not found at $TARGET_REPO_PATH"
