@@ -83,7 +83,6 @@ export function buildQueryOptions<T>(
 
   const opts: Record<string, unknown> = {
     model: args.model ?? deps.config.claudeModel,
-    allowedTools: args.tools ?? [],
     // A stage that supplies `canUseTool` is asking for its filters to decide.
     // `bypassPermissions` auto-approves every call BEFORE the callback is
     // consulted — the SDK says so itself, once per call:
@@ -102,6 +101,31 @@ export function buildQueryOptions<T>(
 
   // Only meaningful for — and only accepted alongside — 'bypassPermissions'.
   if (args.canUseTool === undefined) opts.allowDangerouslySkipPermissions = true;
+
+  // The SDK draws three distinct lines and we were only using one of them:
+  //
+  //   tools           the base set of built-in tools that EXIST for this call
+  //   allowedTools    tools auto-approved WITHOUT consulting canUseTool
+  //   disallowedTools removed from the model's context entirely
+  //
+  // Every stage's tool list was passed as `allowedTools`, which restricted
+  // nothing and auto-approved everything. That is why ReportFindings,
+  // AskUserQuestion and ToolSearch were all reachable from stages that never
+  // listed them, and why the SDK kept warning that canUseTool would not be
+  // invoked for Read, Grep, Glob and Bash - the coder's Bash allowlist among
+  // them. The list belongs on `tools`.
+  //
+  // Only set it when the stage actually passed one: `tools: []` disables every
+  // built-in tool, whereas the old `allowedTools: []` harmlessly auto-approved
+  // nothing.
+  if (args.tools !== undefined) opts.tools = args.tools;
+
+  // No `allowedTools` when a filter is present: anything auto-approved here is
+  // a tool the filter never sees. Without a filter there is nothing to shadow,
+  // so the stage's own list is the auto-approve set as before.
+  if (args.canUseTool === undefined && args.tools !== undefined) {
+    opts.allowedTools = args.tools;
+  }
 
   // Without this the SDK probes for its own bundled native binary. Under Bun on
   // a glibc image that probe resolves to the *-linux-x64-musl package and throws

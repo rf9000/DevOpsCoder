@@ -198,6 +198,39 @@ describe('buildQueryOptions', () => {
     expect(opts.disallowedTools).toEqual(['AskUserQuestion', 'ToolSearch', 'Edit']);
   });
 
+  // The SDK's own words: allowedTools is "auto-allowed without prompting for
+  // permission", and "to restrict which tools are available, use the `tools`
+  // option instead". Passing the stage list as allowedTools restricted nothing
+  // and shadowed every filter.
+  it('puts the stage tool list on `tools`, which is what restricts availability', () => {
+    const canUseTool = async () => ({ behavior: 'allow' as const });
+    const opts = buildQueryOptions(
+      { ...minimalArgs, tools: ['Read', 'Grep', 'Glob', 'Bash'], canUseTool },
+      deps,
+    );
+    expect(opts.tools).toEqual(['Read', 'Grep', 'Glob', 'Bash']);
+  });
+
+  it('auto-approves nothing when a filter is supplied, so every call reaches it', () => {
+    const canUseTool = async () => ({ behavior: 'allow' as const });
+    const opts = buildQueryOptions({ ...minimalArgs, tools: ['Bash'], canUseTool }, deps);
+    expect('allowedTools' in opts).toBe(false);
+  });
+
+  it('keeps the list as the auto-approve set when there is no filter to shadow', () => {
+    const opts = buildQueryOptions({ ...minimalArgs, tools: ['Read'] }, deps);
+    expect(opts.allowedTools).toEqual(['Read']);
+    expect(opts.tools).toEqual(['Read']);
+  });
+
+  // `tools: []` disables every built-in tool, so an absent list must stay absent
+  // rather than becoming an empty array as the old allowedTools default did.
+  it('omits `tools` entirely when the stage passed no list', () => {
+    const opts = buildQueryOptions(minimalArgs, deps);
+    expect('tools' in opts).toBe(false);
+    expect('allowedTools' in opts).toBe(false);
+  });
+
   it('forwards all optional fields when provided', () => {
     const canUseTool = async () => ({ behavior: 'allow' as const });
     const opts = buildQueryOptions(
@@ -212,7 +245,10 @@ describe('buildQueryOptions', () => {
       },
       deps,
     );
-    expect(opts.allowedTools).toEqual(['Read', 'Grep']);
+    // The stage's list is the AVAILABILITY set, and with a filter present it is
+    // deliberately not auto-approved — see the tools/allowedTools tests below.
+    expect(opts.tools).toEqual(['Read', 'Grep']);
+    expect('allowedTools' in opts).toBe(false);
     expect(opts.disallowedTools).toEqual(['AskUserQuestion', 'ToolSearch', 'Edit', 'Write']);
     expect(opts.maxTurns).toBe(20);
     expect(opts.cwd).toBe('/repos/continia-banking');
