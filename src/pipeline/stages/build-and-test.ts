@@ -23,7 +23,7 @@ import {
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
 import { modelFor } from '../../utils/model-selection.ts';
-import { createCostTracker } from '../../utils/cost-tracker.ts';
+import { assertWithinCostCap, createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 import {
   CODER_BASH_ALLOW,
@@ -405,6 +405,10 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         if (ctx.abortFlag.aborted) return state;
 
         if (attempt > 0 && failure) {
+          // Same reasoning as the revision loop: each fix call is a full coder
+          // session, and the orchestrator's cost gate does not run again until
+          // this stage returns.
+          assertWithinCostCap(state, config.maxCostUsdPerWi, 'build-and-test');
           await runFixCall(failure, attempt);
         }
 

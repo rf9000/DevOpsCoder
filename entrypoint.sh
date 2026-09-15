@@ -69,7 +69,24 @@ if [ "$(id -u)" = "0" ]; then
     echo "Generated repo-paths.json: $JSON"
   fi
 
-  exec su claude -c "export HOME=/home/claude REPO_PATHS_FILE=$REPO_PATHS_FILE && cd /app && bun run start"
+  # Run whatever the container was given, defaulting to the watcher. Without
+  # this passthrough the entrypoint discarded its arguments and started the
+  # watcher regardless, which made every operator command documented in
+  # CLAUDE.md — run-wi, reset-state, debug-tags, debug-pr — unreachable except
+  # by `docker compose exec` into an already-running container.
+  #
+  # printf %q quotes each argument for the shell `su -c` spawns, so an argument
+  # containing a space survives the round trip.
+  if [ "$#" -gt 0 ]; then
+    CMD=$(printf '%q ' "$@")
+  else
+    CMD='bun run start'
+  fi
+
+  exec su claude -c "export HOME=/home/claude REPO_PATHS_FILE=$REPO_PATHS_FILE && cd /app && $CMD"
 fi
 
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
 exec bun run start

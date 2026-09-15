@@ -155,7 +155,7 @@ describe('cost-cap e2e', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('coder cost pushes cumulative past cap → reviewer completes revision-loop → cost check fires before test-author → blocked tag + cost comment + no PR + worktree retained', async () => {
+  it('coder cost pushes cumulative past cap → in-loop check fires before the reviewer fan-out → blocked tag + cost comment + no PR + worktree retained', async () => {
     const config = { ...baseConfig, stateDir: dir, maxCostUsdPerWi: 0.50 };
     const store = new PipelineStateStore(dir);
 
@@ -166,12 +166,13 @@ describe('cost-cap e2e', () => {
     // Responder returns {value, costUsd} directly so each stage carries its own cost.
     // Flow:
     //   'A' (analyzer)   → costUsd 0.10, total 0.10 (under cap)
-    //   'C' (coder)      → costUsd 0.45, total 0.55 (OVER cap — but check fires between stages)
-    //   'R\n\naxis'      → costUsd 0     (reviewer axes; reviewer runs inside revision-loop
-    //                                      before the between-stage cost check fires)
-    // After revision-loop completes (coder + reviewer both succeed), orchestrator
-    // advances currentStage to 'test-author'. The pre-stage cost check then reads
-    // total=0.55 > cap=0.50 and throws CostExceededError with stage='test-author'.
+    //   'C' (coder)      → costUsd 0.45, total 0.55 (OVER cap)
+    //   'R\n\naxis'      → never reached
+    // revisionLoop re-checks the cap between the producer and the reviewer, so the
+    // six-way fan-out — the most expensive thing in the pipeline — never starts.
+    // Before that check existed the loop ran to completion and only the
+    // orchestrator's between-stage gate caught it, one stage later: the path that
+    // let WI 82205 return $29.06 against a $20 cap.
     const runner = makeStagedRunner((args) => {
       const sys = args.systemPromptAppend ?? '';
       if (sys === 'A') {
@@ -224,15 +225,14 @@ describe('cost-cap e2e', () => {
     expect(saved.terminalError?.message).toMatch(/cost cap/i);
 
     // --- Stage recorded on the terminalError ---
-    // The cost-cap check fires BETWEEN top-level pipeline stages (in the orchestrator
-    // loop). After revision-loop completes, currentStage advances to 'test-author'.
-    // The pre-stage check then fires and records stage='test-author'.
-    expect(saved.terminalError?.stage).toBe('test-author');
+    // Thrown from inside the loop, so the stage blamed is the one that was
+    // actually running when the cap was breached.
+    expect(saved.terminalError?.stage).toBe('revision-loop');
 
     // --- Runner call count ---
-    // 1 analyzer + 1 coder + 6 reviewer axes (inside revision-loop, before
-    // the between-stage check can fire) = 8 total. test-author never fires.
-    expect(runner.calls).toHaveLength(8);
+    // 1 analyzer + 1 coder = 2. The reviewer's six axes are cut off by the
+    // in-loop check, where previously all six ran and were paid for.
+    expect(runner.calls).toHaveLength(2);
 
     // --- Cost comment posted ---
     expect((ado.addWorkItemComment as ReturnType<typeof mock>).mock.calls).toHaveLength(1);

@@ -1,4 +1,5 @@
 import type { AgentUsage, PipelineCostInfo, PipelineState, StepSpend } from '../types/index.ts';
+import { CostExceededError } from '../types/index.ts';
 
 export interface CostTracker {
   /**
@@ -122,4 +123,28 @@ export function createCostTracker(state: PipelineState): CostTracker {
       return out;
     },
   };
+}
+
+/**
+ * Throw `CostExceededError` if the WI has already spent more than the cap.
+ *
+ * The orchestrator gates on cost between top-level stages, which is no help
+ * inside one: `revision-loop` alone can contain `MAX_REVISIONS × (1 plan +
+ * coder retries + 6 reviewer axes × retries)` LLM calls, and nothing looked at
+ * the running total until it handed control back. WI 82205 left that gate at
+ * $0 and returned at $29.06 against a $20 cap — a 45% overshoot on a limit
+ * documented as a hard kill.
+ *
+ * Long-running stages therefore call this between their own iterations. The
+ * throw travels the same path as any other stage error, so the orchestrator
+ * records it as a terminal error against the stage that was running and the
+ * processor's `/cost cap/i` routing renders the usual comment.
+ */
+export function assertWithinCostCap(
+  state: PipelineState,
+  capUsd: number,
+  stageName: string,
+): void {
+  const total = (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0;
+  if (total > capUsd) throw new CostExceededError(total, capUsd, stageName);
 }

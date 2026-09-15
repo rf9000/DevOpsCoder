@@ -2,6 +2,7 @@ import { describe, it, expect, mock } from 'bun:test';
 import { revisionLoop } from '../../src/pipeline/revision-loop.ts';
 import type { Stage, PipelineContext } from '../../src/pipeline/stage.ts';
 import type { AppConfig, PipelineState } from '../../src/types/index.ts';
+import { CostExceededError } from '../../src/types/index.ts';
 
 const FIXED_NOW = new Date('2026-05-04T12:00:00.000Z');
 
@@ -168,5 +169,67 @@ describe('revisionLoop', () => {
       isApproved: () => true,
     });
     expect(stage.name).toBe('rl');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cost cap — checked inside the loop, not only between top-level stages
+// ---------------------------------------------------------------------------
+
+describe('revisionLoop cost cap', () => {
+  // WI 82205 entered this stage under a $20 cap and returned at $29.06: the
+  // orchestrator's gate cannot fire again until the whole loop hands back.
+  it('stops before the producer once the running total is over the cap', async () => {
+    const producer = mock(async (s: PipelineState) => s);
+    const reviewer = mock(async (s: PipelineState) => s);
+    const state = mockState();
+    state.outputs.cost = { total: 29.06, perStage: {} };
+
+    const loop = revisionLoop({
+      name: 'revision-loop',
+      producer: makeStage('coder', producer),
+      reviewer: makeStage('reviewer', reviewer),
+      maxAttempts: 3,
+      isApproved: () => false,
+    });
+
+    await expect(loop.execute(state, mockContext())).rejects.toThrow(CostExceededError);
+    expect(producer).not.toHaveBeenCalled();
+    expect(reviewer).not.toHaveBeenCalled();
+  });
+
+  it('stops before the reviewer fan-out when the producer alone cleared the cap', async () => {
+    const reviewer = mock(async (s: PipelineState) => s);
+    const loop = revisionLoop({
+      name: 'revision-loop',
+      producer: makeStage('coder', async (s) => {
+        s.outputs.cost = { total: 7.5, perStage: {} };
+        return s;
+      }),
+      reviewer: makeStage('reviewer', reviewer),
+      maxAttempts: 3,
+      isApproved: () => false,
+    });
+
+    // Cap is $5.00 in the fixture config.
+    await expect(loop.execute(mockState(), mockContext())).rejects.toThrow(/cost cap/i);
+    expect(reviewer).not.toHaveBeenCalled();
+  });
+
+  it('runs normally while the total stays under the cap', async () => {
+    const reviewer = mock(async (s: PipelineState) => s);
+    const loop = revisionLoop({
+      name: 'revision-loop',
+      producer: makeStage('coder', async (s) => {
+        s.outputs.cost = { total: 1.25, perStage: {} };
+        return s;
+      }),
+      reviewer: makeStage('reviewer', reviewer),
+      maxAttempts: 2,
+      isApproved: () => true,
+    });
+
+    await loop.execute(mockState(), mockContext());
+    expect(reviewer).toHaveBeenCalledTimes(1);
   });
 });

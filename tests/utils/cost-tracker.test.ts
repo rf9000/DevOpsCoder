@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { createCostTracker, normalizePerStage } from '../../src/utils/cost-tracker.ts';
+import {
+  assertWithinCostCap,
+  createCostTracker,
+  normalizePerStage,
+} from '../../src/utils/cost-tracker.ts';
 import type { AgentUsage, PipelineState, StepSpend } from '../../src/types/index.ts';
 
 function makeState(): PipelineState {
@@ -211,5 +215,27 @@ describe('normalizePerStage', () => {
 
   it('drops an entry that is neither a number nor an object', () => {
     expect(normalizePerStage({ coder: 'nonsense' })).toEqual({});
+  });
+});
+
+describe('assertWithinCostCap', () => {
+  const withTotal = (total: number): PipelineState => {
+    const s = makeState();
+    s.outputs.cost = { total, perStage: {} };
+    return s;
+  };
+
+  it('throws once the total is over the cap, naming the stage', () => {
+    expect(() => assertWithinCostCap(withTotal(29.06), 20, 'revision-loop')).toThrow(
+      /revision-loop/,
+    );
+  });
+
+  it('does not throw at exactly the cap', () => {
+    expect(() => assertWithinCostCap(withTotal(20), 20, 'revision-loop')).not.toThrow();
+  });
+
+  it('treats a WI with no recorded cost as zero rather than throwing', () => {
+    expect(() => assertWithinCostCap(makeState(), 20, 'revision-loop')).not.toThrow();
   });
 });
