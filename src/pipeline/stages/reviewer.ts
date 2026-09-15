@@ -5,6 +5,7 @@ import type {
   AppConfig,
   CoderOutput,
   Finding,
+  FindingSeverity,
   ReviewerOutput,
   TestAuthorOutput,
   WorktreeContext,
@@ -15,6 +16,7 @@ import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import {
   composeCanUseTool,
   aggregateReviewerFindings,
+  clampSeverity,
   isAbortError,
   runWithParseRetry,
   STRUCTURED_OUTPUT_DENIED_TOOLS,
@@ -39,6 +41,39 @@ export const REVIEW_AXES = [
 ] as const;
 
 type ReviewAxis = typeof REVIEW_AXES[number];
+
+/**
+ * The highest severity each axis is permitted to assign.
+ *
+ * `approved = !any(blocking|critical)`, so severity is not a label — it is the
+ * loop-exit switch, and every axis holds a copy of it. Six independent agents
+ * each get a chance to over-rate, and `aggregateReviewerFindings` keeps the
+ * *highest* severity when axes collide on a `file:line`, so one inflated call
+ * decides the round on its own.
+ *
+ * WI 82205 is the worked example: three rounds and $23.95 spent, ending on a
+ * single `critical` whose own title read "diverging from established codebase
+ * idiom" — raised jointly by `safety-correctness` and `naming-style`. The
+ * rubric in reviewer-shared.md already classifies pattern violations as `major`
+ * and already warns against over-flagging; the prompt said so and the model did
+ * it anyway. So the ceiling is enforced here, in code, where it cannot be
+ * argued with.
+ *
+ * The split is by what an axis is *for*. Axes that exist to catch a fatal
+ * problem keep the barrier; axes that exist to improve the shape of the code
+ * keep their voice — their findings still reach the PR — but cannot hold the
+ * pipeline. Retune this table rather than loosening the barrier itself: the
+ * question "may naming-style block a merge?" has a defensible answer, while
+ * "should critical findings block?" does not.
+ */
+export const AXIS_SEVERITY_CEILING: Record<ReviewAxis, FindingSeverity> = {
+  'safety-correctness': 'blocking',
+  security: 'blocking',
+  integration: 'critical',
+  performance: 'major',
+  'code-structure': 'major',
+  'naming-style': 'minor',
+};
 
 // ---------------------------------------------------------------------------
 // Per-axis output schema
@@ -324,7 +359,24 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       const mergedToolUsage = mergeToolUsage(axisResults.map((r) => r.toolUsage));
       toolUsageTracker.add('reviewer', mergedToolUsage);
 
-      const flat = axisResults.flatMap((r) => r.value.findings);
+      // Clamp per axis BEFORE aggregating: the merge promotes a group to its
+      // highest member, so a ceiling applied afterwards could be re-breached by
+      // a co-located finding from a stricter axis. Keyed on the axis that
+      // actually ran, never on the model-supplied `axis` field — that field is
+      // part of what is being policed.
+      const flat = axisResults.flatMap((r, i) => {
+        const axis = REVIEW_AXES[i]!;
+        const ceiling = AXIS_SEVERITY_CEILING[axis];
+        return r.value.findings.map((f) => {
+          const severity = clampSeverity(f.severity, ceiling);
+          if (severity !== f.severity) {
+            ctx.logger.info(
+              `reviewer:${axis}: ${f.severity} -> ${severity} (axis ceiling) — ${f.file}: ${f.title}`,
+            );
+          }
+          return { ...f, severity };
+        });
+      });
       const findings = aggregateReviewerFindings(flat);
       const approved = !findings.some(
         (f) => f.severity === 'blocking' || f.severity === 'critical',

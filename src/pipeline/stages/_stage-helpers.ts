@@ -169,7 +169,7 @@ export async function defaultResetWorktree(
 }
 
 /** Severity rank — higher number = more severe. Used for finding deduplication. */
-const SEVERITY_RANK: Record<FindingSeverity, number> = {
+export const SEVERITY_RANK: Record<FindingSeverity, number> = {
   blocking: 5,
   critical: 4,
   major: 3,
@@ -206,6 +206,20 @@ const SEVERITY_RANK: Record<FindingSeverity, number> = {
  *
  * Pure function — no I/O, no logging, no mutation of input objects.
  */
+/**
+ * Lower `severity` to `ceiling` when it exceeds it; otherwise return it unchanged.
+ *
+ * Pure. Used to enforce each review axis's severity ceiling before findings are
+ * aggregated — see `AXIS_SEVERITY_CEILING` in ./reviewer.ts for why a ceiling
+ * exists at all and why it is enforced here rather than asked for in the prompt.
+ */
+export function clampSeverity(
+  severity: FindingSeverity,
+  ceiling: FindingSeverity,
+): FindingSeverity {
+  return SEVERITY_RANK[severity] > SEVERITY_RANK[ceiling] ? ceiling : severity;
+}
+
 export function aggregateReviewerFindings(findings: Finding[]): Finding[] {
   // Ordered map: key → accumulated group data.
   // We use a Map to preserve insertion order (first-seen key order).

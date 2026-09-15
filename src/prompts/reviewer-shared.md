@@ -18,7 +18,16 @@ Five levels, all lowercase. Your severity choice determines whether the revision
 - `minor` — style or clarity nudge with real impact. NOT a loop exit barrier.
 - `nit` — small polish, formatting, naming preference. NOT a loop exit barrier.
 
-The pipeline marks the review approved when there are zero `blocking` and zero `critical` findings; any finding at those severities causes the revision loop to iterate. Choose severity deliberately — over-flagging as `critical` blocks the pipeline unnecessarily.
+The pipeline marks the review approved when there are zero `blocking` and zero `critical` findings; any finding at those severities causes the revision loop to iterate.
+
+**A `blocking` or `critical` finding must name a concrete failure: the input, state or sequence that produces the wrong result, and what that wrong result is.** If you cannot write that sentence, the finding is `major` at most. In particular, these are **never** above `major`, however strongly you feel about them:
+
+- "diverges from the established idiom / convention / existing pattern"
+- "inconsistent with how the rest of the codebase does it"
+- "should be refactored / extracted / renamed"
+- "a reviewer would prefer X"
+
+Code that works but is written in a style you would not have chosen is not a correctness regression. Each axis also has a hard severity ceiling enforced after you answer — `naming-style` cannot exceed `minor`, `performance` and `code-structure` cannot exceed `major` — so inflating a finding does not make it more likely to be acted on. It only makes the report less trustworthy.
 
 ## How to find the code under review
 

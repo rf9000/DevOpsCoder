@@ -18,6 +18,7 @@
  * T14 — a malformed axis reply is retried, and gives up after MAX_TRANSIENT_RETRIES
  * T15 — spend of the surviving axes, and of failed attempts, outlives a failing axis
  * T16 — a failing axis cancels its siblings, and the real cause is what surfaces
+ * T17 — per-axis severity ceilings clamp before aggregation
  */
 import { describe, it, expect, mock } from 'bun:test';
 import {
@@ -294,11 +295,11 @@ describe('createReviewerStage', () => {
 
   it('T6: aggregates findings across axes (same file:line merges axes, keeps higher severity)', async () => {
     // Two axes return a finding on the same file:line with different severities.
-    // aggregateReviewerFindings should merge them.
-    let callIdx = 0;
-    const runner = makeRunner(async () => {
-      const idx = callIdx++;
-      if (idx === 0) {
+    // aggregateReviewerFindings should merge them. Both axes here have a
+    // ceiling of at least `critical`, so the merge is what decides the result
+    // rather than the clamp — see T17c for the interaction between the two.
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:safety-correctness') {
         return {
           findings: [
             {
@@ -307,12 +308,12 @@ describe('createReviewerStage', () => {
               line: 42,
               title: 'Issue A',
               description: 'Desc A',
-              axis: REVIEW_AXES[0]!,
+              axis: 'safety-correctness',
             } satisfies Finding,
           ],
         };
       }
-      if (idx === 1) {
+      if (args.label === 'reviewer:security') {
         return {
           findings: [
             {
@@ -321,7 +322,7 @@ describe('createReviewerStage', () => {
               line: 42,
               title: 'Issue B',
               description: 'Desc B',
-              axis: REVIEW_AXES[1]!,
+              axis: 'security',
             } satisfies Finding,
           ],
         };
@@ -337,8 +338,8 @@ describe('createReviewerStage', () => {
     // Higher severity wins
     expect(merged.severity).toBe('critical');
     // Axis is a combined label
-    expect(merged.axis).toContain(REVIEW_AXES[0]!);
-    expect(merged.axis).toContain(REVIEW_AXES[1]!);
+    expect(merged.axis).toContain('safety-correctness');
+    expect(merged.axis).toContain('security');
   });
 
   // -------------------------------------------------------------------------
@@ -397,10 +398,10 @@ describe('createReviewerStage', () => {
   // -------------------------------------------------------------------------
 
   it('T9: approved is false when any finding is critical', async () => {
-    let callIdx = 0;
-    const runner = makeRunner(async () => {
-      const idx = callIdx++;
-      if (idx === 2) {
+    // `integration` is used rather than `performance`: its ceiling is
+    // `critical`, so the severity survives to exercise the approval rule.
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:integration') {
         return {
           findings: [
             {
@@ -408,7 +409,7 @@ describe('createReviewerStage', () => {
               file: 'src/b.ts',
               title: 'Critical',
               description: 'Very bad',
-              axis: 'performance',
+              axis: 'integration',
             } satisfies Finding,
           ],
         };
@@ -585,6 +586,109 @@ describe('createReviewerStage', () => {
     for (const signal of signals) {
       expect(signal?.aborted).toBe(true);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // T17 — per-axis severity ceilings
+  // -------------------------------------------------------------------------
+
+  // WI 82205: three rounds, $23.95, killed by one `critical` reading
+  // "diverging from established codebase idiom" that naming-style helped raise.
+  it('T17a: clamps a finding to its axis ceiling, so naming-style cannot block', async () => {
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:naming-style') {
+        return {
+          findings: [
+            {
+              severity: 'critical',
+              file: 'src/a.al',
+              line: 95,
+              title: 'Diverges from established codebase idiom',
+              description: 'D',
+              axis: 'naming-style',
+            } satisfies Finding,
+          ],
+        };
+      }
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    const output = result.outputs.reviewer as ReviewerOutput;
+    expect(output.findings[0]!.severity).toBe('minor');
+    expect(output.approved).toBe(true);
+  });
+
+  it('T17b: leaves a finding already at or below its ceiling untouched', async () => {
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:security') {
+        return {
+          findings: [
+            {
+              severity: 'blocking',
+              file: 'src/a.al',
+              title: 'Secret written to the log',
+              description: 'D',
+              axis: 'security',
+            } satisfies Finding,
+          ],
+        };
+      }
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    const output = result.outputs.reviewer as ReviewerOutput;
+    expect(output.findings[0]!.severity).toBe('blocking');
+    expect(output.approved).toBe(false);
+  });
+
+  // The merge keeps a group's highest severity, so clamping after aggregation
+  // would let a co-located finding re-breach a ceiling that had been applied.
+  it('T17c: clamps before aggregation, so a merge cannot re-promote past a ceiling', async () => {
+    const at95 = (severity: Finding['severity'], axis: string): Finding => ({
+      severity,
+      file: 'src/a.al',
+      line: 95,
+      title: `From ${axis}`,
+      description: 'D',
+      axis,
+    });
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:naming-style') return { findings: [at95('critical', 'naming-style')] };
+      if (args.label === 'reviewer:performance') return { findings: [at95('critical', 'performance')] };
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    const output = result.outputs.reviewer as ReviewerOutput;
+    // Both clamped first (minor, major), then merged — the group keeps `major`.
+    expect(output.findings).toHaveLength(1);
+    expect(output.findings[0]!.severity).toBe('major');
+    expect(output.approved).toBe(true);
+  });
+
+  it('T17d: keys the ceiling on the axis that ran, not the model-supplied axis field', async () => {
+    const runner = makeRunner(async (args) => {
+      if (args.label === 'reviewer:naming-style') {
+        return {
+          findings: [
+            {
+              severity: 'blocking',
+              file: 'src/a.al',
+              title: 'Mislabelled',
+              description: 'D',
+              // Claims to be the axis with the highest ceiling.
+              axis: 'security',
+            } satisfies Finding,
+          ],
+        };
+      }
+      return { findings: [] };
+    });
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    expect((result.outputs.reviewer as ReviewerOutput).findings[0]!.severity).toBe('minor');
   });
 
   // -------------------------------------------------------------------------
