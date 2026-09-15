@@ -107,6 +107,8 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
       const usage: AgentUsage = {
         inputTokens: 0,
         outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
         turns: 0,
         model: args.model ?? deps.config.claudeModel,
       };
@@ -131,11 +133,24 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           // or during partial failures). Cast through `| undefined` and default to
           // 0 so a missing cost never breaks the orchestrator's cap arithmetic.
           costUsd = (message.total_cost_usd as number | undefined) ?? 0;
-          usage.inputTokens = message.usage.input_tokens ?? 0;
-          usage.outputTokens = message.usage.output_tokens ?? 0;
+          // The cache counters are declared non-nullable on some SDK versions
+          // and nullable on others; read them defensively so a null never
+          // poisons the accumulator with NaN.
+          const u = message.usage as {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_creation_input_tokens?: number | null;
+            cache_read_input_tokens?: number | null;
+          };
+          usage.inputTokens = u.input_tokens ?? 0;
+          usage.outputTokens = u.output_tokens ?? 0;
+          usage.cacheCreationInputTokens = u.cache_creation_input_tokens ?? 0;
+          usage.cacheReadInputTokens = u.cache_read_input_tokens ?? 0;
           usage.turns = message.num_turns ?? 0;
           deps.logger.info(
-            `agent: $${costUsd.toFixed(4)} | ${message.usage.input_tokens ?? 0} in / ${message.usage.output_tokens ?? 0} out | ${message.num_turns} turns` +
+            `agent: $${costUsd.toFixed(4)} | ${usage.inputTokens} in ` +
+              `(+${usage.cacheCreationInputTokens} cache write, ${usage.cacheReadInputTokens} cache read) ` +
+              `/ ${usage.outputTokens} out | ${usage.turns} turns` +
               (args.label ? ` | ${args.label}` : ''),
           );
           if (message.subtype === 'success') {

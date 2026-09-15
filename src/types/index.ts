@@ -164,18 +164,34 @@ export interface StepSpend {
   usd: number;
   /** How many LLM calls this step made (revisions and retries included). */
   calls: number;
+  /** Uncached input tokens — only the part of the prompt the cache did not serve. */
   inputTokens: number;
   outputTokens: number;
+  /** Input tokens written into the prompt cache. */
+  cacheCreationInputTokens: number;
+  /** Input tokens served from the prompt cache. */
+  cacheReadInputTokens: number;
   /** Cumulative agent turns, summed across calls. */
   turns: number;
   /** Distinct models this step ran on, in first-seen order. */
   models: string[];
 }
 
-/** Per-call usage the SDK reports alongside cost, folded into `StepSpend`. */
+/**
+ * Per-call usage the SDK reports alongside cost, folded into `StepSpend`.
+ *
+ * The cache fields are not decoration. `inputTokens` alone counts only what the
+ * cache did *not* serve, so a long agentic call reports a handful of input
+ * tokens against tens of thousands of output — `coder $4.8681 | 194 in /
+ * 61,226 out` was a real line in a real run, and it makes the dominant half of
+ * the bill invisible. Anything reasoning about where a WI's money went needs
+ * all three numbers.
+ */
 export interface AgentUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
   turns: number;
   model: string;
 }

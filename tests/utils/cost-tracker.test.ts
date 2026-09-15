@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { createCostTracker, normalizePerStage } from '../../src/utils/cost-tracker.ts';
-import type { PipelineState, StepSpend } from '../../src/types/index.ts';
+import type { AgentUsage, PipelineState, StepSpend } from '../../src/types/index.ts';
 
 function makeState(): PipelineState {
   return {
@@ -14,9 +14,11 @@ function makeState(): PipelineState {
   };
 }
 
-const usage = (over: Partial<{ inputTokens: number; outputTokens: number; turns: number; model: string }> = {}) => ({
+const usage = (over: Partial<AgentUsage> = {}): AgentUsage => ({
   inputTokens: 1000,
   outputTokens: 100,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
   turns: 5,
   model: 'claude-opus-5',
   ...over,
@@ -56,6 +58,20 @@ describe('createCostTracker', () => {
     expect(step.turns).toBe(12);
   });
 
+  // `inputTokens` counts only what the cache did not serve, so a step whose
+  // prompt is almost entirely cached reports a handful of input tokens against
+  // a large bill. Without these two counters the dominant half of the spend has
+  // nowhere to show up.
+  it('add accumulates cache read and write tokens', () => {
+    const state = makeState();
+    const tracker = createCostTracker(state);
+    tracker.add('coder', 0.4, usage({ cacheCreationInputTokens: 12_000, cacheReadInputTokens: 80_000 }));
+    tracker.add('coder', 0.6, usage({ cacheCreationInputTokens: 500, cacheReadInputTokens: 95_000 }));
+    const step = tracker.perStage()['coder']!;
+    expect(step.cacheCreationInputTokens).toBe(12_500);
+    expect(step.cacheReadInputTokens).toBe(175_000);
+  });
+
   it('add records each distinct model once, in first-seen order', () => {
     const state = makeState();
     const tracker = createCostTracker(state);
@@ -75,6 +91,8 @@ describe('createCostTracker', () => {
       calls: 1,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
       turns: 0,
       models: [],
     });
@@ -100,7 +118,7 @@ describe('createCostTracker', () => {
     const state = makeState();
     state.outputs.cost = {
       total: 1.0,
-      perStage: { analyzer: { usd: 1.0, calls: 1, inputTokens: 10, outputTokens: 2, turns: 3, models: ['m'] } },
+      perStage: { analyzer: { usd: 1.0, calls: 1, inputTokens: 10, outputTokens: 2, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 3, models: ['m'] } },
     };
     const tracker = createCostTracker(state);
     expect(tracker.total()).toBe(1.0);
@@ -122,6 +140,8 @@ describe('createCostTracker', () => {
       calls: 1,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
       turns: 0,
       models: [],
     });
@@ -168,6 +188,8 @@ describe('normalizePerStage', () => {
       calls: 3,
       inputTokens: 10,
       outputTokens: 5,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
       turns: 4,
       models: ['claude-opus-5'],
     };
@@ -180,6 +202,8 @@ describe('normalizePerStage', () => {
       calls: 1,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
       turns: 0,
       models: [],
     });

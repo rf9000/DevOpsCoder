@@ -83,9 +83,9 @@ describe('createCostLedger', () => {
       outcome: 'completed',
       costUsd: 8.4512,
       perStage: {
-        analyzer: { usd: 0.31, calls: 1, inputTokens: 20, outputTokens: 2, turns: 3, models: ['claude-sonnet-5'] },
-        'revision-loop': { usd: 5.62, calls: 4, inputTokens: 900, outputTokens: 80, turns: 40, models: ['claude-opus-5'] },
-        'test-author': { usd: 2.52, calls: 1, inputTokens: 300, outputTokens: 30, turns: 9, models: ['claude-opus-5'] },
+        analyzer: { usd: 0.31, calls: 1, inputTokens: 20, outputTokens: 2, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 3, models: ['claude-sonnet-5'] },
+        'revision-loop': { usd: 5.62, calls: 4, inputTokens: 900, outputTokens: 80, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 40, models: ['claude-opus-5'] },
+        'test-author': { usd: 2.52, calls: 1, inputTokens: 300, outputTokens: 30, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 9, models: ['claude-opus-5'] },
       },
     });
     const row = read()[0]!;

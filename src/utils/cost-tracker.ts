@@ -14,7 +14,16 @@ export interface CostTracker {
 }
 
 function emptySpend(): StepSpend {
-  return { usd: 0, calls: 0, inputTokens: 0, outputTokens: 0, turns: 0, models: [] };
+  return {
+    usd: 0,
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    turns: 0,
+    models: [],
+  };
 }
 
 function cloneSpend(s: StepSpend): StepSpend {
@@ -46,6 +55,13 @@ export function normalizePerStage(raw: unknown): Record<string, StepSpend> {
         calls: typeof e.calls === 'number' ? e.calls : 0,
         inputTokens: typeof e.inputTokens === 'number' ? e.inputTokens : 0,
         outputTokens: typeof e.outputTokens === 'number' ? e.outputTokens : 0,
+        // Absent from every state file written before cache accounting existed.
+        // Zero is the honest widening: the tokens were real but unrecorded, and
+        // inventing a figure would be worse than showing none.
+        cacheCreationInputTokens:
+          typeof e.cacheCreationInputTokens === 'number' ? e.cacheCreationInputTokens : 0,
+        cacheReadInputTokens:
+          typeof e.cacheReadInputTokens === 'number' ? e.cacheReadInputTokens : 0,
         turns: typeof e.turns === 'number' ? e.turns : 0,
         models: Array.isArray(e.models) ? [...e.models] : [],
       };
@@ -86,6 +102,8 @@ export function createCostTracker(state: PipelineState): CostTracker {
       if (usage) {
         spend.inputTokens += usage.inputTokens;
         spend.outputTokens += usage.outputTokens;
+        spend.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+        spend.cacheReadInputTokens += usage.cacheReadInputTokens;
         spend.turns += usage.turns;
         if (usage.model && !spend.models.includes(usage.model)) {
           spend.models.push(usage.model);

@@ -299,6 +299,8 @@ describe('createClaudeAgentRunner', () => {
     expect(res.usage).toEqual({
       inputTokens: 1234,
       outputTokens: 567,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
       turns: 9,
       model: 'claude-sonnet-5',
     });
@@ -461,6 +463,55 @@ describe('createClaudeAgentRunner', () => {
 
     expect((err as AgentOutputParseError).message).toContain('Schema validation failed');
     expect((err as AgentOutputParseError).spend?.costUsd).toBe(0.25);
+  });
+
+  it('captures the cache token counters from the result message', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 4.87,
+        usage: {
+          input_tokens: 194,
+          output_tokens: 61_226,
+          cache_creation_input_tokens: 24_010,
+          cache_read_input_tokens: 1_204_880,
+        },
+        num_turns: 114,
+      };
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.usage.inputTokens).toBe(194);
+    expect(res.usage.cacheCreationInputTokens).toBe(24_010);
+    expect(res.usage.cacheReadInputTokens).toBe(1_204_880);
+  });
+
+  // Some SDK versions declare these nullable. A null must read as 0, not NaN —
+  // a single NaN poisons every total downstream of it.
+  it('treats null cache counters as zero', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '{"verdict":"proceed"}',
+        total_cost_usd: 0.1,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+        },
+        num_turns: 1,
+      } as never;
+    });
+
+    const runner = createClaudeAgentRunner(deps);
+    const res = await runner.run({ prompt: 'go', schema: VerdictSchema });
+    expect(res.usage.cacheCreationInputTokens).toBe(0);
+    expect(res.usage.cacheReadInputTokens).toBe(0);
   });
 
   it('returns empty toolUsage when no tool_use blocks are present', async () => {

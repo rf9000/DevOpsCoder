@@ -281,8 +281,8 @@ describe('createProcessor', () => {
           makeCostStage({
             total: 8.45,
             perStage: {
-              coder: { usd: 8.14, calls: 2, inputTokens: 400, outputTokens: 40, turns: 12, models: ['claude-opus-5'] },
-              analyzer: { usd: 0.31, calls: 1, inputTokens: 20, outputTokens: 2, turns: 3, models: ['claude-sonnet-5'] },
+              coder: { usd: 8.14, calls: 2, inputTokens: 400, outputTokens: 40, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 12, models: ['claude-opus-5'] },
+              analyzer: { usd: 0.31, calls: 1, inputTokens: 20, outputTokens: 2, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 3, models: ['claude-sonnet-5'] },
             },
           }),
         ],
@@ -378,8 +378,8 @@ describe('createProcessor', () => {
       // A stage that recorded spend before per-step detail existed still lands
       // in the ledger as the current shape, rather than two shapes in one file.
       expect(records[0]?.perStage).toEqual({
-        analyzer: { usd: 0.31, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
-        coder: { usd: 8.14, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
+        analyzer: { usd: 0.31, calls: 1, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] },
+        coder: { usd: 8.14, calls: 1, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] },
       });
     });
 

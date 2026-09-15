@@ -403,7 +403,7 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     let stage2Called = false;
     const stages: Stage[] = [
       makeStage('stage1', async (s) => {
-        s.outputs.cost = { total: 6.00, perStage: { stage1: { usd: 6.00, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] } } };
+        s.outputs.cost = { total: 6.00, perStage: { stage1: { usd: 6.00, calls: 1, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] } } };
         return s;
       }),
       makeStage('stage2', async (s) => {

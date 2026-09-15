@@ -8,6 +8,8 @@ function spend(over: Partial<StepSpend> = {}): StepSpend {
     calls: 1,
     inputTokens: 0,
     outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
     turns: 0,
     models: [],
     ...over,
@@ -80,11 +82,39 @@ describe('renderCostReport', () => {
     at: '2026-09-01T07:56:40.000Z',
     totalUsd: 10.5,
     perStage: {
-      coder: spend({ usd: 8.21, calls: 3, inputTokens: 412033, outputTokens: 38120, turns: 96, models: ['claude-opus-5'] }),
-      analyzer: spend({ usd: 2.29, calls: 1, inputTokens: 22000, outputTokens: 1000, turns: 4, models: ['claude-sonnet-5'] }),
+      coder: spend({ usd: 8.21, calls: 3, inputTokens: 412033, outputTokens: 38120, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 96, models: ['claude-opus-5'] }),
+      analyzer: spend({ usd: 2.29, calls: 1, inputTokens: 22000, outputTokens: 1000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 4, models: ['claude-sonnet-5'] }),
     },
     toolUsage: { Bash: 286, Edit: 19 },
   };
+
+  // The whole point of recording the cache counters: one glance says whether a
+  // step is re-sending a prompt it could be reusing.
+  it('renders the cache columns and a per-step hit rate', () => {
+    const report = renderCostReport({
+      ...base,
+      perStage: {
+        coder: spend({
+          usd: 8.21,
+          calls: 3,
+          inputTokens: 194,
+          outputTokens: 61_226,
+          cacheCreationInputTokens: 10_000,
+          cacheReadInputTokens: 90_000,
+          turns: 114,
+          models: ['claude-sonnet-5'],
+        }),
+      },
+    });
+    expect(report).toContain('| step | usd | calls | model | in / out | cache w / r | hit | turns |');
+    // 90,000 read of 100,194 total input.
+    expect(report).toContain('| 10,000 / 90,000 | 90% |');
+  });
+
+  it('shows an em dash for a step with no recorded input at all', () => {
+    const report = renderCostReport({ ...base, perStage: { analyzer: spend({ usd: 0.5 }) } });
+    expect(report).toContain('| — |');
+  });
 
   it('headlines the outcome, total and timestamp', () => {
     expect(renderCostReport(base)).toContain(
@@ -109,7 +139,7 @@ describe('renderCostReport', () => {
     const row = renderCostReport(base)
       .split('\n')
       .find((l) => l.startsWith('| coder '));
-    expect(row).toBe('| coder | $8.2100 | 3 | claude-opus-5 | 412,033 / 38,120 | 96 |');
+    expect(row).toBe('| coder | $8.2100 | 3 | claude-opus-5 | 412,033 / 38,120 | 0 / 0 | 0% | 96 |');
   });
 
   it('joins multiple models for a step that ran on more than one', () => {
@@ -124,7 +154,7 @@ describe('renderCostReport', () => {
     const row = renderCostReport(base)
       .split('\n')
       .find((l) => l.startsWith('| **Total**'));
-    expect(row).toBe('| **Total** | **$10.5000** | **4** | | | |');
+    expect(row).toBe('| **Total** | **$10.5000** | **4** | | | **0 / 0** | | |');
   });
 
   it('lists tool usage below the table', () => {

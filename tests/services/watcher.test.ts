@@ -323,9 +323,9 @@ describe('runPollCycle', () => {
       costUsd: 12.36,
       toolUsage: {},
       perStage: {
-        coder: { usd: 8.21, calls: 3, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
-        reviewer: { usd: 4.02, calls: 6, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
-        analyzer: { usd: 0.13, calls: 1, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
+        coder: { usd: 8.21, calls: 3, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] },
+        reviewer: { usd: 4.02, calls: 6, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] },
+        analyzer: { usd: 0.13, calls: 1, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] },
       },
     }));
     await runPollCycle({
@@ -353,7 +353,7 @@ describe('runPollCycle', () => {
       costUsd: 1.9,
       toolUsage: {},
       perStage: {
-        'test-fixer': { usd: 1.9, calls: 4, inputTokens: 0, outputTokens: 0, turns: 0, models: [] },
+        'test-fixer': { usd: 1.9, calls: 4, inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 0, models: [] },
       },
     }));
     await runPollCycle({

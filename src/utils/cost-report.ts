@@ -22,6 +22,22 @@ function group(n: number): string {
 }
 
 /**
+ * Share of this step's input tokens that the prompt cache served.
+ *
+ * The single number worth acting on: a step reading 90% from cache is not the
+ * one to restructure, however large its token counts look, while a step that
+ * writes the cache on every call and reads none is paying full price to
+ * re-send a prompt it could be reusing. `—` when a step recorded no input at
+ * all, which is also what every state file written before cache accounting
+ * existed will show.
+ */
+function cacheHitRate(s: StepSpend): string {
+  const total = s.inputTokens + s.cacheCreationInputTokens + s.cacheReadInputTokens;
+  if (total === 0) return '—';
+  return `${Math.round((s.cacheReadInputTokens / total) * 100)}%`;
+}
+
+/**
  * One-line per-step spend split for the watcher log, e.g.
  * `coder $8.21, reviewer $4.02 ×6, analyzer $0.13`. Empty string when nothing
  * was recorded, so callers can concatenate conditionally.
@@ -83,16 +99,26 @@ export function renderCostReport(input: CostReportInput): string {
   if (entries.length === 0) {
     lines.push('(no per-step spend recorded)');
   } else {
-    lines.push('| step | usd | calls | model | in / out | turns |');
-    lines.push('|---|---|---|---|---|---|');
+    lines.push('| step | usd | calls | model | in / out | cache w / r | hit | turns |');
+    lines.push('|---|---|---|---|---|---|---|---|');
     let calls = 0;
+    let cacheWrite = 0;
+    let cacheRead = 0;
     for (const [step, s] of entries) {
       calls += s.calls;
+      cacheWrite += s.cacheCreationInputTokens;
+      cacheRead += s.cacheReadInputTokens;
       lines.push(
-        `| ${step} | $${s.usd.toFixed(4)} | ${s.calls} | ${s.models.join(', ')} | ${group(s.inputTokens)} / ${group(s.outputTokens)} | ${s.turns} |`,
+        `| ${step} | $${s.usd.toFixed(4)} | ${s.calls} | ${s.models.join(', ')} | ` +
+          `${group(s.inputTokens)} / ${group(s.outputTokens)} | ` +
+          `${group(s.cacheCreationInputTokens)} / ${group(s.cacheReadInputTokens)} | ` +
+          `${cacheHitRate(s)} | ${s.turns} |`,
       );
     }
-    lines.push(`| **Total** | **$${input.totalUsd.toFixed(4)}** | **${calls}** | | | |`);
+    lines.push(
+      `| **Total** | **$${input.totalUsd.toFixed(4)}** | **${calls}** | | | ` +
+        `**${group(cacheWrite)} / ${group(cacheRead)}** | | |`,
+    );
   }
 
   // formatToolUsage yields a ', tools: ...' log-line suffix; re-label it for a
