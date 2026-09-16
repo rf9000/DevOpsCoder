@@ -108,12 +108,17 @@ describe('discoverAlApps', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function app(rel: string, name: string, deps: string[] = []): void {
+  function app(
+    rel: string,
+    name: string,
+    deps: string[] = [],
+    extra: Record<string, unknown> = {},
+  ): void {
     const abs = join(dir, rel);
     mkdirSync(abs, { recursive: true });
     writeFileSync(
       join(abs, 'app.json'),
-      JSON.stringify({ id: '1', name, dependencies: deps.map((d) => ({ id: 'x', name: d })) }),
+      JSON.stringify({ id: '1', name, dependencies: deps.map((d) => ({ id: 'x', name: d })), ...extra }),
     );
   }
 
@@ -148,5 +153,32 @@ describe('discoverAlApps', () => {
     mkdirSync(join(dir, 'solo'), { recursive: true });
     writeFileSync(join(dir, 'solo', 'app.json'), '{"name":"Solo"}');
     expect(discoverAlApps(dir)[0]?.dependencies).toEqual([]);
+  });
+
+  it('surfaces application and platform from app.json', () => {
+    app('base-application', 'Continia Banking', [], { application: '29.0.0.0', platform: '29.0.0.0' });
+
+    const found = discoverAlApps(dir);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.application).toBe('29.0.0.0');
+    expect(found[0]?.platform).toBe('29.0.0.0');
+  });
+
+  it('still discovers apps whose manifest omits both version fields', () => {
+    app('base-application', 'Continia Banking');
+
+    const found = discoverAlApps(dir);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.name).toBe('Continia Banking');
+    expect(found[0]?.application).toBeUndefined();
+    expect(found[0]?.platform).toBeUndefined();
+  });
+
+  it('ignores non-string version fields rather than propagating them', () => {
+    app('base-application', 'Continia Banking', [], { application: 29 });
+
+    expect(discoverAlApps(dir)[0]?.application).toBeUndefined();
   });
 });

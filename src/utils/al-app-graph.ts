@@ -8,6 +8,10 @@ export interface AlApp {
   name: string;
   /** `name` of each entry in app.json `dependencies` (internal AND external). */
   dependencies: string[];
+  /** `application` from app.json — the minimum BC application version this app needs. */
+  application?: string;
+  /** `platform` from app.json — the minimum BC platform version this app needs. */
+  platform?: string;
 }
 
 /** Directories never worth descending into when looking for app.json. */
@@ -38,6 +42,8 @@ export function discoverAlApps(worktreePath: string): AlApp[] {
         const raw = JSON.parse(readFileSync(manifest, 'utf-8')) as {
           name?: unknown;
           dependencies?: unknown;
+          application?: unknown;
+          platform?: unknown;
         };
         if (typeof raw.name === 'string') {
           const dependencies = Array.isArray(raw.dependencies)
@@ -45,7 +51,13 @@ export function discoverAlApps(worktreePath: string): AlApp[] {
                 .map((d) => (d as { name?: unknown })?.name)
                 .filter((n): n is string => typeof n === 'string')
             : [];
-          apps.push({ dir: toPosix(relative(worktreePath, absDir)), name: raw.name, dependencies });
+          apps.push({
+            dir: toPosix(relative(worktreePath, absDir)),
+            name: raw.name,
+            dependencies,
+            application: typeof raw.application === 'string' ? raw.application : undefined,
+            platform: typeof raw.platform === 'string' ? raw.platform : undefined,
+          });
           return; // an app contains no nested apps
         }
       } catch {
