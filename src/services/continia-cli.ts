@@ -57,6 +57,19 @@ export interface EnvironmentInfo {
   name?: string;
   status: string;
   url?: string;
+  /** BC version the environment runs, as reported by `env get`. */
+  bcVersion?: string;
+}
+
+/** One row of `continia env profiles list --bc-version <v> --json`. */
+export interface EnvProfile {
+  id: string;
+  bcVersion: string;
+  /** Country/region code — "base", "dk", "nl", ... A BC version publishes ~18 of these. */
+  localization?: string;
+  description?: string;
+  buildVersion?: string;
+  isEnabled?: boolean;
 }
 
 /**
@@ -95,6 +108,10 @@ export interface ContiniaCallOpts {
 
 export interface ContiniaCli {
   createEnvironment(name: string, profileId: string, opts: ContiniaCallOpts): Promise<EnvironmentInfo>;
+  /** Available BC versions for environment creation. Account-level — works before any env exists. */
+  listProfileVersions(opts: ContiniaCallOpts): Promise<string[]>;
+  /** Profiles published for one BC version, one per localization. */
+  listProfiles(bcVersion: string, opts: ContiniaCallOpts): Promise<EnvProfile[]>;
   startEnvironment(envId: string, opts: ContiniaCallOpts): Promise<void>;
   getEnvironment(envId: string, opts: ContiniaCallOpts): Promise<EnvironmentInfo>;
   waitForRunning(
@@ -133,6 +150,7 @@ const environmentInfoSchema = z
     status: z.string().optional(),
     url: z.string().optional(),
     webUrl: z.string().optional(),
+    bcVersion: z.string().optional(),
   })
   .passthrough();
 
@@ -158,6 +176,27 @@ const environmentUserSchema = z
 const environmentUsersSchema = z.union([
   z.array(environmentUserSchema),
   z.object({ users: z.array(environmentUserSchema).default([]) }).passthrough(),
+]);
+
+const profileVersionsSchema = z.union([
+  z.array(z.string()),
+  z.object({ versions: z.array(z.string()).default([]) }).passthrough(),
+]);
+
+const envProfileSchema = z
+  .object({
+    id: z.string(),
+    bcVersion: z.string(),
+    localization: z.string().optional(),
+    description: z.string().optional(),
+    buildVersion: z.string().optional(),
+    isEnabled: z.boolean().optional(),
+  })
+  .passthrough();
+
+const profilesListSchema = z.union([
+  z.array(envProfileSchema),
+  z.object({ profiles: z.array(envProfileSchema).default([]) }).passthrough(),
 ]);
 
 const depsInstallSchema = z
@@ -339,6 +378,7 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
       name: parsed.name,
       status: parsed.status ?? 'unknown',
       url: parsed.url ?? parsed.webUrl,
+      bcVersion: parsed.bcVersion,
     };
   }
 
@@ -354,6 +394,26 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
       const result = await run(args, opts);
       assertZeroExit(args, result);
       return toEnvironmentInfo(args, parseJson(args, result), result);
+    },
+
+    async listProfileVersions(opts) {
+      const args = ['env', 'profiles', 'versions', '--json'];
+      const parsed = profileVersionsSchema.parse(await runJson(args, opts));
+      return Array.isArray(parsed) ? parsed : parsed.versions;
+    },
+
+    async listProfiles(bcVersion, opts) {
+      const args = ['env', 'profiles', 'list', '--bc-version', bcVersion, '--json'];
+      const parsed = profilesListSchema.parse(await runJson(args, opts));
+      const rows = Array.isArray(parsed) ? parsed : parsed.profiles;
+      return rows.map((p) => ({
+        id: p.id,
+        bcVersion: p.bcVersion,
+        localization: p.localization,
+        description: p.description,
+        buildVersion: p.buildVersion,
+        isEnabled: p.isEnabled,
+      }));
     },
 
     async startEnvironment(envId, opts) {

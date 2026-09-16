@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { resolve, join } from 'path';
 import {
   createContiniaCli,
@@ -441,6 +441,76 @@ describe('getEnvironmentUsers', () => {
     const users = await cli.getEnvironmentUsers('env-9', opts);
     expect(users[0]).toEqual({ username: 'NoPass', isAdmin: false });
     expect('password' in (users[0] as object)).toBe(false);
+  });
+});
+
+describe('profile queries', () => {
+  it('lists BC profile versions from a bare JSON array', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify(['16.0.0.0', '28.1.0.0', '29.0.0.0']),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const versions = await cli.listProfileVersions({ worktreePath: '/wt' });
+
+    expect(versions).toEqual(['16.0.0.0', '28.1.0.0', '29.0.0.0']);
+    const [argv] = exec.mock.calls[0] as unknown as [string[]];
+    expect(argv.slice(-4)).toEqual(['env', 'profiles', 'versions', '--json']);
+  });
+
+  it('lists profiles for one BC version', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        {
+          id: 'ff24b00b',
+          bcVersion: '29.0.0.0',
+          buildVersion: '29.0.54011.54239',
+          localization: 'base',
+          description: 'BASE Business Central 29.0',
+          platform: 'sandbox',
+          isEnabled: true,
+        },
+      ]),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const profiles = await cli.listProfiles('29.0.0.0', { worktreePath: '/wt' });
+
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]?.id).toBe('ff24b00b');
+    expect(profiles[0]?.localization).toBe('base');
+    expect(profiles[0]?.isEnabled).toBe(true);
+    // `run()` builds argv as [resolvedExe, ...args], so the flags are the tail.
+    const [argv] = exec.mock.calls[0] as unknown as [string[]];
+    expect(argv.slice(-6)).toEqual(['env', 'profiles', 'list', '--bc-version', '29.0.0.0', '--json']);
+  });
+
+  it('tolerates an object wrapper instead of a bare array', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ versions: ['29.0.0.0'] }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    expect(await cli.listProfileVersions({ worktreePath: '/wt' })).toEqual(['29.0.0.0']);
+  });
+
+  it('surfaces bcVersion from env get', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ id: 'env-1', status: 'Running', bcVersion: '28.1.0.0' }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const env = await cli.getEnvironment('env-1', { worktreePath: '/wt' });
+
+    expect(env.bcVersion).toBe('28.1.0.0');
   });
 });
 

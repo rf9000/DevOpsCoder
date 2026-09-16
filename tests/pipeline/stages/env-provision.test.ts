@@ -1,6 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { createEnvProvisionStage } from '../../../src/pipeline/stages/env-provision.ts';
-import { ContiniaCliError, type ContiniaCli, type EnvironmentInfo } from '../../../src/services/continia-cli.ts';
+import { ContiniaCliError, type ContiniaCli, type EnvironmentInfo, type EnvProfile } from '../../../src/services/continia-cli.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
 import type { AppConfig, EnvironmentOutput, PipelineState, WorktreeContext } from '../../../src/types/index.ts';
 
@@ -63,6 +63,8 @@ function makeCli(overrides: Partial<Record<keyof ContiniaCli, unknown>> = {}): C
   const created: EnvironmentInfo = { id: 'env-9', name: 'wi-101-fix-login', status: 'Draft', url: 'https://bc/env-9' };
   const cli = {
     createEnvironment: mock(async () => created),
+    listProfileVersions: mock(async () => [] as string[]),
+    listProfiles: mock(async () => [] as EnvProfile[]),
     startEnvironment: mock(async () => {}),
     getEnvironment: mock(async () => created),
     waitForRunning: mock(async () => ({ ...created, status: 'Running' })),
