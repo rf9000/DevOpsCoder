@@ -44,6 +44,8 @@ export interface AppConfig {
   continiaCliPath: string;
   /** DemoPortal profile used for `continia env create --profile`. */
   continiaEnvProfileId: string;
+  /** DemoPortal profile localization ("base", "dk", "nl", ...) used when deriving a profile. */
+  continiaEnvLocalization: string;
   /** DemoPortal API token, forwarded into the spawned CLI's environment. */
   continiaApiToken: string;
   /** AL app dirs (worktree-relative, dependency-ordered) to deps-install/deploy. */
@@ -267,6 +269,8 @@ export interface EnvironmentOutput {
   /** Last observed DemoPortal status (Draft/Starting/Running/...). */
   status: string;
   createdAt: string;
+  /** BC version the environment runs — the value the deploy set is validated against. */
+  bcVersion?: string;
 }
 
 /** One entry of `continia deploy --json`'s per-app result array. */

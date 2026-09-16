@@ -23,6 +23,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
+  continiaEnvLocalization: 'base',
   continiaApiToken: 'secret-token',
   continiaAppPaths: ['Core/Cloud'],
   continiaTestAppPaths: ['Core/Cloud'],

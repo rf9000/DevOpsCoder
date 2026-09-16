@@ -45,6 +45,7 @@ const baseConfig: AppConfig = {
   assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
+  continiaEnvLocalization: 'base',
   continiaApiToken: 'tok',
   continiaAppPaths: ['App'],
   continiaTestAppPaths: ['App'],

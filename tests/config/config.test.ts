@@ -274,14 +274,40 @@ describe('loadConfig', () => {
   });
 
   describe('Plan 10 — verification gate config', () => {
-    it('throws when CONTINIA_ENV_PROFILE_ID / CONTINIA_API_TOKEN are missing', () => {
+    it('throws when CONTINIA_API_TOKEN is missing', () => {
       // CONTINIA_APP_PATHS is deliberately NOT in this list: the deploy set is
       // derived per work item from the changed files and the selected tests.
-      for (const key of ['CONTINIA_ENV_PROFILE_ID', 'CONTINIA_API_TOKEN']) {
+      // CONTINIA_ENV_PROFILE_ID is deliberately NOT in this list either: the
+      // profile is derived, not pinned, so it is optional.
+      for (const key of ['CONTINIA_API_TOKEN']) {
         const env = { ...validEnv };
         delete env[key];
         expect(() => loadConfig(env)).toThrow(new RegExp(key));
       }
+    });
+
+    it('CONTINIA_ENV_PROFILE_ID is optional — the profile is derived, not pinned', () => {
+      const env = { ...validEnv };
+      delete env.CONTINIA_ENV_PROFILE_ID;
+
+      const config = loadConfig(env);
+
+      expect(config.continiaEnvProfileId).toBe('');
+    });
+
+    it('still requires CONTINIA_API_TOKEN when the verification gate runs', () => {
+      const env = { ...validEnv };
+      delete env.CONTINIA_API_TOKEN;
+
+      expect(() => loadConfig(env)).toThrow(/CONTINIA_API_TOKEN.*SKIP_BUILD_TEST/s);
+    });
+
+    it('defaults the environment localization to base', () => {
+      expect(loadConfig({ ...validEnv }).continiaEnvLocalization).toBe('base');
+    });
+
+    it('honours an explicit CONTINIA_ENV_LOCALIZATION', () => {
+      expect(loadConfig({ ...validEnv, CONTINIA_ENV_LOCALIZATION: 'dk' }).continiaEnvLocalization).toBe('dk');
     });
 
     it('parses CONTINIA_APP_PATHS as ordered, trimmed list', () => {
@@ -391,12 +417,6 @@ describe('loadConfig', () => {
       const config = loadConfig(env);
       expect(config.skipBuildTest).toBe(true);
       expect(config.continiaAppPaths).toEqual([]);
-    });
-
-    it('false + missing var → error names the var and the bypass', () => {
-      const env = { ...validEnv };
-      delete env.CONTINIA_ENV_PROFILE_ID;
-      expect(() => loadConfig(env)).toThrow(/CONTINIA_ENV_PROFILE_ID.*SKIP_BUILD_TEST/);
     });
   });
 });
