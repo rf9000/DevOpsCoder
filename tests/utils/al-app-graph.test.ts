@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   discoverAlApps,
+  localizationAppDir,
   ownerAppOf,
   resolveDeployOrder,
   type AlApp,
@@ -180,5 +181,48 @@ describe('discoverAlApps', () => {
     app('base-application', 'Continia Banking', [], { application: 29 });
 
     expect(discoverAlApps(dir)[0]?.application).toBeUndefined();
+  });
+});
+
+describe('localizationAppDir', () => {
+  const countryApps: AlApp[] = [
+    { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: [] },
+    { dir: 'banking-dk', name: 'Continia Banking (DK)', dependencies: [] },
+    { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+  ];
+
+  it("maps 'base' to the W1 app", () => {
+    expect(localizationAppDir(countryApps, 'base')).toEqual({ dir: 'banking-w1', fellBack: false });
+  });
+
+  it('maps a country code to its own app', () => {
+    expect(localizationAppDir(countryApps, 'dk')).toEqual({ dir: 'banking-dk', fellBack: false });
+  });
+
+  it('matches case-insensitively', () => {
+    expect(localizationAppDir(countryApps, 'DK')).toEqual({ dir: 'banking-dk', fellBack: false });
+  });
+
+  it("accepts 'w1' spelled directly, without reporting a fallback", () => {
+    expect(localizationAppDir(countryApps, 'w1')).toEqual({ dir: 'banking-w1', fellBack: false });
+  });
+
+  it('falls back to W1 when the localization has no app', () => {
+    // Real case: BC 29 publishes au/ca/nz profiles and the repo has no
+    // banking-au. Every country app declares Continia Finance, so W1 serves.
+    expect(localizationAppDir(countryApps, 'au')).toEqual({ dir: 'banking-w1', fellBack: true });
+  });
+
+  it('returns undefined when not even W1 exists', () => {
+    const noCountryApps: AlApp[] = [{ dir: 'base-application', name: 'Continia Banking', dependencies: [] }];
+    expect(localizationAppDir(noCountryApps, 'dk')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty app list', () => {
+    expect(localizationAppDir([], 'base')).toBeUndefined();
+  });
+
+  it('treats a blank localization as base', () => {
+    expect(localizationAppDir(countryApps, '  ')).toEqual({ dir: 'banking-w1', fellBack: false });
   });
 });

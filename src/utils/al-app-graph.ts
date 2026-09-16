@@ -102,6 +102,53 @@ export function ownerAppOf(relPath: string, apps: AlApp[]): AlApp | undefined {
 }
 
 /**
+ * The `base` DemoPortal localization corresponds to the W1 ("world") app —
+ * there is no `banking-base`.
+ */
+const BASE_LOCALIZATION_APP_CC = 'w1';
+
+export interface LocalizationAppMatch {
+  /** Worktree-relative directory of the country app to deps-install. */
+  dir: string;
+  /** True when the requested localization had no app and W1 stood in. */
+  fellBack: boolean;
+}
+
+/**
+ * The country app whose dependencies must be installed on an environment of
+ * this localization.
+ *
+ * Since v29 only the country apps declare `Continia Finance` — `base-application`
+ * does not — so `deps install banking-<cc>` is the only thing that brings Finance
+ * onto an environment. Every country app declares it, which is why falling back
+ * to W1 is safe: the fallback still achieves the step's purpose. That path is
+ * real, not defensive — BC 29 publishes `au`/`ca`/`nz` profiles for which this
+ * repo has no app.
+ *
+ * Returns `undefined` when the repo has no country app at all; the caller logs
+ * and skips rather than failing, because a repo without one is not Continia
+ * Banking and the verification gate should not die over it.
+ */
+export function localizationAppDir(
+  apps: AlApp[],
+  localization: string,
+): LocalizationAppMatch | undefined {
+  const cc = localization.trim().toLowerCase();
+  const wanted = cc === '' || cc === 'base' ? BASE_LOCALIZATION_APP_CC : cc;
+
+  const byCc = (code: string): AlApp | undefined =>
+    apps.find((a) => a.dir.toLowerCase() === `banking-${code}`);
+
+  const exact = byCc(wanted);
+  if (exact) return { dir: exact.dir, fellBack: false };
+
+  const w1 = byCc(BASE_LOCALIZATION_APP_CC);
+  if (w1) return { dir: w1.dir, fellBack: true };
+
+  return undefined;
+}
+
+/**
  * Expand seed app directories to everything that must be deployed with them,
  * in dependency-first order.
  *
