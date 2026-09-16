@@ -1,8 +1,9 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { createEnvProvisionStage } from '../../../src/pipeline/stages/env-provision.ts';
-import { ContiniaCliError, type ContiniaCli, type EnvironmentInfo, type EnvProfile } from '../../../src/services/continia-cli.ts';
+import { ContiniaCliError, type ContiniaCli, type EnvironmentInfo } from '../../../src/services/continia-cli.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
 import type { AppConfig, EnvironmentOutput, PipelineState, WorktreeContext } from '../../../src/types/index.ts';
+import type { AlApp } from '../../../src/utils/al-app-graph.ts';
 
 const baseConfig: AppConfig = {
   orgUrl: 'https://x', project: 'p', pat: 't',
@@ -64,8 +65,11 @@ function makeCli(overrides: Partial<Record<keyof ContiniaCli, unknown>> = {}): C
   const created: EnvironmentInfo = { id: 'env-9', name: 'wi-101-fix-login', status: 'Draft', url: 'https://bc/env-9' };
   const cli = {
     createEnvironment: mock(async () => created),
-    listProfileVersions: mock(async () => [] as string[]),
-    listProfiles: mock(async () => [] as EnvProfile[]),
+    listProfileVersions: mock(async () => ['16.0.0.0', '28.1.0.0', '28.5.0.0', '29.0.0.0']),
+    listProfiles: mock(async () => [
+      { id: 'prof-29-base', bcVersion: '29.0.0.0', localization: 'base', description: 'BASE BC 29.0', isEnabled: true },
+      { id: 'prof-29-dk', bcVersion: '29.0.0.0', localization: 'dk', description: 'DK BC 29.0', isEnabled: true },
+    ]),
     startEnvironment: mock(async () => {}),
     getEnvironment: mock(async () => created),
     waitForRunning: mock(async () => ({ ...created, status: 'Running' })),
@@ -78,6 +82,9 @@ function makeCli(overrides: Partial<Record<keyof ContiniaCli, unknown>> = {}): C
   };
   return cli as unknown as ContiniaCli & CliMocks;
 }
+
+const appsAt = (...versions: string[]): (() => AlApp[]) =>
+  () => versions.map((v, i) => ({ dir: `app${i}`, name: `App${i}`, dependencies: [], application: v, platform: v }));
 
 describe('createEnvProvisionStage', () => {
   it('fresh run: creates + starts the env, persists outputs.environment, never polls', async () => {
@@ -161,5 +168,196 @@ describe('createEnvProvisionStage', () => {
   it('throws when the worktree output is missing', async () => {
     const stage = createEnvProvisionStage({ config: baseConfig, continiaCli: makeCli(), logger: createLogger() });
     await expect(stage.execute(makeState({ outputs: {} }), makeCtx())).rejects.toThrow(/worktree/);
+  });
+});
+
+describe('createEnvProvisionStage — BC profile derivation', () => {
+  const derivingConfig: AppConfig = { ...baseConfig, continiaEnvProfileId: '', continiaEnvLocalization: 'base' };
+
+  it('derives the profile from the worktree app.json versions', async () => {
+    const cli = makeCli();
+    const stage = createEnvProvisionStage({
+      config: derivingConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    expect(cli.listProfiles).toHaveBeenCalledWith('29.0.0.0', expect.anything());
+    const [, profileId] = cli.createEnvironment.mock.calls[0] as unknown as [string, string];
+    expect(profileId).toBe('prof-29-base');
+  });
+
+  it('takes the highest version declared across all apps', async () => {
+    const cli = makeCli();
+    const stage = createEnvProvisionStage({
+      config: derivingConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('28.1.0.0', '29.0.0.0', '28.5.0.0'),
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    expect(cli.listProfiles).toHaveBeenCalledWith('29.0.0.0', expect.anything());
+  });
+
+  it('picks the lowest published version that satisfies when there is no exact match', async () => {
+    const cli = makeCli({ listProfileVersions: mock(async () => ['28.5.0.0', '29.1.0.0', '30.0.0.0']) });
+    const stage = createEnvProvisionStage({
+      config: derivingConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    expect(cli.listProfiles).toHaveBeenCalledWith('29.1.0.0', expect.anything());
+  });
+
+  it('honours CONTINIA_ENV_LOCALIZATION', async () => {
+    const cli = makeCli();
+    const stage = createEnvProvisionStage({
+      config: { ...derivingConfig, continiaEnvLocalization: 'dk' },
+      continiaCli: cli, logger: createLogger(), discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    const [, profileId] = cli.createEnvironment.mock.calls[0] as unknown as [string, string];
+    expect(profileId).toBe('prof-29-dk');
+  });
+
+  it('throws when no published version satisfies the requirement', async () => {
+    const cli = makeCli({ listProfileVersions: mock(async () => ['28.1.0.0']) });
+    const stage = createEnvProvisionStage({
+      config: derivingConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow(/29\.0\.0\.0.*28\.1\.0\.0/s);
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('throws naming the available localizations when the configured one is absent', async () => {
+    const cli = makeCli();
+    const stage = createEnvProvisionStage({
+      config: { ...derivingConfig, continiaEnvLocalization: 'cz' },
+      continiaCli: cli, logger: createLogger(), discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow(/cz.*base, dk/s);
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('skips disabled profiles', async () => {
+    const cli = makeCli({
+      listProfiles: mock(async () => [
+        { id: 'prof-off', bcVersion: '29.0.0.0', localization: 'base', isEnabled: false },
+        { id: 'prof-on', bcVersion: '29.0.0.0', localization: 'base', isEnabled: true },
+      ]),
+    });
+    const stage = createEnvProvisionStage({
+      config: derivingConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    const [, profileId] = cli.createEnvironment.mock.calls[0] as unknown as [string, string];
+    expect(profileId).toBe('prof-on');
+  });
+
+  it('throws when no manifest declares a version and no pin is set', async () => {
+    const cli = makeCli();
+    const stage = createEnvProvisionStage({
+      config: derivingConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: () => [],
+    });
+
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow(/application.*platform/s);
+  });
+});
+
+describe('createEnvProvisionStage — the pin as an override', () => {
+  it('creates from the pin without querying profiles', async () => {
+    const cli = makeCli({ getEnvironment: mock(async () => ({ id: 'env-9', status: 'Draft', bcVersion: '29.0.0.0' })) });
+    const stage = createEnvProvisionStage({
+      config: baseConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await stage.execute(makeState(), makeCtx());
+
+    expect(cli.listProfileVersions).not.toHaveBeenCalled();
+    const [, profileId] = cli.createEnvironment.mock.calls[0] as unknown as [string, string];
+    expect(profileId).toBe('prof-1');
+  });
+
+  it('throws when the pinned profile produces an environment below the requirement', async () => {
+    const cli = makeCli({ getEnvironment: mock(async () => ({ id: 'env-9', status: 'Draft', bcVersion: '28.1.0.0' })) });
+    const stage = createEnvProvisionStage({
+      config: baseConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    await expect(stage.execute(makeState(), makeCtx())).rejects.toThrow(/28\.1\.0\.0.*29\.0\.0\.0.*CONTINIA_ENV_PROFILE_ID/s);
+  });
+
+  it('creates from the pin unvalidated when no manifest declares a version', async () => {
+    const cli = makeCli();
+    const stage = createEnvProvisionStage({
+      config: baseConfig, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: () => [],
+    });
+
+    const result = await stage.execute(makeState(), makeCtx());
+
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-9');
+  });
+});
+
+describe('createEnvProvisionStage — persisted environment validation', () => {
+  const persisted: EnvironmentOutput = {
+    envId: 'env-old', name: 'wi-101-fix-login', status: 'Stopped',
+    url: 'https://bc/env-old', createdAt: '2026-01-01T00:00:00Z', bcVersion: '28.1.0.0',
+  };
+
+  it('recreates a persisted environment whose BC version no longer satisfies', async () => {
+    const cli = makeCli({ getEnvironment: mock(async () => ({ id: 'env-old', status: 'Stopped', bcVersion: '28.1.0.0' })) });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(makeState({ outputs: { worktree, environment: persisted } }), makeCtx());
+
+    expect(cli.createEnvironment).toHaveBeenCalledTimes(1);
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-9');
+  });
+
+  it('reuses a persisted environment that still satisfies', async () => {
+    const cli = makeCli({ getEnvironment: mock(async () => ({ id: 'env-old', status: 'Running', bcVersion: '29.0.0.0' })) });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(
+      makeState({ outputs: { worktree, environment: { ...persisted, bcVersion: '29.0.0.0' } } }),
+      makeCtx(),
+    );
+
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
+  });
+
+  it('reuses unvalidated when the requirement cannot be derived', async () => {
+    const cli = makeCli({ getEnvironment: mock(async () => ({ id: 'env-old', status: 'Running', bcVersion: '28.1.0.0' })) });
+    const stage = createEnvProvisionStage({
+      config: baseConfig, continiaCli: cli, logger: createLogger(), discoverAlApps: () => [],
+    });
+
+    const result = await stage.execute(makeState({ outputs: { worktree, environment: persisted } }), makeCtx());
+
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
   });
 });
