@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { resolve, join } from 'path';
 import {
   createContiniaCli,
@@ -23,6 +23,7 @@ const baseConfig: AppConfig = {
   claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
+  continiaEnvLocalization: 'base',
   continiaApiToken: 'secret-token',
   continiaAppPaths: ['Core/Cloud'],
   continiaTestAppPaths: ['Core/Cloud'],
@@ -441,6 +442,169 @@ describe('getEnvironmentUsers', () => {
     const users = await cli.getEnvironmentUsers('env-9', opts);
     expect(users[0]).toEqual({ username: 'NoPass', isAdmin: false });
     expect('password' in (users[0] as object)).toBe(false);
+  });
+});
+
+describe('profile queries', () => {
+  it('lists BC profile versions from a bare JSON array', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify(['16.0.0.0', '28.1.0.0', '29.0.0.0']),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const versions = await cli.listProfileVersions({ worktreePath: '/wt' });
+
+    expect(versions).toEqual(['16.0.0.0', '28.1.0.0', '29.0.0.0']);
+    const [argv] = exec.mock.calls[0] as unknown as [string[]];
+    expect(argv.slice(-4)).toEqual(['env', 'profiles', 'versions', '--json']);
+  });
+
+  it('lists profiles for one BC version', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        {
+          id: 'ff24b00b',
+          bcVersion: '29.0.0.0',
+          buildVersion: '29.0.54011.54239',
+          localization: 'base',
+          description: 'BASE Business Central 29.0',
+          platform: 'sandbox',
+          isEnabled: true,
+        },
+      ]),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const profiles = await cli.listProfiles('29.0.0.0', { worktreePath: '/wt' });
+
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]?.id).toBe('ff24b00b');
+    expect(profiles[0]?.localization).toBe('base');
+    expect(profiles[0]?.isEnabled).toBe(true);
+    // `run()` builds argv as [resolvedExe, ...args], so the flags are the tail.
+    const [argv] = exec.mock.calls[0] as unknown as [string[]];
+    expect(argv.slice(-6)).toEqual(['env', 'profiles', 'list', '--bc-version', '29.0.0.0', '--json']);
+  });
+
+  it('tolerates an object wrapper instead of a bare array', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ versions: ['29.0.0.0'] }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    expect(await cli.listProfileVersions({ worktreePath: '/wt' })).toEqual(['29.0.0.0']);
+  });
+
+  it('surfaces bcVersion from env get', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ id: 'env-1', status: 'Running', bcVersion: '28.1.0.0' }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const env = await cli.getEnvironment('env-1', { worktreePath: '/wt' });
+
+    expect(env.bcVersion).toBe('28.1.0.0');
+  });
+
+  // `.optional()` accepts a MISSING key but rejects an explicit null, and a
+  // .NET CLI serializing a nullable property emits null by default. One such
+  // field would otherwise throw a bare ZodError out of EVERY environment call
+  // in the pipeline — including build-and-test's, which never asked about
+  // versions — and a ZodError is not a ContiniaCliError, so env-provision's
+  // recover-by-recreating catch would rethrow it as a hard stage failure.
+  it('tolerates a null bcVersion from env get', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ id: 'env-1', status: 'Running', url: null, name: null, bcVersion: null }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const env = await cli.getEnvironment('env-1', { worktreePath: '/wt' });
+
+    expect(env.bcVersion).toBeUndefined();
+    expect(env.url).toBeUndefined();
+    expect(env.status).toBe('Running');
+  });
+
+  it('tolerates null profile fields and keeps rows that are merely incomplete', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        { id: 'prof-null', bcVersion: null, localization: null, description: null, isEnabled: null },
+        { id: 'prof-ok', bcVersion: '29.0.0.0', localization: 'base', isEnabled: true },
+      ]),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const profiles = await cli.listProfiles('29.0.0.0', { worktreePath: '/wt' });
+
+    // One malformed row out of 18 must not take the whole catalogue down: the
+    // row survives with undefined fields and env-provision's candidate filter
+    // is what rejects it.
+    expect(profiles).toHaveLength(2);
+    expect(profiles[0]?.bcVersion).toBeUndefined();
+    expect(profiles[1]?.id).toBe('prof-ok');
+  });
+
+  it('drops profile rows with no usable id rather than failing the query', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        { bcVersion: '29.0.0.0', localization: 'base' },
+        { id: 'prof-ok', bcVersion: '29.0.0.0', localization: 'dk' },
+      ]),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const profiles = await cli.listProfiles('29.0.0.0', { worktreePath: '/wt' });
+
+    expect(profiles.map((p) => p.id)).toEqual(['prof-ok']);
+  });
+
+  // Every other failure in this file arrives as a ContiniaCliError carrying
+  // the argv; a bare ZodError would reach an operator-facing work-item comment
+  // with no command, no stdout and no mention of `continia`.
+  it('wraps a profiles-list shape mismatch as a ContiniaCliError naming the args', async () => {
+    // A bare string, not an object: `{ profiles: [...] }` has `.default([])`,
+    // so an object with no `profiles` key legitimately parses as "no rows".
+    const exec = mock(async () => ({ exitCode: 0, stdout: JSON.stringify('not a profile list'), stderr: '' }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const err = await cli.listProfiles('29.0.0.0', { worktreePath: '/wt' }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ContiniaCliError);
+    expect((err as ContiniaCliError).message).toMatch(/env profiles list --bc-version 29\.0\.0\.0/);
+  });
+
+  it('wraps a profile-versions shape mismatch as a ContiniaCliError naming the args', async () => {
+    const exec = mock(async () => ({ exitCode: 0, stdout: JSON.stringify([1, 2, 3]), stderr: '' }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const err = await cli.listProfileVersions({ worktreePath: '/wt' }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ContiniaCliError);
+    expect((err as ContiniaCliError).message).toMatch(/env profiles versions --json/);
+  });
+
+  it('wraps an env-get shape mismatch as a ContiniaCliError, so env-provision can recover', async () => {
+    const exec = mock(async () => ({ exitCode: 0, stdout: JSON.stringify({ id: 'env-1', status: 7 }), stderr: '' }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const err = await cli.getEnvironment('env-1', { worktreePath: '/wt' }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(ContiniaCliError);
+    expect((err as ContiniaCliError).message).toMatch(/env get env-1/);
   });
 });
 

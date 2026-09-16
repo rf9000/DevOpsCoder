@@ -37,6 +37,7 @@ const envSchema = z.object({
   STAGE_TIMEOUT_MS_BUILD_AND_TEST: z.coerce.number().int().positive().optional(),
   CONTINIA_CLI_PATH: z.string().default('.tools/continia.exe'),
   CONTINIA_ENV_PROFILE_ID: z.string().default(''),
+  CONTINIA_ENV_LOCALIZATION: z.string().default('base'),
   CONTINIA_API_TOKEN: z.string().default(''),
   CONTINIA_APP_PATHS: z.string().default(''),
   CONTINIA_TEST_APP_PATHS: z.string().optional(),
@@ -90,13 +91,12 @@ export function loadConfig(
 
   // A harness smoke test should not need a DemoPortal token — the Continia
   // config is only required when the verification gate actually runs.
+  // CONTINIA_ENV_PROFILE_ID is deliberately NOT here: the profile is derived
+  // from the worktree's app.json versions, and the pin is only an override.
   if (!p.SKIP_BUILD_TEST) {
-    const missing = (
-      [
-        ['CONTINIA_ENV_PROFILE_ID', p.CONTINIA_ENV_PROFILE_ID],
-        ['CONTINIA_API_TOKEN', p.CONTINIA_API_TOKEN],
-      ] as const
-    ).filter(([, v]) => v.trim() === '');
+    const missing = ([['CONTINIA_API_TOKEN', p.CONTINIA_API_TOKEN]] as const).filter(
+      ([, v]) => v.trim() === '',
+    );
     if (missing.length > 0) {
       throw new Error(
         `Invalid configuration:\n${missing
@@ -200,6 +200,10 @@ export function loadConfig(
     assignedToFilter,
     continiaCliPath: p.CONTINIA_CLI_PATH,
     continiaEnvProfileId: p.CONTINIA_ENV_PROFILE_ID,
+    // Trimmed, and empty falls back to the default: CONTINIA_ENV_LOCALIZATION=
+    // (present but blank) bypasses Zod's .default() and would otherwise reach
+    // env-provision as "no enabled '' profile".
+    continiaEnvLocalization: p.CONTINIA_ENV_LOCALIZATION.trim() || 'base',
     continiaApiToken: p.CONTINIA_API_TOKEN,
     continiaAppPaths,
     continiaTestAppPaths,
