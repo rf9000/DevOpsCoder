@@ -193,6 +193,7 @@ interface StageHarness {
   resets: string[];
   testOpts: Array<number | undefined>;
   warnings: string[];
+  infos: string[];
 }
 
 function makeHarness(opts: {
@@ -258,8 +259,12 @@ function makeHarness(opts: {
 
   const resets: string[] = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   const logger: Logger = {
     ...createLogger(),
+    info: (m: string) => {
+      infos.push(m);
+    },
     warn: (m: string) => {
       warnings.push(m);
     },
@@ -282,7 +287,7 @@ function makeHarness(opts: {
     discoverAlApps: () => opts.apps ?? [],
   });
 
-  return { stage, cli, callOrder, runnerCalls, resets, testOpts, warnings };
+  return { stage, cli, callOrder, runnerCalls, resets, testOpts, warnings, infos };
 }
 
 function makeStageState(): PipelineState {
@@ -596,5 +601,78 @@ describe('createBuildAndTestStage', () => {
     });
     await stage.execute(makeStageState(), makeStageCtx());
     expect(runnerCalls[0]!.prompt).toContain('**continia-test**');
+  });
+});
+
+describe('build-and-test — localization deps install', () => {
+  const bankingApps: AlApp[] = [
+    { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Banking'] },
+    { dir: 'banking-dk', name: 'Continia Banking (DK)', dependencies: ['Continia Banking'] },
+    { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+  ];
+
+  it('deps-installs the localization app BEFORE any deploy-set app', async () => {
+    const { stage, callOrder } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    const installs = callOrder.filter((c) => c.startsWith('install:'));
+    // Order is the requirement: Finance only arrives via the country app, and
+    // base-application's deps install must not run before it.
+    expect(installs[0]).toBe('install:banking-w1');
+    expect(installs).toContain('install:base-application');
+  });
+
+  it('never deploys or downloads symbols for the localization app', async () => {
+    const { stage, callOrder } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    // Letting it into appPaths would make resolveDeployOrder compile vendored
+    // external/Continia Finance source.
+    expect(callOrder).not.toContain('deploy:banking-w1');
+    expect(callOrder).not.toContain('download:banking-w1');
+  });
+
+  it('uses the app matching CONTINIA_ENV_LOCALIZATION', async () => {
+    const { stage, callOrder } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'dk', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    expect(callOrder.filter((c) => c.startsWith('install:'))[0]).toBe('install:banking-dk');
+  });
+
+  it('falls back to W1 and says so when the localization has no app', async () => {
+    const { stage, callOrder, infos } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'au', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    expect(callOrder.filter((c) => c.startsWith('install:'))[0]).toBe('install:banking-w1');
+    expect(infos.some((m) => /fell back to banking-w1/.test(m))).toBe(true);
+  });
+
+  it('warns and completes when the repo has no country app at all', async () => {
+    const { stage, callOrder, warnings } = makeHarness({
+      apps: [{ dir: 'base-application', name: 'Continia Banking', dependencies: [] }],
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+    });
+    const result = await stage.execute(makeStageState(), makeStageCtx());
+
+    expect(callOrder.filter((c) => c.startsWith('install:'))[0]).toBe('install:base-application');
+    expect(warnings.some((m) => /Continia Finance will NOT be installed/.test(m))).toBe(true);
+    expect(result.outputs.verification).toBeDefined();
   });
 });
