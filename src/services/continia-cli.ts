@@ -64,7 +64,12 @@ export interface EnvironmentInfo {
 /** One row of `continia env profiles list --bc-version <v> --json`. */
 export interface EnvProfile {
   id: string;
-  bcVersion: string;
+  /**
+   * Optional on purpose: a row that omits it is malformed, not fatal, and must
+   * not take the other 17 localizations down with it. Callers that care (see
+   * `env-provision`'s candidate filter) reject the row themselves.
+   */
+  bcVersion?: string;
   /** Country/region code — "base", "dk", "nl", ... A BC version publishes ~18 of these. */
   localization?: string;
   description?: string;
@@ -141,16 +146,22 @@ export interface ContiniaCliDeps {
 
 // Lenient schemas: unknown CLI fields must never break us — the exact JSON
 // field names are confirmed against the real exe on the first smoke run.
+//
+// `.nullish()`, never `.optional()`: `.optional()` accepts a MISSING key but
+// REJECTS an explicit `null`, and a .NET CLI serializing a nullable property
+// emits `null` by default. One `"bcVersion": null` from `env get` would
+// otherwise throw on every environment call in the pipeline, including the
+// ones in build-and-test that never asked about versions at all.
 const environmentInfoSchema = z
   .object({
-    id: z.string().optional(),
-    envId: z.string().optional(),
-    environmentId: z.string().optional(),
-    name: z.string().optional(),
-    status: z.string().optional(),
-    url: z.string().optional(),
-    webUrl: z.string().optional(),
-    bcVersion: z.string().optional(),
+    id: z.string().nullish(),
+    envId: z.string().nullish(),
+    environmentId: z.string().nullish(),
+    name: z.string().nullish(),
+    status: z.string().nullish(),
+    url: z.string().nullish(),
+    webUrl: z.string().nullish(),
+    bcVersion: z.string().nullish(),
   })
   .passthrough();
 
@@ -183,14 +194,19 @@ const profileVersionsSchema = z.union([
   z.object({ versions: z.array(z.string()).default([]) }).passthrough(),
 ]);
 
+// Every field nullish, `id` included: this schema is applied to the WHOLE
+// 18-row array in one parse, so a required field turns one malformed row into
+// a total provisioning failure. Rows with no usable `id` are dropped when
+// mapping; rows with no `bcVersion` are rejected by env-provision's own
+// candidate filter, which is the code that actually cares.
 const envProfileSchema = z
   .object({
-    id: z.string(),
-    bcVersion: z.string(),
-    localization: z.string().optional(),
-    description: z.string().optional(),
-    buildVersion: z.string().optional(),
-    isEnabled: z.boolean().optional(),
+    id: z.string().nullish(),
+    bcVersion: z.string().nullish(),
+    localization: z.string().nullish(),
+    description: z.string().nullish(),
+    buildVersion: z.string().nullish(),
+    isEnabled: z.boolean().nullish(),
   })
   .passthrough();
 
@@ -361,8 +377,35 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     }
   }
 
+  /**
+   * Zod-validate a parsed payload, rethrowing a shape mismatch as a
+   * ContiniaCliError naming the argv. A bare ZodError here reaches an
+   * operator-facing work-item comment with no command, no stdout and no
+   * mention of `continia` — and, because it is not a ContiniaCliError, it
+   * escapes the recover-by-recreating catch in env-provision.
+   */
+  function parseShape<S extends z.ZodType>(
+    args: string[],
+    schema: S,
+    raw: unknown,
+    result: ExecResult & { argv: string[] },
+  ): z.infer<S> {
+    const shape = schema.safeParse(raw);
+    if (shape.success) return shape.data;
+    const issues = shape.error.issues
+      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('; ');
+    throw new ContiniaCliError(
+      `continia ${args.join(' ')} returned an unexpected shape (${issues}): ${result.stdout.slice(0, 500)}`,
+      result.argv,
+      result.exitCode,
+      result.stdout,
+      result.stderr,
+    );
+  }
+
   function toEnvironmentInfo(args: string[], raw: unknown, result: ExecResult & { argv: string[] }): EnvironmentInfo {
-    const parsed = environmentInfoSchema.parse(raw ?? {});
+    const parsed = parseShape(args, environmentInfoSchema, raw ?? {}, result);
     const id = parsed.id ?? parsed.envId ?? parsed.environmentId;
     if (!id) {
       throw new ContiniaCliError(
@@ -375,10 +418,10 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     }
     return {
       id,
-      name: parsed.name,
+      name: parsed.name ?? undefined,
       status: parsed.status ?? 'unknown',
-      url: parsed.url ?? parsed.webUrl,
-      bcVersion: parsed.bcVersion,
+      url: parsed.url ?? parsed.webUrl ?? undefined,
+      bcVersion: parsed.bcVersion ?? undefined,
     };
   }
 
@@ -386,6 +429,17 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     const result = await run(args, opts, cwd);
     assertZeroExit(args, result);
     return parseJson(args, result);
+  }
+
+  /** runJson + parseShape: every shape failure arrives as a ContiniaCliError. */
+  async function runParsed<S extends z.ZodType>(
+    args: string[],
+    schema: S,
+    opts: ContiniaCallOpts,
+  ): Promise<z.infer<S>> {
+    const result = await run(args, opts);
+    assertZeroExit(args, result);
+    return parseShape(args, schema, parseJson(args, result), result);
   }
 
   return {
@@ -398,22 +452,24 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
 
     async listProfileVersions(opts) {
       const args = ['env', 'profiles', 'versions', '--json'];
-      const parsed = profileVersionsSchema.parse(await runJson(args, opts));
+      const parsed = await runParsed(args, profileVersionsSchema, opts);
       return Array.isArray(parsed) ? parsed : parsed.versions;
     },
 
     async listProfiles(bcVersion, opts) {
       const args = ['env', 'profiles', 'list', '--bc-version', bcVersion, '--json'];
-      const parsed = profilesListSchema.parse(await runJson(args, opts));
+      const parsed = await runParsed(args, profilesListSchema, opts);
       const rows = Array.isArray(parsed) ? parsed : parsed.profiles;
-      return rows.map((p) => ({
-        id: p.id,
-        bcVersion: p.bcVersion,
-        localization: p.localization,
-        description: p.description,
-        buildVersion: p.buildVersion,
-        isEnabled: p.isEnabled,
-      }));
+      return rows
+        .filter((p): p is typeof p & { id: string } => typeof p.id === 'string' && p.id !== '')
+        .map((p) => ({
+          id: p.id,
+          bcVersion: p.bcVersion ?? undefined,
+          localization: p.localization ?? undefined,
+          description: p.description ?? undefined,
+          buildVersion: p.buildVersion ?? undefined,
+          isEnabled: p.isEnabled ?? undefined,
+        }));
     },
 
     async startEnvironment(envId, opts) {

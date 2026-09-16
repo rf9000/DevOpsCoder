@@ -37,7 +37,11 @@ export function compareBcVersions(a: number[], b: number[]): number {
   return 0;
 }
 
-/** Highest of `versions`, returned in its original spelling. Unparseable entries are skipped. */
+/**
+ * Highest of `versions`, returned in its original spelling. Unparseable entries
+ * are skipped. Numerically equal spellings are first-seen-wins: given
+ * `['29.0', '29.0.0.0']` the result is `'29.0'`, since neither compares greater.
+ */
 export function maxBcVersion(versions: string[]): string | undefined {
   let best: { raw: string; parsed: number[] } | undefined;
   for (const raw of versions) {

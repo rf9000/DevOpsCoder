@@ -52,8 +52,9 @@ export function resolveRequiredBcVersion(apps: AlApp[]): string | undefined {
  *
  * Re-entry mirrors worktree-setup's persisted-reuse: a persisted envId is
  * validated via `env get` and reused (started if needed); if it no longer
- * resolves, OR its BC version no longer satisfies the worktree, a fresh
- * environment is created and the record overwritten.
+ * resolves, OR its BC version no longer satisfies the worktree, OR that
+ * version cannot be established at all, a fresh environment is created and
+ * the record overwritten.
  */
 export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
   const discover = deps.discoverAlApps ?? defaultDiscoverAlApps;
@@ -70,13 +71,43 @@ export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
       );
     }
 
-    const profiles = (await deps.continiaCli.listProfiles(chosen, callOpts)).filter(
+    const enabled = (await deps.continiaCli.listProfiles(chosen, callOpts)).filter(
       (p) => p.isEnabled !== false,
     );
-    const wanted = deps.config.continiaEnvLocalization;
-    const match = profiles.find(
-      (p) => p.localization?.toLowerCase() === wanted.toLowerCase(),
+    // Re-check the version the rows actually carry. `--bc-version` is a
+    // server-side filter no test in this repo has ever run against the live
+    // CLI, and a list that came back unfiltered would hand the localization
+    // match a 28.1 profile that looks exactly as valid as a 29.0 one. A row
+    // with no bcVersion at all is dropped here rather than in the schema, so
+    // one malformed row cannot fail the whole query (see continia-cli.ts).
+    const profiles = enabled.filter(
+      (p) => p.bcVersion !== undefined && satisfiesBcVersion(required, p.bcVersion),
     );
+    if (profiles.length < enabled.length) {
+      deps.logger.warn(
+        `env-provision: dropped ${enabled.length - profiles.length} of ${enabled.length} enabled profile(s) ` +
+          `returned for BC ${chosen}: their reported bcVersion is missing or below the required BC ${required} ` +
+          `('continia env profiles list --bc-version' did not filter as expected)`,
+      );
+    }
+
+    const wanted = deps.config.continiaEnvLocalization;
+    // Sorted, not `.find`: the real rows carry a `platform` field, so a
+    // version/localization pair can publish more than one profile and CLI
+    // ordering is not a promise. Pick deterministically and say so.
+    // Codepoint order, not `localeCompare` — the runtime may be built without
+    // ICU (Bun returns 0 for every pair), and the whole point here is a
+    // choice that does not vary between hosts.
+    const matches = profiles
+      .filter((p) => p.localization?.toLowerCase() === wanted.toLowerCase())
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (matches.length > 1) {
+      deps.logger.warn(
+        `env-provision: BC ${chosen} publishes ${matches.length} enabled '${wanted}' profiles ` +
+          `(${matches.map((p) => p.id).join(', ')}) — taking the lowest id`,
+      );
+    }
+    const match = matches[0];
     if (!match) {
       const have = profiles
         .map((p) => p.localization ?? '?')
@@ -115,13 +146,30 @@ export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
           const live = await deps.continiaCli.getEnvironment(persisted.envId, callOpts);
           const liveVersion = live.bcVersion ?? persisted.bcVersion;
 
-          if (required && liveVersion && !satisfiesBcVersion(required, liveVersion)) {
+          // Three outcomes, and the middle one is the whole point: an
+          // environment whose version cannot be established is NOT reused.
+          // `env get` can omit bcVersion, report it under a name we do not
+          // read, or null it out for a Stopped/Draft environment, and every
+          // state file written before this plan carries none — so "unknown"
+          // is the live case on the first run after deploy, not a theoretical
+          // one. Reusing it unchecked silently reproduces the $33 failure;
+          // recreating costs a boot that overlaps the revision loop anyway.
+          let recreateBecause: string | undefined;
+          if (required && !liveVersion) {
+            recreateBecause =
+              `its BC version could not be established ('env get' reported none and the state file records ` +
+              `none), so it cannot be checked against the BC ${required} this worktree requires — recreating ` +
+              `rather than reusing it unchecked`;
+          } else if (required && liveVersion && !satisfiesBcVersion(required, liveVersion)) {
             // The resume case that would otherwise never heal: a work item that
             // banked an environment from a stale pin keeps reusing it forever.
-            deps.logger.info(
-              `env-provision: persisted environment ${persisted.envId} is BC ${liveVersion}, which does not ` +
-                `satisfy the BC ${required} this worktree requires — creating a fresh one`,
-            );
+            recreateBecause =
+              `it is BC ${liveVersion}, which does not satisfy the BC ${required} this worktree requires — ` +
+              `creating a fresh one`;
+          }
+
+          if (recreateBecause) {
+            deps.logger.warn(`env-provision: persisted environment ${persisted.envId}: ${recreateBecause}`);
           } else {
             if (live.status !== 'Running' && live.status !== 'Starting') {
               await deps.continiaCli.startEnvironment(persisted.envId, callOpts);
@@ -164,18 +212,31 @@ export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
       const created = await deps.continiaCli.createEnvironment(name, profileId, callOpts);
       await deps.continiaCli.startEnvironment(created.id, callOpts);
 
-      // Derived profiles are correct by construction — the version came from the
-      // catalogue. A pin is the case worth the extra `env get`: it is the one
-      // path where the profile and the requirement were never compared.
+      // Validate whatever we just created, pinned or derived. A derived
+      // profile is NOT correct by construction: the catalogue rows and the
+      // `--bc-version` filter behind them are the same third-party CLI output
+      // this stage exists to stop trusting blindly, and "it was chosen
+      // carefully once" is exactly the argument that cost $33. `env create
+      // --json` may not report bcVersion, so pay the one extra `env get`
+      // unconditionally — it is one CLI call against a whole-pipeline failure.
       let bcVersion = created.bcVersion;
-      if (pinnedProfileId && required) {
+      if (required) {
         const live = await deps.continiaCli.getEnvironment(created.id, callOpts);
         bcVersion = live.bcVersion ?? bcVersion;
-        if (bcVersion && !satisfiesBcVersion(required, bcVersion)) {
+        if (!bcVersion) {
+          deps.logger.warn(
+            `env-provision: environment ${created.id} reports no BC version, so the BC ${required} this ` +
+              `worktree requires could NOT be verified against it — proceeding unverified`,
+          );
+        } else if (!satisfiesBcVersion(required, bcVersion)) {
           throw new Error(
-            `env-provision: CONTINIA_ENV_PROFILE_ID=${pinnedProfileId} created a BC ${bcVersion} environment, ` +
-              `but this worktree's app.json files require BC ${required}. Update the pin to a matching ` +
-              `profile, or unset CONTINIA_ENV_PROFILE_ID to let the profile be derived.`,
+            pinnedProfileId
+              ? `env-provision: CONTINIA_ENV_PROFILE_ID=${pinnedProfileId} created a BC ${bcVersion} environment, ` +
+                `but this worktree's app.json files require BC ${required}. Update the pin to a matching ` +
+                `profile, or unset CONTINIA_ENV_PROFILE_ID to let the profile be derived.`
+              : `env-provision: the derived profile ${profileId} produced a BC ${bcVersion} environment, but this ` +
+                `worktree's app.json files require BC ${required}. The DemoPortal profile catalogue and the ` +
+                `environment it created disagree; set CONTINIA_ENV_PROFILE_ID to pin a known-good profile.`,
           );
         }
       }

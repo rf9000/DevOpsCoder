@@ -269,7 +269,7 @@ export interface EnvironmentOutput {
   /** Last observed DemoPortal status (Draft/Starting/Running/...). */
   status: string;
   createdAt: string;
-  /** BC version the environment runs — the value the deploy set is validated against. */
+  /** BC version the environment runs — recorded for the reuse-path comparison and for operator visibility. */
   bcVersion?: string;
 }
 

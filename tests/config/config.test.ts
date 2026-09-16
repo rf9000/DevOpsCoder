@@ -279,11 +279,9 @@ describe('loadConfig', () => {
       // derived per work item from the changed files and the selected tests.
       // CONTINIA_ENV_PROFILE_ID is deliberately NOT in this list either: the
       // profile is derived, not pinned, so it is optional.
-      for (const key of ['CONTINIA_API_TOKEN']) {
-        const env = { ...validEnv };
-        delete env[key];
-        expect(() => loadConfig(env)).toThrow(new RegExp(key));
-      }
+      const env = { ...validEnv };
+      delete env.CONTINIA_API_TOKEN;
+      expect(() => loadConfig(env)).toThrow(/CONTINIA_API_TOKEN/);
     });
 
     it('CONTINIA_ENV_PROFILE_ID is optional — the profile is derived, not pinned', () => {
@@ -308,6 +306,14 @@ describe('loadConfig', () => {
 
     it('honours an explicit CONTINIA_ENV_LOCALIZATION', () => {
       expect(loadConfig({ ...validEnv, CONTINIA_ENV_LOCALIZATION: 'dk' }).continiaEnvLocalization).toBe('dk');
+    });
+
+    // `CONTINIA_ENV_LOCALIZATION=` (present but blank) bypasses Zod's
+    // .default(), and a blank localization matches no profile at all.
+    it('trims CONTINIA_ENV_LOCALIZATION and treats blank as the default', () => {
+      expect(loadConfig({ ...validEnv, CONTINIA_ENV_LOCALIZATION: '' }).continiaEnvLocalization).toBe('base');
+      expect(loadConfig({ ...validEnv, CONTINIA_ENV_LOCALIZATION: '   ' }).continiaEnvLocalization).toBe('base');
+      expect(loadConfig({ ...validEnv, CONTINIA_ENV_LOCALIZATION: ' dk ' }).continiaEnvLocalization).toBe('dk');
     });
 
     it('parses CONTINIA_APP_PATHS as ordered, trimmed list', () => {
@@ -409,7 +415,7 @@ describe('loadConfig', () => {
       expect(loadConfig({ ...validEnv, SKIP_BUILD_TEST: '0' }).skipBuildTest).toBe(false);
     });
 
-    it('true → the three CONTINIA_* vars become optional (harness smoke tests need no DemoPortal token)', () => {
+    it('true → CONTINIA_API_TOKEN becomes optional (harness smoke tests need no DemoPortal token)', () => {
       const env: Record<string, string> = { ...validEnv, SKIP_BUILD_TEST: 'true' };
       delete env.CONTINIA_ENV_PROFILE_ID;
       delete env.CONTINIA_API_TOKEN;

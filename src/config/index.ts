@@ -200,7 +200,10 @@ export function loadConfig(
     assignedToFilter,
     continiaCliPath: p.CONTINIA_CLI_PATH,
     continiaEnvProfileId: p.CONTINIA_ENV_PROFILE_ID,
-    continiaEnvLocalization: p.CONTINIA_ENV_LOCALIZATION,
+    // Trimmed, and empty falls back to the default: CONTINIA_ENV_LOCALIZATION=
+    // (present but blank) bypasses Zod's .default() and would otherwise reach
+    // env-provision as "no enabled '' profile".
+    continiaEnvLocalization: p.CONTINIA_ENV_LOCALIZATION.trim() || 'base',
     continiaApiToken: p.CONTINIA_API_TOKEN,
     continiaAppPaths,
     continiaTestAppPaths,
