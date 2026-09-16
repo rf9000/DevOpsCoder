@@ -385,14 +385,26 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         );
       }
 
-      const surfaceDepsInfo = (appPath: string, info: DepsInstallInfo): void => {
+      // `tail` is what the operator should DO about it, and that differs by
+      // call site: a deploy-set app is compiled here, the localization app
+      // never is.
+      const surfaceDepsInfo = (appPath: string, info: DepsInstallInfo, tail: string): void => {
         if (info.skippedCount > 0 || info.symbolsMissingCount > 0) {
           deps.logger.warn(
             `build-and-test: deps install for ${appPath} reported ${info.skippedCount} skipped dep(s) ` +
-              `and ${info.symbolsMissingCount} symbol gap(s) — catalogue misses surface later as compile errors`,
+              `and ${info.symbolsMissingCount} symbol gap(s) — ${tail}`,
           );
         }
       };
+      const DEPLOY_SET_DEPS_TAIL = 'catalogue misses surface later as compile errors';
+      // Nothing compiles the localization app, so a miss here never surfaces as
+      // a compile error. It surfaces as an unpublished-sibling /
+      // dependency-not-on-env failure blamed on a DIFFERENT app — exactly the
+      // misattribution this step exists to end, so it must not read as a
+      // benign deferral.
+      const LOCALIZATION_DEPS_TAIL =
+        'a skipped dep here may mean Continia Finance is NOT on the environment — this app is ' +
+        'never compiled, so the miss surfaces later as a deploy failure blamed on another app';
 
       // Since v29 only the country apps declare Continia Finance —
       // base-application does not — so this is the ONLY step that brings it
@@ -411,17 +423,29 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
             `and apps depending on it may fail to publish.`,
         );
       } else {
-        deps.logger.info(
-          `build-and-test: installing localization dependencies from ${localizationApp.dir}` +
-            (localizationApp.fellBack
-              ? ` (no app for '${config.continiaEnvLocalization}'; fell back to banking-w1 — every ` +
-                `country app declares Continia Finance, which is what this step is for)`
-              : '') +
-            ' — the only step that brings Continia Finance onto the environment',
-        );
+        if (localizationApp.fellBack) {
+          // Warn, not info: W1 stands in for the purpose of this step (every
+          // country app declares Finance) but it does NOT bring the
+          // country-specific Microsoft externals a real banking-<cc> would, so
+          // the fallback changes what is on the environment. An operator
+          // filtering warn-level lines has to see that.
+          deps.logger.warn(
+            `build-and-test: WARNING no app for CONTINIA_ENV_LOCALIZATION=` +
+              `'${config.continiaEnvLocalization}'; fell back to banking-w1, installing ` +
+              `localization dependencies from ${localizationApp.dir} — every country app declares ` +
+              `Continia Finance, so this still brings it onto the environment, but the externals ` +
+              `specific to '${config.continiaEnvLocalization}' are NOT installed`,
+          );
+        } else {
+          deps.logger.info(
+            `build-and-test: installing localization dependencies from ${localizationApp.dir}` +
+              ' — the only step that brings Continia Finance onto the environment',
+          );
+        }
         surfaceDepsInfo(
           localizationApp.dir,
           await deps.continiaCli.installDependencies(env.envId, localizationApp.dir, callOpts),
+          LOCALIZATION_DEPS_TAIL,
         );
       }
 
@@ -429,6 +453,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         surfaceDepsInfo(
           appPath,
           await deps.continiaCli.installDependencies(env.envId, appPath, callOpts),
+          DEPLOY_SET_DEPS_TAIL,
         );
       }
 

@@ -249,6 +249,28 @@ describe('resolveDeployOrder — external/ is not walked into', () => {
     expect(resolveDeployOrder(inRepo, ['banking-w1'])).toEqual(['finance', 'banking-w1']);
   });
 
+  it('resolves a colliding name to the in-repo app, not the vendored copy', () => {
+    // Both are in `apps`, and discoverAlApps sorts by directory: 'apps/…' sorts
+    // before 'external/…', so a last-wins map hands the edge to the vendored
+    // copy — which the guard then skips, silently dropping the REAL app out of
+    // the deploy order. Directory order must not decide this either way.
+    const collision: AlApp[] = [
+      { dir: 'apps/Continia Finance', name: 'Continia Finance', dependencies: [] },
+      { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Finance'] },
+      { dir: 'external/Continia Finance/00_Base_App', name: 'Continia Finance', dependencies: [] },
+    ];
+    expect(resolveDeployOrder(collision, ['banking-w1'])).toEqual([
+      'apps/Continia Finance',
+      'banking-w1',
+    ]);
+    // … and the reverse listing order resolves the same way.
+    const reversed = [...collision].reverse();
+    expect(resolveDeployOrder(reversed, ['banking-w1'])).toEqual([
+      'apps/Continia Finance',
+      'banking-w1',
+    ]);
+  });
+
   it('still builds a vendored app that was seeded directly', () => {
     // The guard stops the graph reaching into external/, not an operator
     // aiming at it: a WI that edits vendored source seeds it via ownerAppOf.

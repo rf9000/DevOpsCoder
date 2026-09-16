@@ -167,14 +167,27 @@ function isVendored(app: AlApp): boolean {
  *
  * Only dependencies that resolve to an app inside this repo are followed —
  * externals (Continia Core, Test Runner, Library Assert, …) come from
- * `continia deps install`, not from us.
+ * `continia deps install`, not from us. Vendored source under `external/` is in
+ * the repo but is not "ours" for this purpose: a dependency edge is never
+ * followed into it, because its app.json names collide with the real externals
+ * by design (see {@link EXTERNAL_DIR_PREFIX}). A vendored app named as a seed
+ * is still built — a WI that edits vendored source aims at it deliberately.
  *
  * Ordering is a depth-first post-order walk, which yields a valid topological
  * order for a DAG. A dependency cycle (illegal in AL, but cheap to guard) is
  * broken by the in-progress set rather than recursing forever.
  */
 export function resolveDeployOrder(apps: AlApp[], seedDirs: string[]): string[] {
-  const byName = new Map(apps.map((a) => [a.name, a]));
+  // A name collision must resolve to the real in-repo app, never to the
+  // vendored copy: the vendored one is then skipped by the guard below and the
+  // app that actually needed building would drop out of the order entirely.
+  // (`apps` is directory-sorted, so a plain Map would let whichever sorts last
+  // win.)
+  const byName = new Map<string, AlApp>();
+  for (const app of apps) {
+    const existing = byName.get(app.name);
+    if (!existing || (isVendored(existing) && !isVendored(app))) byName.set(app.name, app);
+  }
   const byDir = new Map(apps.map((a) => [a.dir, a]));
 
   const ordered: string[] = [];
