@@ -226,3 +226,34 @@ describe('localizationAppDir', () => {
     expect(localizationAppDir(countryApps, '  ')).toEqual({ dir: 'banking-w1', fellBack: false });
   });
 });
+
+describe('resolveDeployOrder — external/ is not walked into', () => {
+  // The real collision: external/Continia Finance/00_Base_App declares
+  // name "Continia Finance", which is exactly what banking-w1 depends on.
+  const withVendored: AlApp[] = [
+    { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Banking', 'Continia Finance'] },
+    { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+    { dir: 'external/Continia Finance/00_Base_App', name: 'Continia Finance', dependencies: [] },
+  ];
+
+  it('does not pull a vendored app in through a dependency edge', () => {
+    const order = resolveDeployOrder(withVendored, ['banking-w1']);
+    expect(order).toEqual(['base-application', 'banking-w1']);
+  });
+
+  it('still follows the same dependency name when it resolves outside external/', () => {
+    const inRepo: AlApp[] = [
+      { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Finance'] },
+      { dir: 'finance', name: 'Continia Finance', dependencies: [] },
+    ];
+    expect(resolveDeployOrder(inRepo, ['banking-w1'])).toEqual(['finance', 'banking-w1']);
+  });
+
+  it('still builds a vendored app that was seeded directly', () => {
+    // The guard stops the graph reaching into external/, not an operator
+    // aiming at it: a WI that edits vendored source seeds it via ownerAppOf.
+    expect(resolveDeployOrder(withVendored, ['external/Continia Finance/00_Base_App'])).toEqual([
+      'external/Continia Finance/00_Base_App',
+    ]);
+  });
+});

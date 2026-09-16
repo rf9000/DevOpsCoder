@@ -149,6 +149,19 @@ export function localizationAppDir(
 }
 
 /**
+ * Vendored third-party source. Its apps come from `continia deps install`, and
+ * their app.json names collide with the real externals by design — the app in
+ * `external/Continia Finance` is literally named `Continia Finance`. Following a
+ * dependency edge into this directory therefore means compiling somebody else's
+ * source (pinned to an older `application` version) against our environment.
+ */
+const EXTERNAL_DIR_PREFIX = 'external/';
+
+function isVendored(app: AlApp): boolean {
+  return app.dir.toLowerCase().startsWith(EXTERNAL_DIR_PREFIX);
+}
+
+/**
  * Expand seed app directories to everything that must be deployed with them,
  * in dependency-first order.
  *
@@ -173,7 +186,10 @@ export function resolveDeployOrder(apps: AlApp[], seedDirs: string[]): string[] 
     inProgress.add(app.dir);
     for (const depName of app.dependencies) {
       const dep = byName.get(depName);
-      if (dep) visit(dep); // internal only; externals are deps-installed
+      // Internal only; externals are deps-installed. Vendored apps are skipped
+      // here but NOT at the seed: a WI that edits vendored source aims at it
+      // deliberately and must still build.
+      if (dep && !isVendored(dep)) visit(dep);
     }
     inProgress.delete(app.dir);
     done.add(app.dir);
