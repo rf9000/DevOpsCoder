@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { createEnvProvisionStage } from '../../../src/pipeline/stages/env-provision.ts';
+import { createEnvProvisionStage, resolveRequiredBcVersion } from '../../../src/pipeline/stages/env-provision.ts';
 import { ContiniaCliError, type ContiniaCli, type EnvironmentInfo } from '../../../src/services/continia-cli.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
 import type { AppConfig, EnvironmentOutput, PipelineState, WorktreeContext } from '../../../src/types/index.ts';
@@ -359,5 +359,39 @@ describe('createEnvProvisionStage — persisted environment validation', () => {
 
     expect(cli.createEnvironment).not.toHaveBeenCalled();
     expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
+  });
+});
+
+describe('resolveRequiredBcVersion', () => {
+  const app = (over: Partial<AlApp>): AlApp => ({ dir: 'a', name: 'A', dependencies: [], ...over });
+
+  // The stage fixtures set application === platform, so these two asymmetric
+  // cases are the only thing stopping an implementation that reads one field
+  // and silently drops the other.
+  it('takes platform when it outranks application', () => {
+    expect(resolveRequiredBcVersion([app({ application: '28.1.0.0', platform: '29.0.0.0' })])).toBe('29.0.0.0');
+  });
+
+  it('takes application when it outranks platform', () => {
+    expect(resolveRequiredBcVersion([app({ application: '29.0.0.0', platform: '28.1.0.0' })])).toBe('29.0.0.0');
+  });
+
+  it('spans both fields across several apps', () => {
+    expect(
+      resolveRequiredBcVersion([
+        app({ dir: 'a', application: '28.1.0.0' }),
+        app({ dir: 'b', platform: '29.2.0.0' }),
+        app({ dir: 'c', application: '28.5.0.0', platform: '26.0.0.0' }),
+      ]),
+    ).toBe('29.2.0.0');
+  });
+
+  it('compares numerically, not lexically', () => {
+    expect(resolveRequiredBcVersion([app({ application: '9.0.0.0', platform: '29.0.0.0' })])).toBe('29.0.0.0');
+  });
+
+  it('is undefined when nothing declares either field', () => {
+    expect(resolveRequiredBcVersion([app({}), app({ dir: 'b' })])).toBeUndefined();
+    expect(resolveRequiredBcVersion([])).toBeUndefined();
   });
 });
