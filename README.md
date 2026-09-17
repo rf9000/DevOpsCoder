@@ -259,6 +259,7 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CLAUDE_MODEL_TEST_AUTHOR` | no | `CLAUDE_MODEL` | The test-author's write call |
 | `CLAUDE_MODEL_TEST_FIXER` | no | `CLAUDE_MODEL` | The build-and-test fix loop |
 | `CLAUDE_MODEL_PR_MESSAGE` | no | `CLAUDE_MODEL` | The PR-message step nested in `draft-pr-creator`: reads the branch diff, writes the PR title and bullets. One short read-only call — a cheap model is usually right |
+| `REVIEWER_MAX_TURNS` | no | 50 | Turn budget for **each** reviewer axis, not the fan-out as a whole; raise it if a run fails with "Reached maximum number of turns" (cost multiplies by six) |
 | `PLAN_MAX_TURNS` | no | 30 | Turn budget for a plan call (read-only work, so well below `CODER_MAX_TURNS`) |
 | `STAGE_TIMEOUT_MS_PLAN` | no | 600000 (10 min) | Per plan call. Added to `revision-loop` (× `MAX_REVISIONS`) and `test-author` only when that stage has a plan model |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |

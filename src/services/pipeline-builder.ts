@@ -175,6 +175,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const reviewer = createReviewerStage({
     config: deps.config,
     runner,
+    maxTurnsPerAxis: deps.config.reviewerMaxTurns,
     sharedPromptTemplate: reviewerSharedPromptTemplate,
     axisPromptTemplates: reviewerAxisPromptTemplates,
   });

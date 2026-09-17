@@ -271,7 +271,10 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       const canUseTool = composeCanUseTool([
         createBashAllowlist({ allow: REVIEWER_BASH_ALLOW, deny: REVIEWER_BASH_DENY }),
       ]);
-      const maxTurns = deps.maxTurnsPerAxis ?? 30;
+      // Production always supplies this from REVIEWER_MAX_TURNS; the fallback
+      // exists for direct construction in tests and is kept equal to the config
+      // default so the two can never quietly disagree.
+      const maxTurns = deps.maxTurnsPerAxis ?? 50;
 
       // Bill each axis to its own key. One lumped `reviewer` number hides which
       // axis is expensive, and the axes are the whole of the reviewer's cost —

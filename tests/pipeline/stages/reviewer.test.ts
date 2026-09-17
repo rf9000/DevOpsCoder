@@ -6,7 +6,7 @@
  *  T2 — exactly 6 runner.run calls in parallel (one per axis)
  *  T3 — each axis call's systemPromptAppend = sharedPromptTemplate + '\n\n' + axisPrompt
  *  T4 — each axis call has correct tools/disallowedTools/cwd
- *  T5 — maxTurns defaults to 30; honours deps.maxTurnsPerAxis override
+ *  T5 — maxTurns falls back to 50; honours deps.maxTurnsPerAxis override
  *  T6 — findings from multiple axes are aggregated (aggregateReviewerFindings)
  *  T7 — approved is true when no blocking/critical findings
  *  T8 — approved is false when any finding is 'blocking'
@@ -64,7 +64,7 @@ const baseConfig: AppConfig = {
   concurrency: 1,
   maxRevisions: 3,
   maxRejectCycles: 3,
-  coderMaxTurns: 80,
+  coderMaxTurns: 80, reviewerMaxTurns: 50,
   testAuthorMaxTurns: 50,
   maxCostUsdPerWi: 5.00,
   stageTimeoutMs: {},
@@ -271,12 +271,12 @@ describe('createReviewerStage', () => {
   // T5 — maxTurns default + override
   // -------------------------------------------------------------------------
 
-  it('T5a: maxTurns defaults to 30 when deps.maxTurnsPerAxis is unset', async () => {
+  it('T5a: maxTurns falls back to 50 when deps.maxTurnsPerAxis is unset', async () => {
     const runner = makeRunner();
     const stage = createReviewerStage(makeDeps(runner));
     await stage.execute(makeState(), makeCtx());
     for (const call of runner.calls) {
-      expect(call.maxTurns).toBe(30);
+      expect(call.maxTurns).toBe(50);
     }
   });
 

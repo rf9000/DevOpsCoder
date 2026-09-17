@@ -35,7 +35,7 @@ const baseConfig: AppConfig = {
   concurrency: 1,
   maxRevisions: 3,
   maxRejectCycles: 3,
-  coderMaxTurns: 80,
+  coderMaxTurns: 80, reviewerMaxTurns: 50,
   testAuthorMaxTurns: 50,
   maxCostUsdPerWi: 0.50,
   stageTimeoutMs: {},
