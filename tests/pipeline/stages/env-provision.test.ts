@@ -615,3 +615,56 @@ describe('createEnvProvisionStage — persisted environment ownership', () => {
     expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
   });
 });
+
+describe('createEnvProvisionStage — persisted environment already deleted', () => {
+  const persistedDeleted: EnvironmentOutput = {
+    envId: 'env-old', name: 'wi-101-fix-login', status: 'Stopped',
+    url: 'https://bc/env-old', createdAt: '2026-01-01T00:00:00Z', bcVersion: '29.0.0.0',
+  };
+
+  it('recreates rather than trying to start an environment that is gone', async () => {
+    // `env get` answers for a deleted environment with exit 0 and
+    // status "Deleted" — it does NOT raise, so the ContiniaCliError catch
+    // never fires and nothing else would notice. DemoPortal reclaimed one
+    // twelve days before its own expiresUtc, so this is ordinary, not rare.
+    const cli = makeCli({
+      getEnvironment: mock(async () => ({
+        id: 'env-old', status: 'Deleted', bcVersion: '29.0.0.0', description: 'wi-101-fix-login',
+      })),
+    });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(
+      makeState({ outputs: { worktree, environment: persistedDeleted } }),
+      makeCtx(),
+    );
+
+    expect(cli.startEnvironment).not.toHaveBeenCalledWith('env-old', expect.anything());
+    expect(cli.createEnvironment).toHaveBeenCalledTimes(1);
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-9');
+  });
+
+  it('still reuses a merely Stopped environment by starting it', async () => {
+    const cli = makeCli({
+      getEnvironment: mock(async () => ({
+        id: 'env-old', status: 'Stopped', bcVersion: '29.0.0.0', description: 'wi-101-fix-login',
+      })),
+    });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(
+      makeState({ outputs: { worktree, environment: persistedDeleted } }),
+      makeCtx(),
+    );
+
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+    expect(cli.startEnvironment).toHaveBeenCalledTimes(1);
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
+  });
+});
