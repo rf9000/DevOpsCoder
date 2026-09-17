@@ -331,6 +331,14 @@ export interface TestRunRecord {
 /**
  * Written to `state.outputs.verification` by the build-and-test stage after
  * every deploy/test round, so a mid-loop timeout still leaves diagnosable state.
+ *
+ * The in-loop `verify` gate (`_verify-gate.ts`) also writes this, on every
+ * exit path including its skips — so a consumer MUST check `skipped` before
+ * interpreting `compiled` / `passed`: a skipped round carries `false` for
+ * both without either being a statement about the code. `build-and-test`
+ * never sets `skipped`/`skipReason` (it throws instead — the final gate
+ * treats an unverified change as a failure), so their absence there is
+ * unchanged.
  */
 export interface VerificationOutput {
   /** Fix attempts consumed (0..maxTestFixAttempts). */
@@ -340,6 +348,15 @@ export interface VerificationOutput {
   deploy: DeployAppResult[];
   testRuns: TestRunRecord[];
   passed: boolean;
+  /**
+   * True when this round did not actually verify anything — nothing to
+   * discover/select, an environment-class deploy failure, or a CLI/programming
+   * fault the in-loop gate swallowed. `compiled`/`passed` are `false` in every
+   * one of these but say nothing about the code; read `skipReason` instead.
+   */
+  skipped?: boolean;
+  /** Human-readable reason this round was skipped. Set iff `skipped` is true. */
+  skipReason?: string;
 }
 
 /**

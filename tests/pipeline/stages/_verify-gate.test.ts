@@ -4,12 +4,13 @@ import { createLogger, type Logger } from '../../../src/utils/logger.ts';
 import type { AgentRunArgs, AgentRunner } from '../../../src/pipeline/agent-stage.ts';
 import type { PipelineContext } from '../../../src/pipeline/stage.ts';
 import type { ContiniaCli, TestRunResult } from '../../../src/services/continia-cli.ts';
-import type {
-  AppConfig,
-  EnvironmentOutput,
-  PipelineState,
-  VerificationOutput,
-  WorktreeContext,
+import {
+  CostExceededError,
+  type AppConfig,
+  type EnvironmentOutput,
+  type PipelineState,
+  type VerificationOutput,
+  type WorktreeContext,
 } from '../../../src/types/index.ts';
 import type { WorkItemContext } from '../../../src/services/wi-context.ts';
 import { TEST_USAGE } from '../../helpers/agent-usage.ts';
@@ -196,30 +197,46 @@ describe('createVerifyGateStage', () => {
       config: { ...baseConfig, skipBuildTest: true },
     });
     const stage = createVerifyGateStage(deps);
-    await stage.execute(readyState(), makeStageCtx());
+    const out = await stage.execute(readyState(), makeStageCtx());
     expect(cli.waitForRunning).not.toHaveBeenCalled();
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.skipped).toBe(true);
   });
 
   it('logs and skips — never throws — when there is nothing to run', async () => {
     const { deps, warnings } = makeDeps({ discoverTestCodeunits: async () => [] });
     const stage = createVerifyGateStage(deps);
     const out = await stage.execute(readyState(), makeStageCtx());
-    expect(out.outputs.verification).toBeUndefined();
-    expect(warnings.length).toBeGreaterThan(0);
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.skipped).toBe(true);
+    expect(verification.skipReason).toMatch(/no test codeunits discovered/);
     expect(warnings.some((w) => /no test codeunits discovered/.test(w))).toBe(true);
   });
 
-  it('logs and skips — never throws — on an environment-class deploy failure', async () => {
+  it('logs and skips — never throws — on an environment-class deploy failure, without entering the fix loop', async () => {
+    const runner = countingRunner();
     const cli = makeCliMock({
       deployApp: mock(async () => [
         { app: 'App', compiled: false, published: false, code: 'symbol-fetch-failed' },
       ]),
     });
-    const { deps, warnings } = makeDeps({ continiaCli: cli as unknown as ContiniaCli });
+    const { deps, warnings } = makeDeps({
+      runner: runner as unknown as AgentRunner,
+      continiaCli: cli as unknown as ContiniaCli,
+    });
     const stage = createVerifyGateStage(deps);
     const out = await stage.execute(readyState(), makeStageCtx());
     expect(warnings.some((w) => /symbol-fetch-failed/.test(w))).toBe(true);
-    expect((out.outputs.verification as VerificationOutput).passed).toBe(false);
+    const verification = out.outputs.verification as VerificationOutput;
+    // Skipped, not "did not compile": the gate already classified this as an
+    // environment fault, and Task 9 must not render it as a code problem.
+    expect(verification.skipped).toBe(true);
+    expect(verification.skipReason).toMatch(/symbol-fetch-failed/);
+    expect(verification.passed).toBe(false);
+    // A gate that logged the blocker and then kept looping (fixing or
+    // redeploying) would still pass a weaker assertion here.
+    expect(runner.calls).toBe(0);
+    expect(cli.deployApp).toHaveBeenCalledTimes(1);
   });
 
   it('runs at most maxInLoopFixAttempts fix calls, then returns red without throwing', async () => {
@@ -234,14 +251,53 @@ describe('createVerifyGateStage', () => {
 
     const out = await stage.execute(readyState(), makeStageCtx());
     expect(runner.calls).toBe(1);
-    expect((out.outputs.verification as VerificationOutput).passed).toBe(false);
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.passed).toBe(false);
+    // This IS real verification data (a statement about the code), not a skip.
+    expect(verification.skipped).toBeFalsy();
     expect(warnings.some((w) => /still red after 1 in-loop fix attempt/.test(w))).toBe(true);
+  });
+
+  it('defaults maxInLoopFixAttempts to 1 when omitted from config', async () => {
+    const runner = countingRunner();
+    const cli = makeCliMock({ runTests: mock(async () => redTestRun()) });
+    const { deps } = makeDeps({
+      runner: runner as unknown as AgentRunner,
+      continiaCli: cli as unknown as ContiniaCli,
+      config: { ...baseConfig, maxInLoopFixAttempts: undefined },
+    });
+    const stage = createVerifyGateStage(deps);
+
+    const out = await stage.execute(readyState(), makeStageCtx());
+    expect(runner.calls).toBe(1);
+    expect((out.outputs.verification as VerificationOutput).passed).toBe(false);
+  });
+
+  it('maxInLoopFixAttempts=0 verifies once and never fixes — not "never verifies"', async () => {
+    const runner = countingRunner();
+    const cli = makeCliMock({ runTests: mock(async () => redTestRun()) });
+    const { deps, warnings } = makeDeps({
+      runner: runner as unknown as AgentRunner,
+      continiaCli: cli as unknown as ContiniaCli,
+      config: { ...baseConfig, maxInLoopFixAttempts: 0 },
+    });
+    const stage = createVerifyGateStage(deps);
+
+    const out = await stage.execute(readyState(), makeStageCtx());
+    expect(cli.runTests).toHaveBeenCalledTimes(1);
+    expect(runner.calls).toBe(0);
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.passed).toBe(false);
+    expect(verification.skipped).toBeFalsy();
+    expect(warnings.some((w) => /still red after 0 in-loop fix attempt/.test(w))).toBe(true);
   });
 
   it('persists verification output on the green path', async () => {
     const { deps } = makeDeps();
     const out = await createVerifyGateStage(deps).execute(readyState(), makeStageCtx());
-    expect((out.outputs.verification as VerificationOutput).passed).toBe(true);
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.passed).toBe(true);
+    expect(verification.skipped).toBeFalsy();
   });
 
   it('logs and skips without throwing when upstream outputs are not populated', async () => {
@@ -250,43 +306,60 @@ describe('createVerifyGateStage', () => {
     const state = readyState();
     delete state.outputs.environment;
     const out = await stage.execute(state, makeStageCtx());
-    expect(out.outputs.verification).toBeUndefined();
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.skipped).toBe(true);
+    expect(verification.skipReason).toMatch(/not populated/);
     expect(warnings.some((w) => /not populated/.test(w))).toBe(true);
   });
 
-  it('returns early without a fix call when abortFlag is set after a red round', async () => {
-    const cli = makeCliMock({ runTests: mock(async () => redTestRun()) });
+  it('returns early without a fix call when the abort flag flips mid-loop', async () => {
+    // The context starts NOT aborted: flipping the flag from inside the first
+    // round's runTests call is what actually exercises the mid-loop abort
+    // check, rather than the trivial "aborted before round 0 ever runs" case.
+    const ctx = makeStageCtx();
+    const cli = makeCliMock({
+      runTests: mock(async () => {
+        (ctx.abortFlag as { aborted: boolean }).aborted = true;
+        return redTestRun();
+      }),
+    });
     const runner = countingRunner();
     const { deps } = makeDeps({
       runner: runner as unknown as AgentRunner,
       continiaCli: cli as unknown as ContiniaCli,
     });
     const stage = createVerifyGateStage(deps);
-    await stage.execute(readyState(), makeStageCtx({ aborted: true }));
+    const out = await stage.execute(readyState(), ctx);
     expect(runner.calls).toBe(0);
+    expect((out.outputs.verification as VerificationOutput).passed).toBe(false);
   });
 
-  it('leaves the live environment in state even when a throw happens inside prepareVerification', async () => {
+  it('leaves the live environment in state even when prepareVerification throws mid-setup', async () => {
     // `installAppById` throwing simulates a mid-setup failure. Before the fix,
     // state.outputs.environment would still carry env-provision's stale
     // record (no live status/url) because the assignment only ran after
-    // prepareVerification returned successfully.
+    // prepareVerification returned successfully. The gate is now total, so
+    // this no longer throws at all — it degrades to a logged skip.
     const cli = makeCliMock({
       waitForRunning: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/live' })),
       installAppById: mock(async () => {
         throw new Error('activation install failed');
       }),
     });
-    const { deps } = makeDeps({ continiaCli: cli as unknown as ContiniaCli });
+    const { deps, warnings } = makeDeps({ continiaCli: cli as unknown as ContiniaCli });
     const stage = createVerifyGateStage(deps);
     const state = readyState();
     state.outputs.environment = { ...environment, status: 'Creating', url: undefined };
 
-    await expect(stage.execute(state, makeStageCtx())).rejects.toThrow('activation install failed');
+    const out = await stage.execute(state, makeStageCtx());
 
-    const liveEnv = state.outputs.environment as EnvironmentOutput;
+    expect(warnings.some((w) => /activation install failed/.test(w))).toBe(true);
+    const liveEnv = out.outputs.environment as EnvironmentOutput;
     expect(liveEnv.status).toBe('Running');
     expect(liveEnv.url).toBe('https://bc/live');
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.skipped).toBe(true);
+    expect(verification.skipReason).toMatch(/activation install failed/);
   });
 
   it('uses the verify log prefix rather than build-and-test', async () => {
@@ -297,5 +370,58 @@ describe('createVerifyGateStage', () => {
     expect(derivationLine).toBeDefined();
     expect(derivationLine).toContain('verify:');
     expect([...warnings, ...infos].some((m) => m.includes('build-and-test:'))).toBe(false);
+  });
+
+  // --- IMPORTANT 1: the gate must be total ------------------------------
+
+  it('swallows a waitForRunning rejection (e.g. a deleted/terminal environment) every round, without throwing', async () => {
+    const cli = makeCliMock({
+      waitForRunning: mock(async () => {
+        throw new Error('environment env-9 is Deleted');
+      }),
+    });
+    const { deps, warnings } = makeDeps({ continiaCli: cli as unknown as ContiniaCli });
+    const stage = createVerifyGateStage(deps);
+
+    const out1 = await stage.execute(readyState(), makeStageCtx());
+    const out2 = await stage.execute(readyState(), makeStageCtx());
+    const out3 = await stage.execute(readyState(), makeStageCtx());
+
+    for (const out of [out1, out2, out3]) {
+      const verification = out.outputs.verification as VerificationOutput;
+      expect(verification.skipped).toBe(true);
+      expect(verification.skipReason).toMatch(/env-9 is Deleted/);
+    }
+    // Not memoised: three rounds against a dead environment produce three
+    // warnings, so an operator tailing the log sees every one.
+    expect(warnings.filter((w) => /env-9 is Deleted/.test(w))).toHaveLength(3);
+  });
+
+  it('swallows an installDependencies rejection and returns without throwing', async () => {
+    const cli = makeCliMock({
+      installDependencies: mock(async () => {
+        throw new Error('deps install exploded');
+      }),
+    });
+    const { deps, warnings } = makeDeps({ continiaCli: cli as unknown as ContiniaCli });
+    const stage = createVerifyGateStage(deps);
+    const out = await stage.execute(readyState(), makeStageCtx());
+    expect(warnings.some((w) => /deps install exploded/.test(w))).toBe(true);
+    const verification = out.outputs.verification as VerificationOutput;
+    expect(verification.skipped).toBe(true);
+    expect(verification.skipReason).toMatch(/deps install exploded/);
+  });
+
+  it('lets a CostExceededError from the fix-call cost gate propagate rather than swallowing it', async () => {
+    const cli = makeCliMock({ runTests: mock(async () => redTestRun()) });
+    const { deps } = makeDeps({
+      continiaCli: cli as unknown as ContiniaCli,
+      config: { ...baseConfig, maxCostUsdPerWi: 0.01, maxInLoopFixAttempts: 1 },
+    });
+    const stage = createVerifyGateStage(deps);
+    const state = readyState();
+    state.outputs.cost = { total: 1, perStage: {} };
+
+    await expect(stage.execute(state, makeStageCtx())).rejects.toThrow(CostExceededError);
   });
 });
