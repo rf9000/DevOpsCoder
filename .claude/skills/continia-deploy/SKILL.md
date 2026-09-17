@@ -112,15 +112,30 @@ If a workspace uses such a ruleset, ship a sibling `.cli-ruleset.json` whose `in
 
 JSON output is an array per app (one NDJSON line per app under `--stream`):
 ```json
-[{"app": "Continia Software_Continia Core", "compiled": true, "published": true,
-  "workspaceRoot": "U:\\Git\\DO.Support", "degraded": false}]
+[{"app": "Continia Software_Continia Core", "compiled": false, "published": false,
+  "code": "compile-failed", "workspaceRoot": "U:\\Git\\DO.Support", "degraded": false,
+  "projectPath": "U:\\Git\\DO.Support\\Core\\Cloud",
+  "diagnosticCounts": {"error": 6, "warning": 222, "info": 220},
+  "diagnostics": [{"severity": "error", "code": "AA0139",
+     "file": "Bank Communication\\Codeunits\\BankAccExternalID.Codeunit.al",
+     "line": 81, "column": 55, "message": "Possible overflow assigning 'Text' to 'Text[1024]'."}],
+  "error": "<alc's full raw output>"}]
 ```
 - **`code`** — present on every failed row, and the field to branch on: `unpublished-sibling`,
   `dependency-not-on-env`, `superseded-package-retained`, `symbol-fetch-failed`,
   `app-lock-held`, `app-lock-failed`,
   `symbol-refresh-failed`, `compile-failed`, `compile-produced-no-app`, `publish-failed`,
   `higher-version-installed`. `error` is free prose (alc's full output on a compile failure) —
-  never regex it.
+  never regex it; read `diagnostics`.
+- **`diagnostics`** — present on every row where alc ran, failed or deployed: one entry per
+  alc diagnostic line, in alc's order, filtered to `--min-severity` (default `error`; pass
+  `warning` or `info` to see more). `file` is relative to `projectPath`, exactly as alc
+  printed it; `file`/`line`/`column` are `null` for location-less diagnostics (AL1003,
+  AL1018, AL1022). **`diagnosticCounts`** always counts everything alc emitted, so you can
+  tell what the filter left out.
+- **`--no-raw-output`** — replaces alc's raw dump in `error` with the one-line summary once
+  diagnostics were parsed, so a 100 KB compile log shrinks to the errors that matter. When
+  nothing parsed (a compiler crash) the raw text stays — it is the only clue left.
 - **`workspaceRoot`** — where this run's symbol provenance and publish events were recorded.
   Same on every row. If it isn't your session root, see the Gotchas above.
 - **`degraded`** — `true` when this app's packages were not fully verified against the env.
@@ -147,7 +162,8 @@ On failure, the `error` field contains details:
   If symbols look stale but nothing errors, the cache may need a forced refresh because
   another tool republished at the same version (`continia deps refresh <appPath>` — see
   `continia-deps`, the one gap the env-truth model can't detect on its own).
-- **AL syntax errors** -- fix the code and re-deploy
+- **AL compile errors** -- read `diagnostics` (file/line/column/message per error), fix the
+  code and re-deploy. Add `--min-severity warning` when the warnings matter too.
 - **"App is already installed" (same-version re-deploy):** BC silently no-ops a same-version POST. The CLI automatically unpublishes the installed entry first so the new binary actually replaces the old one. Opt out with `--no-replace-same-version`.
 - **"a newer version X was already installed" (downgrade):** the env holds a higher version than the build you're deploying. Re-run with `--allow-downgrade` to auto-unpublish and replace it, or unpublish the higher version manually then re-deploy. The `--json` result carries `conflict: "higher-version-installed"` with both versions.
 - **"Specified part does not exist in the package":** usually a Windows backslash path in `app.json` (`logo`/`screenshots`) that breaks the Linux `alc`. `compile`/`deploy` now normalize this automatically; if you still hit it, fix the source to use forward slashes (`"Images/Logo.png"`).
@@ -166,7 +182,32 @@ On failure, the `error` field contains details:
 Compile only (no publish):
 ```bash
 continia compile <appPath> --json
+continia compile <appPath> --json --min-severity warning --no-raw-output
 ```
+
+### Analyzers
+
+`compile` and `deploy` pass the analyzers `al.codeAnalyzers` asks for, and **stop before alc**
+when one the compiler itself bundles (`${CodeCop}`, `${UICop}`, `${AppSourceCop}`,
+`${PerTenantExtensionCop}`) cannot be resolved, or when the analyzer folder could not be located
+at all — `error.code` / the row's `code` is `analyzers-unresolved`. Without that gate the run
+reports a clean pass for checks that never ran. A third-party analyzer (LinterCop and friends)
+that is simply not installed is reported and does NOT stop the run.
+
+- `--require-analyzers` — fail on ANY unresolved analyzer, third-party included. Use in CI.
+- `--allow-missing-analyzers` — never fail; report only. Use when you knowingly lack the DLLs.
+- Both together is a `conflicting-flags` error, raised before anything is compiled or published.
+- `deploy` checks every app's analyzers BEFORE it unpublishes anything, so a blocked run never leaves an environment with the old app deleted and no replacement.
+
+Every `--json` result carries `analyzers`: `{ folder, folderAvailable, requested, passed[],
+unresolved[] }`, where each `unresolved` entry names the `request`, its `origin` and the `reason`
+(`analyzer-root-unavailable` = the toolchain folder is wrong, our problem; `file-missing` = that
+DLL is not installed). Check it before reporting a build as clean: `analyzerLoadFailures` counts
+only alc's own AL1003 load failures and stays 0 when an analyzer was never passed to alc.
+
+`compile --json` carries the same `diagnostics` / `diagnosticCounts` fields as a deploy row
+(plus alc's `exitCode`); `output` is alc's raw text, dropped by `--no-raw-output` once
+diagnostics were parsed. `diagnostics` is errors-only unless `--min-severity` says otherwise.
 
 `compile` refreshes the app's dependency symbols from the target environment first
 (`--env <id>` > `CONTINIA_ENV` > the workspace default from `continia env use`; a hard error
@@ -180,7 +221,7 @@ through to a cached package the refresh policy just judged stale. Two escape hat
 environment's, for checking a dependency + dependent chain before either is published.
 `symbolRefresh.degraded` is `true` on any run whose packages weren't fully verified.
 
-Compile uses the AL VS Code extension's bundled `alc.exe` (matched against analyzer DLLs by construction — no version mismatch). Override with `CONTINIA_ALC_PATH=<path>`. Without an AL extension installed, falls back to altool's `al compile` and warns on stderr — analyzers may fail to load in that mode.
+Compile uses the AL VS Code extension's bundled `alc.exe` (matched against analyzer DLLs by construction — no version mismatch), from `bin/<platform>/` or, on AL 18.x, flat `bin/`. Override with `CONTINIA_ALC_PATH=<path>`. Without an AL extension installed, falls back to altool's `al compile` and warns on stderr — analyzers may fail to load in that mode. If `al` is not on PATH either, the compile fails with "No AL compiler found … set CONTINIA_ALC_PATH" rather than a shell "'al' is not recognized" error.
 
 Code analyzers (CodeCop, UICop, AppSourceCop, PerTenantExtensionCop, BCLinterCop) are auto-loaded from `<appPath>/.vscode/settings.json` (`al.codeAnalyzers` array). Standard placeholders (`${CodeCop}`, `${analyzerFolder}BusinessCentral.LinterCop.dll`, etc.) resolve against the same AL extension. Missing DLLs warn on stderr and skip — compile still runs.
 
