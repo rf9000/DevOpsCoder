@@ -219,9 +219,33 @@ export function findEnvironmentDeployFailure(
  * Lives in `state.outputs.verificationSetup`.
  */
 export interface VerificationSetupCache {
+  /**
+   * The environment every flag below was populated against. A cache is only
+   * ever warm for THIS environment: `env-provision` legitimately recreates one
+   * on a resumed WI (wrong BC version, another WI's name, terminal status, or a
+   * version that cannot be established at all — see Plan 12), and flags carried
+   * over from the dead environment would skip the activation-app and
+   * Continia Finance installs against the fresh one.
+   */
+  envId?: string;
   activationInstalled?: boolean;
   localizationInstalled?: boolean;
   depsInstalled?: string[];
+}
+
+/**
+ * Discard a cache that was not populated against `envId`, including one that
+ * cannot say which environment it belongs to (every state file written before
+ * `envId` existed). Deliberately asymmetric: a needless re-install costs a few
+ * minutes of idempotent work, while a wrongly-skipped one costs the whole run
+ * and reports the cause as an environment fault in an app that is not at fault.
+ */
+function resetCacheIfForeign(cache: VerificationSetupCache, envId: string): void {
+  if (cache.envId === envId) return;
+  cache.envId = envId;
+  cache.activationInstalled = false;
+  cache.localizationInstalled = false;
+  cache.depsInstalled = [];
 }
 
 export interface VerificationSetup {
@@ -281,6 +305,10 @@ export async function prepareVerification(
   const changedFilesOf = args.getChangedFiles ?? defaultGetChangedFiles;
   const discoverApps = args.discoverAlApps ?? defaultDiscoverAlApps;
   const callOpts = { worktreePath: worktree.path, signal: args.signal };
+
+  // Before any cached flag is read: a cache from a different environment is a
+  // cold cache, not a warm one.
+  resetCacheIfForeign(cache, args.environment.envId);
 
   const live = await args.continiaCli.waitForRunning(args.environment.envId, callOpts);
   const env: EnvironmentOutput = {

@@ -142,7 +142,7 @@ describe('prepareVerification', () => {
     await prepareVerification({
       ...makeBaseArgs(),
       continiaCli: cli as unknown as ContiniaCli,
-      cache: { depsInstalled: ['App'] },
+      cache: { envId: environment.envId, depsInstalled: ['App'] },
     });
     const installedPaths = cli.installDependencies.mock.calls.map((c: unknown[]) => c[1]);
     expect(installedPaths).not.toContain('App');
@@ -153,6 +153,7 @@ describe('prepareVerification', () => {
     await prepareVerification({ ...makeBaseArgs(), cache });
     expect(cache.depsInstalled).toContain('App');
     expect(cache.activationInstalled).toBe(true);
+    expect(cache.envId).toBe(environment.envId);
   });
 
   it('skips the activation-app install when the cache says it already ran', async () => {
@@ -160,9 +161,55 @@ describe('prepareVerification', () => {
     await prepareVerification({
       ...makeBaseArgs(),
       continiaCli: cli as unknown as ContiniaCli,
-      cache: { activationInstalled: true },
+      cache: { envId: environment.envId, activationInstalled: true },
     });
     expect(cli.installAppById.mock.calls).toHaveLength(0);
+  });
+
+  // env-provision legitimately recreates an environment on a resumed WI (Plan
+  // 12): wrong BC version, another WI's name, terminal status, or a version it
+  // cannot establish. Honouring a cache from the dead environment would skip
+  // the activation app and Continia Finance on the fresh one, and the resulting
+  // publish failure would be blamed on an app that is not at fault.
+  it('treats a cache populated against another environment as cold', async () => {
+    const cli = makeCliMock();
+    const cache: VerificationSetupCache = {
+      envId: 'env-old',
+      activationInstalled: true,
+      localizationInstalled: true,
+      depsInstalled: ['App'],
+    };
+    await prepareVerification({
+      ...makeBaseArgs(),
+      continiaCli: cli as unknown as ContiniaCli,
+      environment: { ...environment, envId: 'env-new' },
+      cache,
+    });
+
+    expect(cli.installAppById.mock.calls).toHaveLength(1);
+    const installedPaths = cli.installDependencies.mock.calls.map((c: unknown[]) => c[1]);
+    expect(installedPaths).toContain('App');
+    expect(cache.envId).toBe('env-new');
+    expect(cache.depsInstalled).toEqual(['App']);
+  });
+
+  it('treats a legacy cache carrying no envId as cold', async () => {
+    const cli = makeCliMock();
+    const cache: VerificationSetupCache = {
+      activationInstalled: true,
+      localizationInstalled: true,
+      depsInstalled: ['App'],
+    };
+    await prepareVerification({
+      ...makeBaseArgs(),
+      continiaCli: cli as unknown as ContiniaCli,
+      cache,
+    });
+
+    expect(cli.installAppById.mock.calls).toHaveLength(1);
+    const installedPaths = cli.installDependencies.mock.calls.map((c: unknown[]) => c[1]);
+    expect(installedPaths).toContain('App');
+    expect(cache.envId).toBe(environment.envId);
   });
 });
 
