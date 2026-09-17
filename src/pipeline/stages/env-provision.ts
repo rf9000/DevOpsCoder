@@ -1,6 +1,6 @@
 import type { Stage } from '../stage.ts';
 import type { ContiniaCli, ContiniaCallOpts } from '../../services/continia-cli.ts';
-import { ContiniaCliError } from '../../services/continia-cli.ts';
+import { ContiniaCliError, TERMINAL_ENV_STATUSES } from '../../services/continia-cli.ts';
 import type { AppConfig, EnvironmentOutput, WorktreeContext } from '../../types/index.ts';
 import type { Logger } from '../../utils/logger.ts';
 import { discoverAlApps as defaultDiscoverAlApps, type AlApp } from '../../utils/al-app-graph.ts';
@@ -40,8 +40,11 @@ export function resolveRequiredBcVersion(apps: AlApp[]): string | undefined {
  * + `env create` + `env start`, persisted to `state.outputs.environment` —
  * intentionally NO polling to Running. The orchestrator is strictly sequential,
  * so the 1-3 min boot runs concurrently with the (much longer) revision loop;
- * build-and-test does the `waitForRunning`. Environments are never torn down —
- * DemoPortal auto-deletes them ~10 days after creation.
+ * build-and-test does the `waitForRunning`. This stage never tears an
+ * environment down, but DemoPortal does — and not only at expiry: a per-WI
+ * environment was observed reclaimed twelve days before its own `expiresUtc`.
+ * A resumed work item finding its environment gone is therefore ordinary, and
+ * the reuse path treats it as such rather than as an error.
  *
  * The profile is DERIVED from the worktree's manifests rather than pinned. The
  * `continia-env-setup` procedure developers follow by hand is three steps —
@@ -155,7 +158,15 @@ export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
           // one. Reusing it unchecked silently reproduces the $33 failure;
           // recreating costs a boot that overlaps the revision loop anyway.
           let recreateBecause: string | undefined;
-          // Ownership first: a foreign environment's BC version is irrelevant,
+          // Gone first: neither ownership nor version means anything for an
+          // environment that no longer exists, and `env get` does NOT raise for
+          // one — it answers with exit 0 and status "Deleted", so the
+          // ContiniaCliError branch below never fires and the old code went on
+          // to call `startEnvironment` on it. DemoPortal reclaimed a per-WI
+          // environment twelve days before its own `expiresUtc`, so a resumed
+          // work item finding its environment gone is ordinary, not exotic.
+          //
+          // Ownership next: a foreign environment's BC version is irrelevant,
           // and the cost of getting this wrong is not a wasted boot — it is
           // starting and deploying onto an environment a colleague or another
           // agent is using. The pipeline cannot enumerate environments (there is
@@ -166,7 +177,11 @@ export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
           // No description means no judgement is possible, and an impossible
           // comparison never blocks — the same rule the version checks below use.
           const expectedPrefix = `wi-${state.workItemId}-`;
-          if (live.description && !live.description.startsWith(expectedPrefix)) {
+          if (TERMINAL_ENV_STATUSES.has(live.status)) {
+            recreateBecause =
+              `it is in terminal status ${live.status} — the environment no longer exists, so it cannot be ` +
+              `started or deployed to; creating a fresh one`;
+          } else if (live.description && !live.description.startsWith(expectedPrefix)) {
             recreateBecause =
               `it is named '${live.description}', which is not this work item's '${expectedPrefix}…' — it ` +
               `belongs to someone else, so it will not be started or deployed to; creating a fresh one`;

@@ -21,6 +21,21 @@ export const DEFAULT_TEST_RUN_TIMEOUT_S = 600;
  */
 export const ACTIVATION_APP_ID = 'c3755ece-dab0-4d16-987d-040661f18522';
 
+/**
+ * Statuses an environment never leaves, so waiting on one only burns wall clock.
+ *
+ * This needs to be checked explicitly because a deleted environment is not an
+ * error: `env get` answers for it with exit 0 and `"status": "Deleted"`, so
+ * nothing throws and nothing else notices. A real run spent the full 10-minute
+ * `waitForRunning` budget on exactly that.
+ *
+ * Deliberately a short list of what is KNOWN terminal rather than an allow-list
+ * of what is known transient: an unfamiliar status keeps polling, because a
+ * judgement that cannot be made must not block a run. Add to it only on evidence.
+ * Observed live: Running, Stopped, Draft, Starting, Creating, Failed, Deleted.
+ */
+export const TERMINAL_ENV_STATUSES: ReadonlySet<string> = new Set(['Failed', 'Deleted']);
+
 /** Counts from a `deps install` round. Catalogue misses land in `skipped`
  * with exit 0 — invisible unless surfaced; symbol gaps become compile errors. */
 export interface DepsInstallInfo {
@@ -514,9 +529,9 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         }
         const env = await this.getEnvironment(envId, opts);
         if (env.status === 'Running') return env;
-        if (env.status === 'Failed') {
+        if (TERMINAL_ENV_STATUSES.has(env.status)) {
           throw new ContiniaCliError(
-            `environment ${envId} entered status Failed while waiting for Running`,
+            `environment ${envId} is in terminal status ${env.status} and will never reach Running`,
             [],
             -1,
             '',

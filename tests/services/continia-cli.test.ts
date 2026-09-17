@@ -379,6 +379,25 @@ describe('createContiniaCli', () => {
       await expect(cli.waitForRunning('env-1', opts)).rejects.toThrow(/Failed/);
     });
 
+    it('throws immediately on a Deleted status instead of polling to the timeout', async () => {
+      // A deleted environment answers `env get` with exit 0 and status
+      // "Deleted" — it never errors — so without this the stage polls for the
+      // full 10 minutes waiting for a state that can never arrive. A real run
+      // burned exactly that on WI 82205.
+      const { cli, calls } = makeCli([envJson('Deleted')]);
+      await expect(cli.waitForRunning('env-1', opts)).rejects.toThrow(/Deleted/);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('keeps polling a status it does not recognise rather than failing fast', async () => {
+      // Only statuses known to be terminal short-circuit. An unfamiliar one
+      // might be transient, and the house rule is that a judgement which
+      // cannot be made does not block.
+      const { cli, calls } = makeCli([envJson('Provisioning'), envJson('Running')]);
+      expect((await cli.waitForRunning('env-1', { ...opts, pollIntervalMs: 10_000 })).status).toBe('Running');
+      expect(calls).toHaveLength(2);
+    });
+
     it('throws when the abort signal fires', async () => {
       const ctrl = new AbortController();
       ctrl.abort('timeout');
