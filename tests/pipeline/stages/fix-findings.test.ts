@@ -296,6 +296,61 @@ describe('createFixFindingsStage', () => {
     await expect(stage.execute(mockState(), mockContext())).rejects.toThrow(/requires/);
   });
 
+  // Fix round 1 regression: findingsAddressed is optional in the schema, so a
+  // round that omits it must not leave a PRIOR round's array sitting in
+  // state — the reviewer prompt (Task 7) renders this key as describing the
+  // round that just ran, and a stale entry would misreport an untouched
+  // finding as addressed.
+  it('clears findingsAddressed when a later round omits it, rather than keeping the earlier round\'s entries', async () => {
+    let call = 0;
+    const runner = {
+      run: mock(async () => {
+        call++;
+        if (call === 1) {
+          return {
+            value: {
+              summary: 'round 1 fix', filesChanged: ['a/A.al'], commits: ['sha1'],
+              findingsAddressed: [{ file: 'a/A.al', line: 69, action: 'fixed', reason: 'round 1' }],
+            },
+            costUsd: 0.1,
+            toolUsage: {},
+            usage: {
+              inputTokens: 1, outputTokens: 1,
+              cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 1,
+              model: 'claude-sonnet-5',
+            },
+          };
+        }
+        // Round 2's model omits findingsAddressed entirely (schema allows it).
+        return {
+          value: {
+            summary: 'round 2 fix', filesChanged: ['a/B.al'], commits: ['sha2'],
+          },
+          costUsd: 0.1,
+          toolUsage: {},
+          usage: {
+            inputTokens: 1, outputTokens: 1,
+            cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 1,
+            model: 'claude-sonnet-5',
+          },
+        };
+      }),
+    } as unknown as AgentRunner;
+
+    const stage = createFixFindingsStage({
+      config: mockContext().config, runner, promptTemplate: 'S',
+      discoveredSkills: [], getCurrentHeadSha: async () => 'h',
+      resetWorktree: async () => {}, getDiff: async () => 'd',
+    });
+
+    const state = stateWithFindings();
+    const afterRound1 = await stage.execute(state, mockContext());
+    expect((afterRound1.outputs.findingsAddressed as any[]).length).toBe(1);
+
+    const afterRound2 = await stage.execute(afterRound1, mockContext());
+    expect(afterRound2.outputs.findingsAddressed).toEqual([]);
+  });
+
   // THE regression test for this plan, at the layer that can actually leak:
   // the stage holds the full WorkItemContext and chooses what reaches the
   // prompt. buildFixFindingsPrompt's own args have no parameter that could

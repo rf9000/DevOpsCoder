@@ -241,9 +241,12 @@ export function createFixFindingsStage(deps: FixFindingsStageDeps): Stage {
 
           const { findingsAddressed, ...coder } = value;
           state.outputs.coder = coder satisfies CoderOutput;
-          if (findingsAddressed) {
-            state.outputs.findingsAddressed = findingsAddressed satisfies FindingAddressed[];
-          }
+          // Written unconditionally, even when this round's model omitted the
+          // field: an omitted report must not inherit the previous round's
+          // findingsAddressed. Task 7's reviewer prompt renders this key as
+          // describing the round that just ran, so a stale entry would read
+          // as "this round addressed it" for a finding nothing touched.
+          state.outputs.findingsAddressed = (findingsAddressed ?? []) satisfies FindingAddressed[];
           return state;
         } catch (err) {
           lastError = err;
