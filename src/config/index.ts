@@ -26,6 +26,11 @@ const envSchema = z.object({
   MAX_REVISIONS: z.coerce.number().default(3),
   MAX_REJECT_CYCLES: z.coerce.number().default(3),
   CODER_MAX_TURNS: z.coerce.number().default(80),
+  // The reviewer fans out to six axes and each explores the worktree with
+  // Bash/Grep before reporting. 30 was a hardcoded literal with no knob, and a
+  // safety-correctness axis blew through it on a real AL repo, failing the
+  // whole revision loop with no way to retune without a rebuild.
+  REVIEWER_MAX_TURNS: z.coerce.number().int().positive().default(50),
   TEST_AUTHOR_MAX_TURNS: z.coerce.number().default(50),
   MAX_COST_USD_PER_WI: z.coerce.number().positive('MAX_COST_USD_PER_WI must be > 0'),
   STAGE_TIMEOUT_MS_ANALYZER: z.coerce.number().int().positive().default(300_000),
@@ -167,6 +172,7 @@ export function loadConfig(
     maxRevisions: p.MAX_REVISIONS,
     maxRejectCycles: p.MAX_REJECT_CYCLES,
     coderMaxTurns: p.CODER_MAX_TURNS,
+    reviewerMaxTurns: p.REVIEWER_MAX_TURNS,
     testAuthorMaxTurns: p.TEST_AUTHOR_MAX_TURNS,
     maxCostUsdPerWi: p.MAX_COST_USD_PER_WI,
     stageTimeoutMs: {

@@ -17,6 +17,8 @@ export interface AppConfig {
   maxRevisions: number;
   maxRejectCycles: number;
   coderMaxTurns: number;
+  /** Turn budget for EACH reviewer axis, not the fan-out as a whole. */
+  reviewerMaxTurns: number;
   testAuthorMaxTurns: number;
   maxCostUsdPerWi: number;
   stageTimeoutMs: Record<string, number>;

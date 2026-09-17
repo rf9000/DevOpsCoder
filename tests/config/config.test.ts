@@ -427,6 +427,19 @@ describe('loadConfig', () => {
   });
 });
 
+describe('REVIEWER_MAX_TURNS', () => {
+  it('defaults to 50', () => {
+    // The reviewer was the one LLM step with no env knob and a hardcoded 30.
+    // A safety-correctness axis exploring a real AL repo exceeded that on the
+    // first production run and took the whole revision loop down with it.
+    expect(loadConfig(validEnv).reviewerMaxTurns).toBe(50);
+  });
+
+  it('honours an explicit override and coerces from a string', () => {
+    expect(loadConfig({ ...validEnv, REVIEWER_MAX_TURNS: '70' }).reviewerMaxTurns).toBe(70);
+  });
+});
+
 describe('LOG_DIR', () => {
   it('defaults to logs/ beside the working directory', () => {
     expect(loadConfig(validEnv).logDir).toBe('logs');

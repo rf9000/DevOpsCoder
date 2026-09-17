@@ -142,7 +142,7 @@ const baseConfig: AppConfig = {
   targetRepoPath: '/repos/target', worktreeBase: '/repos/.worktrees',
   triggerTag: 'agent implement', blockedTag: 'agent-blocked', needInputTag: 'need-input',
   pollIntervalMinutes: 5, concurrency: 1, maxRevisions: 3, maxRejectCycles: 3,
-  coderMaxTurns: 80, testAuthorMaxTurns: 50,
+  coderMaxTurns: 80, reviewerMaxTurns: 50, testAuthorMaxTurns: 50,
   maxCostUsdPerWi: 5.00, stageTimeoutMs: {},
   claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe',
