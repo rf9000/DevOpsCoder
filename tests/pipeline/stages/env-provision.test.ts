@@ -542,3 +542,76 @@ describe('resolveRequiredBcVersion', () => {
     expect(resolveRequiredBcVersion([])).toBeUndefined();
   });
 });
+
+describe('createEnvProvisionStage — persisted environment ownership', () => {
+  // Every environment this stage creates is named `wi-<id>-<slug>`, and
+  // `env get` reports that back as `description`. The pipeline cannot
+  // enumerate environments, so a foreign id can only arrive via a hand-edited
+  // or copied state file — but reusing one would start and deploy onto an
+  // environment a colleague is using, so it is checked rather than assumed.
+  const owned: EnvironmentOutput = {
+    envId: 'env-old', name: 'wi-101-fix-login', status: 'Stopped',
+    url: 'https://bc/env-old', createdAt: '2026-01-01T00:00:00Z', bcVersion: '29.0.0.0',
+  };
+
+  it('reuses an environment whose description matches this work item', async () => {
+    const cli = makeCli({
+      getEnvironment: mock(async () => ({
+        id: 'env-old', status: 'Running', bcVersion: '29.0.0.0', description: 'wi-101-fix-login',
+      })),
+    });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(
+      makeState({ outputs: { worktree, environment: owned } }),
+      makeCtx(),
+    );
+
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
+  });
+
+  it('does NOT reuse an environment belonging to another work item', async () => {
+    const cli = makeCli({
+      getEnvironment: mock(async () => ({
+        id: 'env-old', status: 'Running', bcVersion: '29.0.0.0', description: 'wi-82827-someone-elses-work',
+      })),
+    });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(
+      makeState({ outputs: { worktree, environment: owned } }),
+      makeCtx(),
+    );
+
+    // Recreated, and critically never started: starting a colleague's
+    // environment is the side effect this check exists to prevent.
+    expect(cli.createEnvironment).toHaveBeenCalledTimes(1);
+    expect(cli.startEnvironment).not.toHaveBeenCalledWith('env-old', expect.anything());
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-9');
+  });
+
+  it('reuses when the environment reports no description — an impossible comparison never blocks', async () => {
+    const cli = makeCli({
+      getEnvironment: mock(async () => ({ id: 'env-old', status: 'Running', bcVersion: '29.0.0.0' })),
+    });
+    const stage = createEnvProvisionStage({
+      config: { ...baseConfig, continiaEnvProfileId: '' }, continiaCli: cli, logger: createLogger(),
+      discoverAlApps: appsAt('29.0.0.0'),
+    });
+
+    const result = await stage.execute(
+      makeState({ outputs: { worktree, environment: owned } }),
+      makeCtx(),
+    );
+
+    expect(cli.createEnvironment).not.toHaveBeenCalled();
+    expect((result.outputs.environment as EnvironmentOutput).envId).toBe('env-old');
+  });
+});
