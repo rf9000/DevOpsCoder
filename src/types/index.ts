@@ -17,6 +17,8 @@ export interface AppConfig {
   maxRevisions: number;
   maxRejectCycles: number;
   coderMaxTurns: number;
+  /** Turn budget for the fix-findings step. Falls back to `coderMaxTurns`. */
+  fixFindingsMaxTurns?: number;
   /** Turn budget for EACH reviewer axis, not the fan-out as a whole. */
   reviewerMaxTurns: number;
   testAuthorMaxTurns: number;
@@ -56,6 +58,12 @@ export interface AppConfig {
   continiaTestAppPaths: string[];
   /** Max coder fix attempts when the deploy/test verification is red. */
   maxTestFixAttempts: number;
+  /**
+   * Test-fixer calls the in-loop verification gate may make per revision round.
+   * Deliberately separate from and smaller than `maxTestFixAttempts` — see
+   * MAX_INLOOP_FIX_ATTEMPTS in src/config/index.ts. Default 1.
+   */
+  maxInLoopFixAttempts?: number;
   /** `--timeout` (seconds) passed to each `continia test run`. */
   continiaTestTimeoutS: number;
   /** Dir containing an orchestrator-owned `skills/` tree (e.g. /app/.claude).
