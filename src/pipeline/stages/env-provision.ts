@@ -155,7 +155,22 @@ export function createEnvProvisionStage(deps: EnvProvisionDeps): Stage {
           // one. Reusing it unchecked silently reproduces the $33 failure;
           // recreating costs a boot that overlaps the revision loop anyway.
           let recreateBecause: string | undefined;
-          if (required && !liveVersion) {
+          // Ownership first: a foreign environment's BC version is irrelevant,
+          // and the cost of getting this wrong is not a wasted boot — it is
+          // starting and deploying onto an environment a colleague or another
+          // agent is using. The pipeline cannot enumerate environments (there is
+          // no `env list` in ContiniaCli), so a foreign id can only reach here
+          // through a hand-edited or copied state file; the check is cheap and
+          // the failure is loud, so it is verified rather than assumed.
+          //
+          // No description means no judgement is possible, and an impossible
+          // comparison never blocks — the same rule the version checks below use.
+          const expectedPrefix = `wi-${state.workItemId}-`;
+          if (live.description && !live.description.startsWith(expectedPrefix)) {
+            recreateBecause =
+              `it is named '${live.description}', which is not this work item's '${expectedPrefix}…' — it ` +
+              `belongs to someone else, so it will not be started or deployed to; creating a fresh one`;
+          } else if (required && !liveVersion) {
             recreateBecause =
               `its BC version could not be established ('env get' reported none and the state file records ` +
               `none), so it cannot be checked against the BC ${required} this worktree requires — recreating ` +

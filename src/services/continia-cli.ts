@@ -59,6 +59,12 @@ export interface EnvironmentInfo {
   url?: string;
   /** BC version the environment runs, as reported by `env get`. */
   bcVersion?: string;
+  /**
+   * The environment's creation name, as `env get` reports it. Environments this
+   * pipeline created are named `wi-<id>-<slug>`, so this is the ownership marker
+   * the reuse path checks before touching an environment it did not make.
+   */
+  description?: string;
 }
 
 /** One row of `continia env profiles list --bc-version <v> --json`. */
@@ -162,6 +168,11 @@ const environmentInfoSchema = z
     url: z.string().nullish(),
     webUrl: z.string().nullish(),
     bcVersion: z.string().nullish(),
+    // `env get` reports the creation name here — the real payload has no
+    // `name` field at all. For an environment this pipeline created that is
+    // `wi-<id>-<slug>`, which is how the reuse path proves the environment is
+    // this work item's own rather than a colleague's.
+    description: z.string().nullish(),
   })
   .passthrough();
 
@@ -422,6 +433,7 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
       status: parsed.status ?? 'unknown',
       url: parsed.url ?? parsed.webUrl ?? undefined,
       bcVersion: parsed.bcVersion ?? undefined,
+      description: parsed.description ?? undefined,
     };
   }
 

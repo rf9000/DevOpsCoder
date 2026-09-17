@@ -631,3 +631,32 @@ describe('pickAdminUser', () => {
     expect(pickAdminUser([])).toBeUndefined();
   });
 });
+
+describe('environment description', () => {
+  it('surfaces the description env get reports, which carries the wi-<id> name', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        id: 'env-1', status: 'Stopped', bcVersion: '28.1.0.0',
+        description: 'wi-82205-telemetry-log-reconciliation-vo',
+      }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    const env = await cli.getEnvironment('env-1', { worktreePath: '/wt' });
+
+    expect(env.description).toBe('wi-82205-telemetry-log-reconciliation-vo');
+  });
+
+  it('tolerates a null description', async () => {
+    const exec = mock(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ id: 'env-1', status: 'Running', description: null }),
+      stderr: '',
+    }));
+    const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
+
+    expect((await cli.getEnvironment('env-1', { worktreePath: '/wt' })).description).toBeUndefined();
+  });
+});
