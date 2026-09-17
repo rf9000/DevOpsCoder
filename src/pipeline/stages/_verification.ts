@@ -286,6 +286,23 @@ export interface PrepareVerificationArgs {
   getChangedFiles?: (worktreePath: string, baselineSha: string) => Promise<string[]>;
   /** Test override for the app.json scan that drives the derived deploy set. */
   discoverAlApps?: (worktreePath: string) => AlApp[];
+  /**
+   * Log-line prefix. Both `build-and-test` and the in-loop `verify` gate share
+   * this function, and an operator tailing the log needs to tell which stage a
+   * line came from. Defaults to `'build-and-test'` so the final gate's log
+   * output (and the tests asserting on it) are unchanged.
+   */
+  logPrefix?: string;
+  /**
+   * Invoked with the live environment right after `waitForRunning`, before the
+   * activation install and any deps installs. `state.outputs.environment`
+   * previously only refreshed after this whole function returned, so a throw
+   * from inside it (empty appPaths, a failed activation install, a failed
+   * deps install) left state holding `env-provision`'s record — which for a
+   * fresh environment can carry `status: 'Creating'` and a null `url`. Callers
+   * should assign `state.outputs.environment` from here.
+   */
+  onEnvironmentLive?: (env: EnvironmentOutput) => void;
 }
 
 /**
@@ -304,6 +321,7 @@ export async function prepareVerification(
   const discover = args.discoverTestCodeunits ?? defaultDiscoverTestCodeunits;
   const changedFilesOf = args.getChangedFiles ?? defaultGetChangedFiles;
   const discoverApps = args.discoverAlApps ?? defaultDiscoverAlApps;
+  const logPrefix = args.logPrefix ?? 'build-and-test';
   const callOpts = { worktreePath: worktree.path, signal: args.signal };
 
   // Before any cached flag is read: a cache from a different environment is a
@@ -316,6 +334,7 @@ export async function prepareVerification(
     status: live.status,
     url: live.url ?? args.environment.url,
   };
+  args.onEnvironmentLive?.(env);
 
   // A fresh environment can't be interacted with until the Continia Core
   // Internal Activation App is installed. Idempotent — safe on re-entry.
@@ -360,13 +379,13 @@ export async function prepareVerification(
   });
   const codeunits = selection.selected;
   args.logger.info(
-    `build-and-test: running ${codeunits.length} test codeunit(s) — ${selection.reason}`,
+    `${logPrefix}: running ${codeunits.length} test codeunit(s) — ${selection.reason}`,
   );
   if (selection.droppedByCap > 0) {
     // Never silent: a truncated run that goes green must not read as
     // "everything passed".
     args.logger.info(
-      `build-and-test: WARNING ${selection.droppedByCap} selected codeunit(s) dropped by ` +
+      `${logPrefix}: WARNING ${selection.droppedByCap} selected codeunit(s) dropped by ` +
         `CONTINIA_MAX_TEST_CODEUNITS=${config.maxTestCodeunits} — this round does NOT cover them`,
     );
   }
@@ -397,13 +416,13 @@ export async function prepareVerification(
   });
   if (appPaths.length === 0) {
     throw new Error(
-      'build-and-test could not determine which apps to deploy: no app.json owns the changed ' +
+      `${logPrefix} could not determine which apps to deploy: no app.json owns the changed ` +
         'files or the selected tests. Set CONTINIA_APP_PATHS to pin the deploy set explicitly.',
     );
   }
   const pinned = config.continiaAppPaths.length > 0;
   args.logger.info(
-    `build-and-test: deploying ${appPaths.length} app(s) in dependency order — ${appPaths.join(' → ')}` +
+    `${logPrefix}: deploying ${appPaths.length} app(s) in dependency order — ${appPaths.join(' → ')}` +
       (pinned ? ' (pinned via CONTINIA_APP_PATHS)' : ' (derived)'),
   );
   if (pinned) {
@@ -412,7 +431,7 @@ export async function prepareVerification(
     // test-author wrote into a test app outside the list is never published
     // and this round runs a codeunit that isn't on the environment.
     args.logger.warn(
-      'build-and-test: WARNING CONTINIA_APP_PATHS is pinned, so the deploy set was NOT derived ' +
+      `${logPrefix}: WARNING CONTINIA_APP_PATHS is pinned, so the deploy set was NOT derived ` +
         'for this work item — apps outside the pin are not deployed, including test apps holding ' +
         'newly written tests. Unset it unless you are deliberately overriding the derivation.',
     );
@@ -424,7 +443,7 @@ export async function prepareVerification(
   const surfaceDepsInfo = (appPath: string, info: DepsInstallInfo, tail: string): void => {
     if (info.skippedCount > 0 || info.symbolsMissingCount > 0) {
       args.logger.warn(
-        `build-and-test: deps install for ${appPath} reported ${info.skippedCount} skipped dep(s) ` +
+        `${logPrefix}: deps install for ${appPath} reported ${info.skippedCount} skipped dep(s) ` +
           `and ${info.symbolsMissingCount} symbol gap(s) — ${tail}`,
       );
     }
@@ -451,7 +470,7 @@ export async function prepareVerification(
     const localizationApp = localizationAppDir(appGraph, config.continiaEnvLocalization);
     if (!localizationApp) {
       args.logger.warn(
-        `build-and-test: no localization app for CONTINIA_ENV_LOCALIZATION=` +
+        `${logPrefix}: no localization app for CONTINIA_ENV_LOCALIZATION=` +
           `${config.continiaEnvLocalization}, and no banking-w1 to fall back on — skipping the ` +
           `localization deps install. Continia Finance will NOT be installed on the environment, ` +
           `and apps depending on it may fail to publish.`,
@@ -464,7 +483,7 @@ export async function prepareVerification(
         // the fallback changes what is on the environment. An operator
         // filtering warn-level lines has to see that.
         args.logger.warn(
-          `build-and-test: WARNING no app for CONTINIA_ENV_LOCALIZATION=` +
+          `${logPrefix}: WARNING no app for CONTINIA_ENV_LOCALIZATION=` +
             `'${config.continiaEnvLocalization}'; fell back to banking-w1, installing ` +
             `localization dependencies from ${localizationApp.dir} — every country app declares ` +
             `Continia Finance, so this still brings it onto the environment, but the externals ` +
@@ -472,7 +491,7 @@ export async function prepareVerification(
         );
       } else {
         args.logger.info(
-          `build-and-test: installing localization dependencies from ${localizationApp.dir}` +
+          `${logPrefix}: installing localization dependencies from ${localizationApp.dir}` +
             ' — the only step that brings Continia Finance onto the environment',
         );
       }
@@ -588,7 +607,6 @@ export async function runVerificationRound(
 export interface RunTestFixCallArgs {
   runner: AgentRunner;
   config: AppConfig;
-  logger: Logger;
   /** The contents of `src/prompts/test-fixer.md`. */
   fixerPromptTemplate: string;
   discoveredSkills: DiscoveredSkill[];

@@ -106,6 +106,9 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         environment,
         signal: ctx.signal,
         cache,
+        onEnvironmentLive: (env) => {
+          state.outputs.environment = env;
+        },
         ...(deps.discoverTestCodeunits ? { discoverTestCodeunits: deps.discoverTestCodeunits } : {}),
         ...(deps.getChangedFiles ? { getChangedFiles: deps.getChangedFiles } : {}),
         ...(deps.discoverAlApps ? { discoverAlApps: deps.discoverAlApps } : {}),
@@ -127,7 +130,6 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
           await runTestFixCall({
             runner: deps.runner,
             config,
-            logger: deps.logger,
             fixerPromptTemplate: deps.fixerPromptTemplate,
             discoveredSkills: deps.discoveredSkills,
             failure,
