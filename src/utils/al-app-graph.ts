@@ -102,19 +102,92 @@ export function ownerAppOf(relPath: string, apps: AlApp[]): AlApp | undefined {
 }
 
 /**
+ * The `base` DemoPortal localization corresponds to the W1 ("world") app —
+ * there is no `banking-base`.
+ */
+const BASE_LOCALIZATION_APP_CC = 'w1';
+
+export interface LocalizationAppMatch {
+  /** Worktree-relative directory of the country app to deps-install. */
+  dir: string;
+  /** True when the requested localization had no app and W1 stood in. */
+  fellBack: boolean;
+}
+
+/**
+ * The country app whose dependencies must be installed on an environment of
+ * this localization.
+ *
+ * Since v29 only the country apps declare `Continia Finance` — `base-application`
+ * does not — so `deps install banking-<cc>` is the only thing that brings Finance
+ * onto an environment. Every country app declares it, which is why falling back
+ * to W1 is safe: the fallback still achieves the step's purpose. That path is
+ * real, not defensive — BC 29 publishes `au`/`ca`/`nz` profiles for which this
+ * repo has no app.
+ *
+ * Returns `undefined` when the repo has no country app at all; the caller logs
+ * and skips rather than failing, because a repo without one is not Continia
+ * Banking and the verification gate should not die over it.
+ */
+export function localizationAppDir(
+  apps: AlApp[],
+  localization: string,
+): LocalizationAppMatch | undefined {
+  const cc = localization.trim().toLowerCase();
+  const wanted = cc === '' || cc === 'base' ? BASE_LOCALIZATION_APP_CC : cc;
+
+  const byCc = (code: string): AlApp | undefined =>
+    apps.find((a) => a.dir.toLowerCase() === `banking-${code}`);
+
+  const exact = byCc(wanted);
+  if (exact) return { dir: exact.dir, fellBack: false };
+
+  const w1 = byCc(BASE_LOCALIZATION_APP_CC);
+  if (w1) return { dir: w1.dir, fellBack: true };
+
+  return undefined;
+}
+
+/**
+ * Vendored third-party source. Its apps come from `continia deps install`, and
+ * their app.json names collide with the real externals by design — the app in
+ * `external/Continia Finance` is literally named `Continia Finance`. Following a
+ * dependency edge into this directory therefore means compiling somebody else's
+ * source (pinned to an older `application` version) against our environment.
+ */
+const EXTERNAL_DIR_PREFIX = 'external/';
+
+function isVendored(app: AlApp): boolean {
+  return app.dir.toLowerCase().startsWith(EXTERNAL_DIR_PREFIX);
+}
+
+/**
  * Expand seed app directories to everything that must be deployed with them,
  * in dependency-first order.
  *
  * Only dependencies that resolve to an app inside this repo are followed —
  * externals (Continia Core, Test Runner, Library Assert, …) come from
- * `continia deps install`, not from us.
+ * `continia deps install`, not from us. Vendored source under `external/` is in
+ * the repo but is not "ours" for this purpose: a dependency edge is never
+ * followed into it, because its app.json names collide with the real externals
+ * by design (see {@link EXTERNAL_DIR_PREFIX}). A vendored app named as a seed
+ * is still built — a WI that edits vendored source aims at it deliberately.
  *
  * Ordering is a depth-first post-order walk, which yields a valid topological
  * order for a DAG. A dependency cycle (illegal in AL, but cheap to guard) is
  * broken by the in-progress set rather than recursing forever.
  */
 export function resolveDeployOrder(apps: AlApp[], seedDirs: string[]): string[] {
-  const byName = new Map(apps.map((a) => [a.name, a]));
+  // A name collision must resolve to the real in-repo app, never to the
+  // vendored copy: the vendored one is then skipped by the guard below and the
+  // app that actually needed building would drop out of the order entirely.
+  // (`apps` is directory-sorted, so a plain Map would let whichever sorts last
+  // win.)
+  const byName = new Map<string, AlApp>();
+  for (const app of apps) {
+    const existing = byName.get(app.name);
+    if (!existing || (isVendored(existing) && !isVendored(app))) byName.set(app.name, app);
+  }
   const byDir = new Map(apps.map((a) => [a.dir, a]));
 
   const ordered: string[] = [];
@@ -126,7 +199,10 @@ export function resolveDeployOrder(apps: AlApp[], seedDirs: string[]): string[] 
     inProgress.add(app.dir);
     for (const depName of app.dependencies) {
       const dep = byName.get(depName);
-      if (dep) visit(dep); // internal only; externals are deps-installed
+      // Internal only; externals are deps-installed. Vendored apps are skipped
+      // here but NOT at the seed: a WI that edits vendored source aims at it
+      // deliberately and must still build.
+      if (dep && !isVendored(dep)) visit(dep);
     }
     inProgress.delete(app.dir);
     done.add(app.dir);

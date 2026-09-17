@@ -26,6 +26,8 @@ Plan 10 adds the **verification gate**: a per-WI Business Central environment is
 
 The BC version is derived per work item from the worktree's `app.json` `application`/`platform` fields: `env-provision` picks the lowest published DemoPortal profile that satisfies it, in the `CONTINIA_ENV_LOCALIZATION` localization. A mismatch fails at `env-provision`, before the revision loop spends anything.
 
+Before deploying anything, `build-and-test` runs `continia deps install <envId> banking-<cc>` for the country app matching `CONTINIA_ENV_LOCALIZATION` (`base` → `banking-w1`). Since v29 only the country apps declare `Continia Finance`, so this is the only step that brings it onto the environment, and it must run before the deploy set's own dependency installs. The country app is deps-installed only — never compiled, symbol-downloaded or published.
+
 ### Where the money went
 
 The watcher's outcome line reports the total; the line after it reports the split, so a spend spike can be read off `docker compose logs -f` without opening anything:

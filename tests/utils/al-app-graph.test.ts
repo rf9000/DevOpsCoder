@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   discoverAlApps,
+  localizationAppDir,
   ownerAppOf,
   resolveDeployOrder,
   type AlApp,
@@ -180,5 +181,101 @@ describe('discoverAlApps', () => {
     app('base-application', 'Continia Banking', [], { application: 29 });
 
     expect(discoverAlApps(dir)[0]?.application).toBeUndefined();
+  });
+});
+
+describe('localizationAppDir', () => {
+  const countryApps: AlApp[] = [
+    { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: [] },
+    { dir: 'banking-dk', name: 'Continia Banking (DK)', dependencies: [] },
+    { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+  ];
+
+  it("maps 'base' to the W1 app", () => {
+    expect(localizationAppDir(countryApps, 'base')).toEqual({ dir: 'banking-w1', fellBack: false });
+  });
+
+  it('maps a country code to its own app', () => {
+    expect(localizationAppDir(countryApps, 'dk')).toEqual({ dir: 'banking-dk', fellBack: false });
+  });
+
+  it('matches case-insensitively', () => {
+    expect(localizationAppDir(countryApps, 'DK')).toEqual({ dir: 'banking-dk', fellBack: false });
+  });
+
+  it("accepts 'w1' spelled directly, without reporting a fallback", () => {
+    expect(localizationAppDir(countryApps, 'w1')).toEqual({ dir: 'banking-w1', fellBack: false });
+  });
+
+  it('falls back to W1 when the localization has no app', () => {
+    // Real case: BC 29 publishes au/ca/nz profiles and the repo has no
+    // banking-au. Every country app declares Continia Finance, so W1 serves.
+    expect(localizationAppDir(countryApps, 'au')).toEqual({ dir: 'banking-w1', fellBack: true });
+  });
+
+  it('returns undefined when not even W1 exists', () => {
+    const noCountryApps: AlApp[] = [{ dir: 'base-application', name: 'Continia Banking', dependencies: [] }];
+    expect(localizationAppDir(noCountryApps, 'dk')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty app list', () => {
+    expect(localizationAppDir([], 'base')).toBeUndefined();
+  });
+
+  it('treats a blank localization as base', () => {
+    expect(localizationAppDir(countryApps, '  ')).toEqual({ dir: 'banking-w1', fellBack: false });
+  });
+});
+
+describe('resolveDeployOrder — external/ is not walked into', () => {
+  // The real collision: external/Continia Finance/00_Base_App declares
+  // name "Continia Finance", which is exactly what banking-w1 depends on.
+  const withVendored: AlApp[] = [
+    { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Banking', 'Continia Finance'] },
+    { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+    { dir: 'external/Continia Finance/00_Base_App', name: 'Continia Finance', dependencies: [] },
+  ];
+
+  it('does not pull a vendored app in through a dependency edge', () => {
+    const order = resolveDeployOrder(withVendored, ['banking-w1']);
+    expect(order).toEqual(['base-application', 'banking-w1']);
+  });
+
+  it('still follows the same dependency name when it resolves outside external/', () => {
+    const inRepo: AlApp[] = [
+      { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Finance'] },
+      { dir: 'finance', name: 'Continia Finance', dependencies: [] },
+    ];
+    expect(resolveDeployOrder(inRepo, ['banking-w1'])).toEqual(['finance', 'banking-w1']);
+  });
+
+  it('resolves a colliding name to the in-repo app, not the vendored copy', () => {
+    // Both are in `apps`, and discoverAlApps sorts by directory: 'apps/…' sorts
+    // before 'external/…', so a last-wins map hands the edge to the vendored
+    // copy — which the guard then skips, silently dropping the REAL app out of
+    // the deploy order. Directory order must not decide this either way.
+    const collision: AlApp[] = [
+      { dir: 'apps/Continia Finance', name: 'Continia Finance', dependencies: [] },
+      { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Finance'] },
+      { dir: 'external/Continia Finance/00_Base_App', name: 'Continia Finance', dependencies: [] },
+    ];
+    expect(resolveDeployOrder(collision, ['banking-w1'])).toEqual([
+      'apps/Continia Finance',
+      'banking-w1',
+    ]);
+    // … and the reverse listing order resolves the same way.
+    const reversed = [...collision].reverse();
+    expect(resolveDeployOrder(reversed, ['banking-w1'])).toEqual([
+      'apps/Continia Finance',
+      'banking-w1',
+    ]);
+  });
+
+  it('still builds a vendored app that was seeded directly', () => {
+    // The guard stops the graph reaching into external/, not an operator
+    // aiming at it: a WI that edits vendored source seeds it via ownerAppOf.
+    expect(resolveDeployOrder(withVendored, ['external/Continia Finance/00_Base_App'])).toEqual([
+      'external/Continia Finance/00_Base_App',
+    ]);
   });
 });

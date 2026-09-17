@@ -193,6 +193,7 @@ interface StageHarness {
   resets: string[];
   testOpts: Array<number | undefined>;
   warnings: string[];
+  infos: string[];
 }
 
 function makeHarness(opts: {
@@ -204,6 +205,8 @@ function makeHarness(opts: {
   config?: AppConfig;
   changedFiles?: string[];
   apps?: AlApp[];
+  /** Per-app deps-install result, so a test can make one call report skips. */
+  depsInfoFor?: (app: string) => { skippedCount: number; symbolsMissingCount: number };
 } = {}) {
   const callOrder: string[] = [];
   const deployQueue = [...(opts.deployQueue ?? [greenDeploy])];
@@ -222,14 +225,19 @@ function makeHarness(opts: {
     }),
     installDependencies: mock(async (_e: string, app: string) => {
       callOrder.push(`install:${app}`);
-      return { skippedCount: 0, symbolsMissingCount: 0 };
+      return opts.depsInfoFor?.(app) ?? { skippedCount: 0, symbolsMissingCount: 0 };
     }),
     downloadSymbols: mock(async (_e: string, app: string) => {
       callOrder.push(`download:${app}`);
     }),
     deployApp: mock(async (_e: string, app: string) => {
       callOrder.push(`deploy:${app}`);
-      return deployQueue.length > 1 ? deployQueue.shift()! : deployQueue[0]!;
+      const rows = deployQueue.length > 1 ? deployQueue.shift()! : deployQueue[0]!;
+      // The real CLI reports rows for the app it was asked to deploy, so stamp
+      // the path onto the generic 'A' placeholder rows — that is what lets a
+      // test read the deploy set back off `outputs.verification`. Fixtures that
+      // name a specific app (infraDeploy) keep their own name.
+      return rows.map((r) => ({ ...r, app: r.app === 'A' ? app : r.app }));
     }),
     runTests: mock(async (_e: string, codeunitId: number, o: { timeoutSeconds?: number }) => {
       callOrder.push(`test:${codeunitId}`);
@@ -258,8 +266,12 @@ function makeHarness(opts: {
 
   const resets: string[] = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   const logger: Logger = {
     ...createLogger(),
+    info: (m: string) => {
+      infos.push(m);
+    },
     warn: (m: string) => {
       warnings.push(m);
     },
@@ -282,7 +294,7 @@ function makeHarness(opts: {
     discoverAlApps: () => opts.apps ?? [],
   });
 
-  return { stage, cli, callOrder, runnerCalls, resets, testOpts, warnings };
+  return { stage, cli, callOrder, runnerCalls, resets, testOpts, warnings, infos };
 }
 
 function makeStageState(): PipelineState {
@@ -596,5 +608,134 @@ describe('createBuildAndTestStage', () => {
     });
     await stage.execute(makeStageState(), makeStageCtx());
     expect(runnerCalls[0]!.prompt).toContain('**continia-test**');
+  });
+});
+
+describe('build-and-test — localization deps install', () => {
+  const bankingApps: AlApp[] = [
+    { dir: 'banking-w1', name: 'Continia Banking (W1)', dependencies: ['Continia Banking'] },
+    { dir: 'banking-dk', name: 'Continia Banking (DK)', dependencies: ['Continia Banking'] },
+    { dir: 'base-application', name: 'Continia Banking', dependencies: [] },
+  ];
+
+  it('deps-installs the localization app BEFORE any deploy-set app', async () => {
+    const { stage, callOrder } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    const installs = callOrder.filter((c) => c.startsWith('install:'));
+    // Order is the requirement: Finance only arrives via the country app, and
+    // base-application's deps install must not run before it.
+    expect(installs[0]).toBe('install:banking-w1');
+    expect(installs).toContain('install:base-application');
+  });
+
+  it('never deploys or downloads symbols for the localization app', async () => {
+    const { stage, callOrder } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+    });
+    const result = await stage.execute(makeStageState(), makeStageCtx());
+
+    // Positive control first: without it the two absence assertions below hold
+    // even if the deploy and symbol loops stopped running altogether.
+    expect(callOrder).toContain('deploy:base-application');
+    expect(callOrder).toContain('download:base-application');
+    // Letting it into appPaths would make resolveDeployOrder compile vendored
+    // external/Continia Finance source.
+    expect(callOrder).not.toContain('deploy:banking-w1');
+    expect(callOrder).not.toContain('download:banking-w1');
+
+    // Same constraint, read off what was persisted rather than off the calls.
+    const deployed = (result.outputs.verification as VerificationOutput).deploy.map((d) => d.app);
+    expect(deployed).toContain('base-application');
+    expect(deployed).not.toContain('banking-w1');
+  });
+
+  it('uses the app matching CONTINIA_ENV_LOCALIZATION', async () => {
+    const { stage, callOrder, warnings, infos } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'dk', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    expect(callOrder.filter((c) => c.startsWith('install:'))[0]).toBe('install:banking-dk');
+    // An exact match is not a fallback: an implementation that always emitted
+    // the fallback clause would otherwise pass every test in this block.
+    expect([...warnings, ...infos].some((m) => /fell back/i.test(m))).toBe(false);
+  });
+
+  it('logs the W1 fallback at warn level, not info', async () => {
+    // W1 stands in for the purpose of this step, but it does NOT bring the
+    // country-specific externals a real banking-<cc> would, so the deployed
+    // environment differs. An operator filtering warn-level lines, which the
+    // docs tell them to do, has to see it.
+    const { stage, callOrder, warnings, infos } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'au', continiaAppPaths: [] },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    expect(callOrder.filter((c) => c.startsWith('install:'))[0]).toBe('install:banking-w1');
+    expect(warnings.some((m) => /fell back to banking-w1/.test(m))).toBe(true);
+    expect(infos.some((m) => /fell back to banking-w1/.test(m))).toBe(false);
+  });
+
+  it('a skipped dep on the localization install warns that Finance may be missing', async () => {
+    // This call is never compiled, so the deploy-set wording ("surface later as
+    // compile errors") is false here — and a skip on THIS call is the most
+    // likely way Finance silently fails to reach the environment.
+    const { stage, warnings } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+      depsInfoFor: (app) =>
+        app === 'banking-w1'
+          ? { skippedCount: 1, symbolsMissingCount: 0 }
+          : { skippedCount: 0, symbolsMissingCount: 0 },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    const warning = warnings.find((w) => w.includes('deps install for banking-w1'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('Continia Finance is NOT on the environment');
+    expect(warning).not.toContain('surface later as compile errors');
+  });
+
+  it('a skipped dep on a deploy-set app keeps the compile-error wording', async () => {
+    const { stage, warnings } = makeHarness({
+      apps: bankingApps,
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+      depsInfoFor: (app) =>
+        app === 'base-application'
+          ? { skippedCount: 0, symbolsMissingCount: 2 }
+          : { skippedCount: 0, symbolsMissingCount: 0 },
+    });
+    await stage.execute(makeStageState(), makeStageCtx());
+
+    const warning = warnings.find((w) => w.includes('deps install for base-application'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('surface later as compile errors');
+    expect(warning).not.toContain('Continia Finance');
+  });
+
+  it('warns and completes when the repo has no country app at all', async () => {
+    const { stage, callOrder, warnings } = makeHarness({
+      apps: [{ dir: 'base-application', name: 'Continia Banking', dependencies: [] }],
+      changedFiles: ['base-application/X.al'],
+      config: { ...baseConfig, continiaEnvLocalization: 'base', continiaAppPaths: [] },
+    });
+    const result = await stage.execute(makeStageState(), makeStageCtx());
+
+    expect(callOrder.filter((c) => c.startsWith('install:'))[0]).toBe('install:base-application');
+    expect(warnings.some((m) => /Continia Finance will NOT be installed/.test(m))).toBe(true);
+    expect(result.outputs.verification).toBeDefined();
   });
 });
