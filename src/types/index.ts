@@ -137,7 +137,10 @@ export interface PipelineState {
    * Per-stage outputs keyed by `Stage.name`. Reserved keys: `cost` carries
    * `PipelineCostInfo` (managed by createCostTracker, see src/utils/cost-tracker.ts);
    * `toolUsage` carries a cumulative per-tool call-count map (managed by
-   * createToolUsageTracker, see src/utils/tool-usage-tracker.ts).
+   * createToolUsageTracker, see src/utils/tool-usage-tracker.ts);
+   * `findingsAddressed` carries the fix-findings step's `FindingAddressed[]`
+   * self-report; `verificationSetup` carries the per-WI cache of environment-side
+   * verification setup (see src/pipeline/stages/_verification.ts).
    */
   outputs: Record<string, unknown>;
 }
@@ -528,6 +531,24 @@ export interface Finding {
   suggestion?: string;
   /** Which reviewer axis raised it (or "multiple" after aggregation). */
   axis: string;
+}
+
+/**
+ * One entry of the fix-findings step's self-report: what it did about a
+ * finding the reviewer raised.
+ *
+ * **Reporting only.** `declined` does NOT waive the finding — `approved` is
+ * still computed purely from the next reviewer run, so a declined blocking
+ * finding will be re-raised and will still hold the loop. These records exist
+ * to be rendered into the reviewer's next prompt and the PR, and to give us the
+ * evidence to decide separately whether a real waiver mechanism is worth
+ * building.
+ */
+export interface FindingAddressed {
+  file: string;
+  line?: number;
+  action: 'fixed' | 'declined';
+  reason: string;
 }
 
 export interface ReviewerOutput {
