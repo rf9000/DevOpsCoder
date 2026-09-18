@@ -196,13 +196,30 @@ export function createVerifyGateStage(deps: VerifyGateDeps): Stage {
         );
         return state;
       } catch (err) {
-        if (err instanceof CostExceededError || isAbortError(err)) throw err;
+        // `isAbortError` only recognises the rejection `AgentRunner` produces.
+        // Everything else this stage calls goes through the Continia CLI, which
+        // surfaces a cancelled signal as an ordinary `ContiniaCliError` — the
+        // "aborted while waiting for Running" branch most visibly, but any of
+        // `waitForRunning`/`installAppById`/`installDependencies`/
+        // `downloadSymbols`/`deployApp`/`runTests` can. Swallowing one of those
+        // made a `revision-loop` timeout (which aborts the signal but never
+        // sets `abortFlag`) log an environment-fault diagnosis and stamp a
+        // skipped verification for what was actually a timeout. Asking the
+        // signal is robust in a way that string-matching CLI messages is not.
+        if (err instanceof CostExceededError || isAbortError(err) || ctx.signal.aborted) throw err;
         const message = err instanceof Error ? err.message : String(err);
         // Deliberately unconditional, every round: three rounds against a
         // dead environment must produce three warnings, not one memoised one.
+        // Neutral wording on purpose. Most of what lands here is an environment
+        // or CLI fault, but not all of it is: `prepareVerification` also throws
+        // when the deploy set cannot be derived, which is a configuration
+        // problem. Naming a cause the catch-all cannot actually establish sent
+        // operators after the wrong thing, so the line reports the effect
+        // (this round went unverified) and leaves the message to speak for the
+        // cause.
         deps.logger.warn(
-          `verify: ${message} — an environment/CLI fault, not something this round's code can ` +
-            `fix. Skipping verification; build-and-test will judge it.`,
+          `verify: could not verify this round: ${message} — skipping verification; ` +
+            `build-and-test will judge it before any PR opens.`,
         );
         state.outputs.verification = skippedVerification(message);
         return state;

@@ -241,8 +241,16 @@ Runner call mirrors the coder exactly: `tools: ['Read','Grep','Glob','Bash','Ski
 composed with `createPathEscapeFilter(worktree.path)`, `settingSources: ['project']`,
 reset-to-baseline and `MAX_TRANSIENT_RETRIES` on `AgentOutputParseError`.
 
-Writes `state.outputs.coder` (so downstream stages are unchanged) and
-`state.outputs.findingsAddressed`.
+Accumulates into `state.outputs.coder` (so downstream stages are unchanged) and
+replaces `state.outputs.findingsAddressed`.
+
+`outputs.coder` is *merged*, not overwritten: a fix round describes only itself,
+and `test-author` renders `summary`/`filesChanged`/`commits` as its account of
+the whole change. `filesChanged` and `commits` union (previous order first),
+`summary` accumulates (bounded by `MAX_REVISIONS`), and `prTitle`/`prBullets`
+survive a round that omits them — the schema makes both optional and the
+prompt's output example leaves them out, so an overwrite would delete the
+coder's PR copy on every revision.
 
 ### `src/pipeline/stages/_verify-gate.ts` (new)
 

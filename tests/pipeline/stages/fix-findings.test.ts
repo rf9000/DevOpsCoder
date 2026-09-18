@@ -400,4 +400,95 @@ describe('createFixFindingsStage', () => {
     expect(captured.prompt).toContain('82205');
     expect(captured.prompt).toContain('Reconciliation telemetry');
   });
+
+  // Regression: the stage used to REPLACE outputs.coder. A fix round describes
+  // only itself, and `test-author` renders summary/filesChanged/commits as its
+  // account of the whole change — so a three-round WI handed the most
+  // expensive stage in the pipeline "round 3 fix" and one filename. And
+  // prTitle/prBullets are optional in the schema and absent from the prompt's
+  // example, so the coder's PR copy vanished on the first revision.
+  function scriptedRunner(values: unknown[]): AgentRunner {
+    let call = 0;
+    return {
+      run: mock(async () => ({
+        value: values[call++],
+        costUsd: 0.1,
+        toolUsage: {},
+        usage: {
+          inputTokens: 1, outputTokens: 1,
+          cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 1,
+          model: 'claude-sonnet-5',
+        },
+      })),
+    } as unknown as AgentRunner;
+  }
+
+  it('merges into the previous coder output across rounds instead of replacing it', async () => {
+    const stage = createFixFindingsStage({
+      config: mockContext().config,
+      runner: scriptedRunner([
+        // Round 2 — omits prTitle/prBullets, as the prompt's example does.
+        { summary: 'round 2 fix', filesChanged: ['a/B.al', 'a/C.al'], commits: ['sha2'] },
+        // Round 3 — supplies its own PR copy, and re-touches an earlier file.
+        {
+          summary: 'round 3 fix', filesChanged: ['a/C.al', 'a/D.al'], commits: ['sha3'],
+          prTitle: 'Sharpen reconciliation telemetry', prBullets: ['Refined the telemetry payload'],
+        },
+      ]),
+      promptTemplate: 'S',
+      discoveredSkills: [],
+      getCurrentHeadSha: async () => 'h',
+      resetWorktree: async () => {},
+      getDiff: async () => 'd',
+    });
+
+    const state = stateWithFindings();
+    state.outputs.coder = {
+      summary: 'implemented the telemetry hook',
+      filesChanged: ['a/A.al', 'a/B.al'],
+      commits: ['sha1'],
+      prTitle: 'Add reconciliation telemetry',
+      prBullets: ['Added telemetry to reconciliation'],
+    };
+
+    const afterRound2 = await stage.execute(state, mockContext());
+    const coder2 = afterRound2.outputs.coder as any;
+    // Union, previous order first, de-duplicated.
+    expect(coder2.filesChanged).toEqual(['a/A.al', 'a/B.al', 'a/C.al']);
+    expect(coder2.commits).toEqual(['sha1', 'sha2']);
+    // Accumulated, blank-line separated — round 1's account survives.
+    expect(coder2.summary).toBe('implemented the telemetry hook\n\nround 2 fix');
+    // Preserved through a round that omitted them.
+    expect(coder2.prTitle).toBe('Add reconciliation telemetry');
+    expect(coder2.prBullets).toEqual(['Added telemetry to reconciliation']);
+
+    const afterRound3 = await stage.execute(afterRound2, mockContext());
+    const coder3 = afterRound3.outputs.coder as any;
+    expect(coder3.filesChanged).toEqual(['a/A.al', 'a/B.al', 'a/C.al', 'a/D.al']);
+    expect(coder3.commits).toEqual(['sha1', 'sha2', 'sha3']);
+    expect(coder3.summary).toBe('implemented the telemetry hook\n\nround 2 fix\n\nround 3 fix');
+    // A round that supplies its own PR copy wins.
+    expect(coder3.prTitle).toBe('Sharpen reconciliation telemetry');
+    expect(coder3.prBullets).toEqual(['Refined the telemetry payload']);
+  });
+
+  it('writes its own output when no previous coder output exists', async () => {
+    const stage = createFixFindingsStage({
+      config: mockContext().config,
+      runner: scriptedRunner([
+        { summary: 'only round', filesChanged: ['a/A.al'], commits: ['sha1'] },
+      ]),
+      promptTemplate: 'S',
+      discoveredSkills: [],
+      getCurrentHeadSha: async () => 'h',
+      resetWorktree: async () => {},
+      getDiff: async () => 'd',
+    });
+
+    const out = await stage.execute(stateWithFindings(), mockContext());
+    const coder = out.outputs.coder as any;
+    expect(coder.summary).toBe('only round');
+    expect(coder.filesChanged).toEqual(['a/A.al']);
+    expect(coder.prTitle).toBeUndefined();
+  });
 });

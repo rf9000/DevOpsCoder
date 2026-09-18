@@ -194,11 +194,37 @@ export function renderVerificationFailureMarkdown(
   const environment = state.outputs.environment as EnvironmentOutput | undefined;
   const lines: string[] = [];
 
+  // `state.outputs.verification` is last-writer-wins between the in-loop verify
+  // gate — which writes it after *every* revision round — and this stage, and
+  // `build-and-test` throws its setup-skip failure BEFORE it writes the key at
+  // all. So what is stored here may describe an entirely different round from
+  // the one that failed, and rendering it unconditionally invents facts:
+  // a green in-loop round produced an empty "Failing tests" list under a
+  // headline saying verification was red, and a skipped one (notably the
+  // environment-blocker path, which deliberately keeps the round's real
+  // `deploy` rows) listed `unpublished-sibling` / `symbol-fetch-failed` as
+  // *compile* errors — the exact misattribution `CODER_FIXABLE_DEPLOY_CODES`
+  // exists to prevent.
+  //
+  // Ordering mirrors `renderReviewerFindingsMarkdown`: `skipped` is checked
+  // before `compiled`/`passed`, because a skipped round stamps both false
+  // without either being a statement about the code. Only a round that
+  // actually verified and came back red earns a compile/test section;
+  // everything else reports the stage's own terminal error, which is the one
+  // place the real reason (e.g. a setup `skipReason`) is recorded.
+  const red = verification !== undefined && !verification.skipped && !verification.passed;
+
   lines.push(`## Pipeline blocked: verification failed on the test environment`);
   lines.push('');
-  lines.push(
-    `The implementation was deployed to a Business Central environment, but verification was still red after ${config.maxTestFixAttempts} fix attempt${config.maxTestFixAttempts === 1 ? '' : 's'}. No draft PR was created.`,
-  );
+  if (red) {
+    lines.push(
+      `The implementation was deployed to a Business Central environment, but verification was still red after ${config.maxTestFixAttempts} fix attempt${config.maxTestFixAttempts === 1 ? '' : 's'}. No draft PR was created.`,
+    );
+  } else {
+    lines.push(
+      'Verification could not confirm the implementation on a Business Central environment. No draft PR was created.',
+    );
+  }
   lines.push('');
   if (environment) {
     lines.push(
@@ -207,8 +233,14 @@ export function renderVerificationFailureMarkdown(
     lines.push('');
   }
 
-  if (!verification) {
-    lines.push('(no verification details were recorded)');
+  if (!verification || !red) {
+    lines.push(`### Why verification failed`);
+    lines.push('');
+    lines.push(
+      state.terminalError?.message ??
+        verification?.skipReason ??
+        '(no verification details were recorded)',
+    );
   } else if (!verification.compiled) {
     lines.push(`### Compile / deploy errors`);
     lines.push('');

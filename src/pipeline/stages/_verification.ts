@@ -415,8 +415,12 @@ export async function prepareVerification(
     override: config.continiaAppPaths,
   });
   if (appPaths.length === 0) {
+    // No stage prefix: both callers already prefix what they do with this —
+    // the verify gate logs `verify: <message>`, and the orchestrator records a
+    // terminal error against the stage that raised it. Prefixing here produced
+    // `verify: verify could not determine …`.
     throw new Error(
-      `${logPrefix} could not determine which apps to deploy: no app.json owns the changed ` +
+      'could not determine which apps to deploy: no app.json owns the changed ' +
         'files or the selected tests. Set CONTINIA_APP_PATHS to pin the deploy set explicitly.',
     );
   }

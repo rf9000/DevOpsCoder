@@ -174,13 +174,48 @@ export interface FixFindingsStageDeps {
 }
 
 /**
+ * Merge a fix round's output into the accumulated `outputs.coder` record.
+ *
+ * A fix round describes *its own round only*: "round 3 fix", one filename, one
+ * commit, and — because `prTitle`/`prBullets` are optional and the prompt's
+ * example omits them — usually no PR copy at all. Overwriting the previous
+ * record with that is what made this a regression: before Plan 14 rounds 2+
+ * re-ran the full coder and re-described the whole change, and
+ * `test-author.ts` renders exactly these fields as "## What the coder did",
+ * "### Files the coder changed" and "### Coder commits". Handing the most
+ * expensive stage in the pipeline one filename out of six is a real loss of
+ * input, so the record accumulates instead:
+ *
+ * - `filesChanged` / `commits`: union, previous order first, de-duplicated.
+ * - `summary`: previous, blank line, then this round's. Bounded by
+ *   `MAX_REVISIONS`, so it cannot grow without limit.
+ * - `prTitle` / `prBullets`: the round's values when it supplied them, the
+ *   previous ones when it did not — never lost to an omission.
+ */
+export function mergeCoderOutput(previous: CoderOutput | undefined, next: CoderOutput): CoderOutput {
+  if (!previous) return next;
+  const merged: CoderOutput = {
+    summary: previous.summary ? `${previous.summary}\n\n${next.summary}` : next.summary,
+    filesChanged: [...new Set([...previous.filesChanged, ...next.filesChanged])],
+    commits: [...new Set([...previous.commits, ...next.commits])],
+  };
+  const prTitle = next.prTitle ?? previous.prTitle;
+  if (prTitle !== undefined) merged.prTitle = prTitle;
+  const prBullets = next.prBullets ?? previous.prBullets;
+  if (prBullets !== undefined) merged.prBullets = prBullets;
+  return merged;
+}
+
+/**
  * Rounds 2+ of the revision loop. Replaces the coder — it does not run in
  * addition to it — so exactly one producer runs per round.
  *
- * Writes `state.outputs.coder`, not a key of its own, because every downstream
- * consumer (the reviewer prompt, the draft-PR fallback bullets) reads
- * `outputs.coder`. Its own contribution, `findingsAddressed`, goes to a
- * separate key.
+ * Accumulates into `state.outputs.coder`, not a key of its own, because every
+ * downstream consumer (the test-author prompt, the reviewer prompt, the
+ * draft-PR fallback bullets) reads `outputs.coder`. It *merges* rather than
+ * replaces — see `mergeCoderOutput` — so the record describes the whole change
+ * across every round, not just the last fix. Its own contribution,
+ * `findingsAddressed`, goes to a separate key and is replaced each round.
  */
 export function createFixFindingsStage(deps: FixFindingsStageDeps): Stage {
   const getHead = deps.getCurrentHeadSha ?? defaultGetCurrentHeadSha;
@@ -240,7 +275,10 @@ export function createFixFindingsStage(deps: FixFindingsStageDeps): Stage {
           createToolUsageTracker(state).add('fix-findings', toolUsage);
 
           const { findingsAddressed, ...coder } = value;
-          state.outputs.coder = coder satisfies CoderOutput;
+          state.outputs.coder = mergeCoderOutput(
+            state.outputs.coder as CoderOutput | undefined,
+            coder satisfies CoderOutput,
+          );
           // Written unconditionally, even when this round's model omitted the
           // field: an omitted report must not inherit the previous round's
           // findingsAddressed. Task 7's reviewer prompt renders this key as

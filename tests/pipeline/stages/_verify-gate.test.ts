@@ -424,4 +424,30 @@ describe('createVerifyGateStage', () => {
 
     await expect(stage.execute(state, makeStageCtx())).rejects.toThrow(CostExceededError);
   });
+
+  // `isAbortError` only recognises the rejection AgentRunner produces. Every
+  // CLI call in this stage surfaces a cancelled signal as an ordinary
+  // ContiniaCliError instead, so a revision-loop timeout (signal aborted,
+  // abortFlag untouched) used to be logged and stamped as an environment
+  // fault — a fabricated cause in both the log and outputs.verification.
+  it('rethrows a CLI rejection when the stage signal is already aborted, instead of stamping an environment fault', async () => {
+    const controller = new AbortController();
+    const cli = makeCliMock({
+      waitForRunning: mock(async () => {
+        controller.abort();
+        // What ContiniaCli actually throws on a cancelled wait: a plain Error,
+        // not an AbortError.
+        throw new Error('continia env get env-9 failed: aborted while waiting for Running');
+      }),
+    });
+    const { deps, warnings } = makeDeps({ continiaCli: cli as unknown as ContiniaCli });
+    const stage = createVerifyGateStage(deps);
+    const state = readyState();
+
+    await expect(
+      stage.execute(state, { ...makeStageCtx(), signal: controller.signal }),
+    ).rejects.toThrow(/aborted while waiting for Running/);
+    expect(state.outputs.verification).toBeUndefined();
+    expect(warnings.some((w) => /could not verify this round/.test(w))).toBe(false);
+  });
 });

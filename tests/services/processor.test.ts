@@ -9,7 +9,7 @@ import { createLogger } from '../../src/utils/logger.ts';
 import { PipelinePauseError, PipelineRejectError } from '../../src/pipeline/stage.ts';
 import { createInitialState } from '../../src/pipeline/orchestrator.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
-import type { AppConfig, WorkItem, ReviewerOutput } from '../../src/types/index.ts';
+import type { AppConfig, WorkItem, ReviewerOutput, VerificationOutput } from '../../src/types/index.ts';
 import { CostExceededError, StageTimeoutError, VerificationFailedError } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
 import type { CostRecord } from '../../src/services/cost-ledger.ts';
@@ -1527,6 +1527,15 @@ describe('createProcessor', () => {
   function makeVerificationFailingStage(overrides: {
     compiled?: boolean;
     withReviewerFindings?: boolean;
+    /**
+     * Replaces the round the stage stamps into `outputs.verification`.
+     * `'none'` writes no key at all — what `build-and-test` actually does when
+     * it throws its setup-skip failure before any round has run.
+     */
+    verification?: VerificationOutput | 'none';
+    /** Overrides the thrown error's summary line (and so `terminalError.message`). */
+    summaryLine?: string;
+    attempts?: number;
   } = {}): Stage {
     const compiled = overrides.compiled ?? true;
     return {
@@ -1549,25 +1558,32 @@ describe('createProcessor', () => {
             attempts: 1,
           };
         }
-        s.outputs.verification = {
-          attempts: 2,
+        if (overrides.verification !== 'none') {
+          s.outputs.verification = overrides.verification ?? {
+            attempts: 2,
+            compiled,
+            deploy: compiled
+              ? [{ app: 'Continia Banking', compiled: true, published: true }]
+              : [{ app: 'Continia Banking', compiled: false, published: false, error: 'AL0118: missing symbol Foo' }],
+            testRuns: compiled
+              ? [{
+                  attempt: 2, codeunitId: 148001, codeunitName: 'CDO Setup Tests', passed: false,
+                  summary: { total: 3, passed: 2, failed: 1, skipped: 0 },
+                  tests: [
+                    { name: 'GreenTest', result: 'Pass' },
+                    { name: 'RedTest', result: 'Fail', errorMessage: 'Expected 1, got 0', stackTrace: '"CDO Feature"(Codeunit 70001).Calculate line 12' },
+                  ],
+                }]
+              : [],
+            passed: false,
+          };
+        }
+        throw new VerificationFailedError(
+          overrides.attempts ?? 2,
           compiled,
-          deploy: compiled
-            ? [{ app: 'Continia Banking', compiled: true, published: true }]
-            : [{ app: 'Continia Banking', compiled: false, published: false, error: 'AL0118: missing symbol Foo' }],
-          testRuns: compiled
-            ? [{
-                attempt: 2, codeunitId: 148001, codeunitName: 'CDO Setup Tests', passed: false,
-                summary: { total: 3, passed: 2, failed: 1, skipped: 0 },
-                tests: [
-                  { name: 'GreenTest', result: 'Pass' },
-                  { name: 'RedTest', result: 'Fail', errorMessage: 'Expected 1, got 0', stackTrace: '"CDO Feature"(Codeunit 70001).Calculate line 12' },
-                ],
-              }]
-            : [],
-          passed: false,
-        };
-        throw new VerificationFailedError(2, compiled, compiled ? '1 failing test(s) in codeunit(s) 148001' : 'app Continia Banking failed to compile/publish');
+          overrides.summaryLine ??
+            (compiled ? '1 failing test(s) in codeunit(s) 148001' : 'app Continia Banking failed to compile/publish'),
+        );
       },
     };
   }
@@ -1636,6 +1652,98 @@ describe('createProcessor', () => {
     expect(ado.addWorkItemComment).toHaveBeenCalledTimes(1);
     expect(postedHtml).toContain('verification failed');
     expect(postedHtml).not.toContain('reviewer rejected');
+  });
+
+  // ── Plan 14 follow-up: outputs.verification is last-writer-wins between the
+  // in-loop `verify` gate and this stage, and build-and-test's setup-skip throw
+  // happens before the key is written at all. Only a round that actually
+  // verified and came back red may be rendered as compile/test detail.
+
+  async function postVerificationComment(stage: Stage): Promise<string> {
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => { postedHtml = html; }),
+    });
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [stage],
+      abortFlag: { aborted: false },
+    });
+    await proc.processWorkItem(101);
+    return postedHtml;
+  }
+
+  it('a skipped in-loop round is never rendered as compile errors — the terminal reason is reported instead', async () => {
+    // The environment-blocker skip path deliberately keeps the round's real
+    // deploy rows. Rendering those as "Compile / deploy errors" is exactly the
+    // misattribution CODER_FIXABLE_DEPLOY_CODES exists to prevent.
+    const postedHtml = await postVerificationComment(
+      makeVerificationFailingStage({
+        attempts: 0,
+        summaryLine: 'no test codeunits selected for the changed files (no coverage)',
+        verification: {
+          attempts: 0,
+          compiled: false,
+          deploy: [{ app: 'Continia Banking', compiled: false, published: false, code: 'unpublished-sibling', error: 'sibling app not published' }],
+          testRuns: [],
+          passed: false,
+          skipped: true,
+          skipReason: 'could not deploy Continia Banking: unpublished-sibling',
+        },
+      }),
+    );
+    expect(postedHtml).not.toContain('Compile / deploy errors');
+    expect(postedHtml).not.toContain('Failing tests');
+    expect(postedHtml).toContain('Why verification failed');
+    expect(postedHtml).toContain('no test codeunits selected');
+  });
+
+  it('a green in-loop round left in state does not produce an empty failing-tests section', async () => {
+    const postedHtml = await postVerificationComment(
+      makeVerificationFailingStage({
+        attempts: 0,
+        summaryLine: 'no test codeunits selected for the changed files (no coverage)',
+        verification: {
+          attempts: 1,
+          compiled: true,
+          deploy: [{ app: 'Continia Banking', compiled: true, published: true }],
+          testRuns: [{
+            attempt: 1, codeunitId: 148001, codeunitName: 'CDO Setup Tests', passed: true,
+            summary: { total: 3, passed: 3, failed: 0, skipped: 0 },
+            tests: [{ name: 'GreenTest', result: 'Pass' }],
+          }],
+          passed: true,
+        },
+      }),
+    );
+    expect(postedHtml).not.toContain('Failing tests');
+    expect(postedHtml).not.toContain('Compile / deploy errors');
+    expect(postedHtml).toContain('Why verification failed');
+    expect(postedHtml).toContain('no test codeunits selected');
+  });
+
+  it('no verification in state reports the terminal error rather than an invented section', async () => {
+    const postedHtml = await postVerificationComment(
+      makeVerificationFailingStage({
+        attempts: 0,
+        summaryLine: 'no test codeunits selected for the changed files (no coverage)',
+        verification: 'none',
+      }),
+    );
+    expect(postedHtml).not.toContain('Failing tests');
+    expect(postedHtml).not.toContain('Compile / deploy errors');
+    expect(postedHtml).toContain('Why verification failed');
+    expect(postedHtml).toContain('no test codeunits selected');
+  });
+
+  it('a genuinely red round still renders its failing tests', async () => {
+    const postedHtml = await postVerificationComment(makeVerificationFailingStage());
+    expect(postedHtml).toContain('Failing tests');
+    expect(postedHtml).toContain('RedTest');
+    expect(postedHtml).not.toContain('Why verification failed');
   });
 
   // ── Plan 7 task-01: costUsd on ProcessOutcome ────────────────────────────
