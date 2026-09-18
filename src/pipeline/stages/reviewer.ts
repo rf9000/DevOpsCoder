@@ -238,9 +238,27 @@ export function buildReviewerUserPrompt(args: {
     );
     for (const f of previousFindings) {
       const loc = f.line != null ? `${f.file}:${f.line}` : f.file;
-      const report = findingsAddressed?.find((a) => a.file === f.file && a.line === f.line);
+      // `.filter`, not `.find`: two distinct file-level findings on the same
+      // file both carry `line: undefined`, so a naive first-match lookup
+      // would show the second one the first one's report. When more than one
+      // report matches, none can be attributed to THIS finding specifically —
+      // a wrong report is worse than no report, so say nothing rather than
+      // guess.
+      const matches = findingsAddressed?.filter(
+        (a) => a.file === f.file && a.line === f.line,
+      ) ?? [];
       sections.push(`- ${f.severity} ${loc} — ${f.title}`);
-      sections.push(`  Reported: ${report ? `${report.action} — ${report.reason}` : 'not reported'}`);
+      let reportLine: string;
+      if (matches.length === 1) {
+        reportLine = `${matches[0]!.action} — ${matches[0]!.reason}`;
+      } else if (matches.length > 1) {
+        reportLine =
+          `${matches.length} file-level reports reference ${f.file} — ` +
+          'which one (if any) applies to this finding cannot be determined';
+      } else {
+        reportLine = 'not reported';
+      }
+      sections.push(`  Reported: ${reportLine}`);
     }
     sections.push('');
   }
@@ -405,7 +423,16 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       // a co-located finding from a stricter axis. Keyed on the axis that
       // actually ran, never on the model-supplied `axis` field — that field is
       // part of what is being policed.
-      const flat = axisResults.flatMap((r, i) => {
+      // Built once, per axis, as the clamped array — both `flat` (which feeds
+      // `findings`/`approved`) and `byAxis` (which feeds the next round's
+      // prompt) are derived from this same array so the two can never drift.
+      // `byAxis` deliberately carries the CLAMPED severity, not the axis's raw
+      // claim: the ceiling exists because axes over-rate despite being asked
+      // not to, and what actually stood from last round — what `findings`
+      // carried and what gated the loop — was the clamped value. Carrying the
+      // raw claim forward would re-anchor the exact inflation the ceiling
+      // suppresses and hand the axis evidence that it survived.
+      const clampedByAxis: Finding[][] = axisResults.map((r, i) => {
         const axis = REVIEW_AXES[i]!;
         const ceiling = AXIS_SEVERITY_CEILING[axis];
         return r.value.findings.map((f) => {
@@ -418,6 +445,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
           return { ...f, severity };
         });
       });
+      const flat = clampedByAxis.flat();
       const findings = aggregateReviewerFindings(flat);
       const approved = !findings.some(
         (f) => f.severity === 'blocking' || f.severity === 'critical',
@@ -426,8 +454,8 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       // Keyed on the axis that actually ran, never on `Finding.axis` — same
       // reason as the severity clamp above.
       const byAxis: Record<string, Finding[]> = {};
-      axisResults.forEach((r, i) => {
-        byAxis[REVIEW_AXES[i]!] = r.value.findings;
+      REVIEW_AXES.forEach((axis, i) => {
+        byAxis[axis] = clampedByAxis[i]!;
       });
 
       const output: ReviewerOutput = { approved, findings, attempts, byAxis };

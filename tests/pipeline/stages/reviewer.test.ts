@@ -885,4 +885,56 @@ describe('reviewer finding carry-forward', () => {
     expect(byAxis['security']).toHaveLength(1);
     expect(byAxis['i-am-lying']).toBeUndefined();
   });
+
+  // Fix round 1: two distinct file-level findings on the same file both carry
+  // `line: undefined`, so a naive `.find()` on {file, line} would attribute
+  // the SECOND file-level finding's report to the FIRST one's reason. A wrong
+  // report is worse than no report — ambiguous matches must render neutrally.
+  it('does not attribute a file-level report when multiple reports match the same file', () => {
+    const p = buildReviewerUserPrompt({
+      ...basePromptArgs,
+      previousFindings: [
+        { severity: 'major', file: 'a/A.al', title: 'File-level concern one', description: 'd', axis: 'naming-style' },
+        { severity: 'minor', file: 'a/A.al', title: 'File-level concern two', description: 'd', axis: 'naming-style' },
+        { severity: 'blocking', file: 'a/A.al', line: 69, title: 'Line-level concern', description: 'd', axis: 'naming-style' },
+      ],
+      findingsAddressed: [
+        { file: 'a/A.al', action: 'fixed', reason: 'first file-level fix' },
+        { file: 'a/A.al', action: 'declined', reason: 'second file-level decline' },
+        { file: 'a/A.al', line: 69, action: 'fixed', reason: 'line-level fix' },
+      ],
+    });
+    // Neither file-level finding may be rendered with a specific action/reason
+    // — which of the two ambiguous reports belongs to which finding cannot be
+    // established, so neither is asserted.
+    expect(p).not.toContain('first file-level fix');
+    expect(p).not.toContain('second file-level decline');
+    expect(p).toContain('2 file-level reports reference a/A.al');
+    // The line-level finding disambiguates on `line` and still matches precisely.
+    expect(p).toContain('fixed — line-level fix');
+  });
+
+  // Fix round 1 (ruling against the reviewer's suggestion to keep it raw):
+  // byAxis must carry what actually stood from last round — the clamped
+  // severity — not the axis's raw over-rated claim, or carry-forward would
+  // re-anchor exactly the inflation the ceiling exists to suppress.
+  it("byAxis carries the clamped severity, not the axis's raw claim", async () => {
+    const runner = {
+      run: mock(async (opts: any) =>
+        opts.label === 'reviewer:naming-style'
+          ? findingsResult([{
+              severity: 'critical', file: 'src/a.al', line: 95,
+              title: 'Diverges from established codebase idiom', description: 'd',
+              axis: 'naming-style',
+            }])
+          : emptyFindingsResult(),
+      ),
+    } as unknown as AgentRunner;
+
+    const out = await createReviewerStage({ ...deps, runner }).execute(readyState(), mockContext());
+    const byAxis = (out.outputs.reviewer as ReviewerOutput).byAxis!;
+    expect(byAxis['naming-style']).toHaveLength(1);
+    // Ceiling for naming-style is 'minor' — the raw claim was 'critical'.
+    expect(byAxis['naming-style']![0]!.severity).toBe('minor');
+  });
 });
