@@ -2,7 +2,7 @@
 
 The fifth agent in our Azure DevOps automation suite, and the first that **writes** to the target repo and opens draft PRs. DevopsCoder picks up work items tagged `agent implement`, runs a full analyzer → coder/reviewer → test-author → draft-PR pipeline against a per-WI git worktree, then tears down the worktree on success.
 
-The repo is at the **milestone-11 stage** (Plans 1-8, 10-11 done): full end-to-end pipeline with cost and safety rails, operationally observable, gated by real deploy-and-test verification. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, runs the coder inside a `revisionLoop` paired with the real parallel reviewer (6 axes: safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated). If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
+The repo is at the **milestone-11 stage** (Plans 1-8, 10-11 done): full end-to-end pipeline with cost and safety rails, operationally observable, gated by real deploy-and-test verification. After the analyzer accepts a WI, the orchestrator provisions a per-WI git worktree off a fresh `origin/main`, then runs a `revisionLoop` whose round structure differs by round: **round 1** is `coder-plan → coder → verify → reviewer`; **round 2+** is `fix-findings → verify → reviewer` — a narrower step that fixes the reviewer's findings against the stored plan and diff instead of re-planning and re-writing from scratch. `verify` deploys and tests the round's diff on the WI's Business Central environment after every round (not just at the end), so the reviewer judges code that has actually compiled; an environment problem it can't fix (nothing deployable yet, a dead environment, a CLI fault) degrades to a logged skip rather than failing the round — `build-and-test` is still the authoritative gate before any PR. The reviewer itself is real: 6 axes — safety-correctness, performance, code-structure, naming-style, security, integration — each run as an independent Claude agent via `Promise.all`, findings aggregated and deduplicated, each axis carrying its own prior findings forward round to round. If the reviewer approves, the test-author writes tests, then the draft-PR creator pushes the branch and calls `ado.createPullRequest` to open a draft PR. On success, the worktree is torn down. On any failure path the worktree is intentionally left in place for inspection. The `code-review` label is not applied — that remains a human action.
 
 Plan 6 adds safety rails: a per-WI cumulative cost cap (`MAX_COST_USD_PER_WI`), per-stage wall-clock timeouts (11 configurable `STAGE_TIMEOUT_MS_*` env vars), and mid-stage abort propagation via `AbortSignal` threaded through `PipelineContext`. Exceeding the cost cap or a stage timeout records a `terminalError`, posts a formatted WI comment, and adds the blocked tag. An external abort (SIGINT) sets `state.cancelled` instead — resumable, no blocked tag.
 
@@ -254,22 +254,26 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CLAUDE_MODEL_CODER_PLAN` | no | `CLAUDE_MODEL_PLANNING` | Overrides the planning model for the coder's plan step only |
 | `CLAUDE_MODEL_TEST_AUTHOR_PLAN` | no | `CLAUDE_MODEL_PLANNING` | Overrides the planning model for the test-author's plan step only |
 | `CLAUDE_MODEL_ANALYZER` | no | `CLAUDE_MODEL` | Readiness-gate call |
-| `CLAUDE_MODEL_CODER` | no | `CLAUDE_MODEL` | The coder's write call (also used for each revision) |
+| `CLAUDE_MODEL_CODER` | no | `CLAUDE_MODEL` | The coder's write call (round 1 only, post-Plan 14 — see `CLAUDE_MODEL_FIX_FINDINGS`) |
+| `CLAUDE_MODEL_FIX_FINDINGS` | no | `CLAUDE_MODEL` | Model for the fix-findings step (revision rounds 2+). This is the knob for spending more on fixing than on first-draft writing |
 | `CLAUDE_MODEL_REVIEWER` | no | `CLAUDE_MODEL` | All 6 review axes. Multiplies by 6 — the single largest cost lever here |
 | `CLAUDE_MODEL_TEST_AUTHOR` | no | `CLAUDE_MODEL` | The test-author's write call |
 | `CLAUDE_MODEL_TEST_FIXER` | no | `CLAUDE_MODEL` | The build-and-test fix loop |
 | `CLAUDE_MODEL_PR_MESSAGE` | no | `CLAUDE_MODEL` | The PR-message step nested in `draft-pr-creator`: reads the branch diff, writes the PR title and bullets. One short read-only call — a cheap model is usually right |
 | `REVIEWER_MAX_TURNS` | no | 50 | Turn budget for **each** reviewer axis, not the fan-out as a whole; raise it if a run fails with "Reached maximum number of turns" (cost multiplies by six) |
 | `PLAN_MAX_TURNS` | no | 30 | Turn budget for a plan call (read-only work, so well below `CODER_MAX_TURNS`) |
+| `FIX_FINDINGS_MAX_TURNS` | no | `CODER_MAX_TURNS` | Turn budget for the fix-findings step |
+| `MAX_INLOOP_FIX_ATTEMPTS` | no | 1 | test-fixer calls the in-loop `verify` gate may make per revision round. Deliberately smaller than `MAX_TEST_FIX_ATTEMPTS`: this budget is paid once per revision round, on top of the final `build-and-test` gate's own |
 | `STAGE_TIMEOUT_MS_PLAN` | no | 600000 (10 min) | Per plan call. Added to `revision-loop` (× `MAX_REVISIONS`) and `test-author` only when that stage has a plan model |
 | `STAGE_TIMEOUT_MS_ENV_PROVISION` | no | 300000 (5 min) | |
-| `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; only sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default |
+| `STAGE_TIMEOUT_MS_VERIFY_PASS` | no | 900000 (15 min) | Per deploy+test pass; sizes the derived `STAGE_TIMEOUT_MS_BUILD_AND_TEST` default and, per round, the in-loop `verify` gate folded into `revision-loop` |
 | `STAGE_TIMEOUT_MS_BUILD_AND_TEST` | no | derived (105 min) | `(MAX_TEST_FIX_ATTEMPTS+1) × VERIFY_PASS + MAX_TEST_FIX_ATTEMPTS × CODER` |
 | `STAGE_TIMEOUT_MS_ANALYZER` | no | 300000 (5 min) | |
 | `STAGE_TIMEOUT_MS_WORKTREE_SETUP` | no | 60000 (1 min) | |
-| `STAGE_TIMEOUT_MS_CODER` | no | 1800000 (30 min) | Per revision iteration; sizes the revision-loop default |
+| `STAGE_TIMEOUT_MS_CODER` | no | 1800000 (30 min) | Per revision iteration; sizes the revision-loop default. Round 1 only, post-Plan 14 |
+| `STAGE_TIMEOUT_MS_FIX_FINDINGS` | no | `STAGE_TIMEOUT_MS_CODER` | Wall-clock budget per fix-findings call (rounds 2+) |
 | `STAGE_TIMEOUT_MS_REVIEWER` | no | 900000 (15 min) | Per revision iteration; sizes the revision-loop default |
-| `STAGE_TIMEOUT_MS_REVISION_LOOP` | no | `MAX_REVISIONS × (PLAN? + CODER + REVIEWER)` (135 min without a plan step) | Wall-clock cap on the whole coder⇄reviewer loop |
+| `STAGE_TIMEOUT_MS_REVISION_LOOP` | no | `MAX_REVISIONS × (PLAN? + max(CODER, FIX_FINDINGS) + IN-LOOP VERIFY + REVIEWER)` (135 min without a plan step or in-loop verify) | Wall-clock cap on the whole loop, now including the in-loop `verify` gate every round pays for (`(MAX_INLOOP_FIX_ATTEMPTS+1) × VERIFY_PASS + MAX_INLOOP_FIX_ATTEMPTS × CODER`, 0 when `SKIP_BUILD_TEST=true`) |
 | `STAGE_TIMEOUT_MS_TEST_AUTHOR` | no | 1200000 (20 min) | |
 | `STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR` | no | 600000 (10 min) | Push + the nested PR-message call + the ADO calls |
 | `STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN` | no | 60000 (1 min) | |
