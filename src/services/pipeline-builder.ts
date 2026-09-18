@@ -201,7 +201,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
         ]),
     revisionLoop({
       name: 'revision-loop',
-      producer: coder,
+      initialProducer: coder,
       reviewer,
       maxAttempts: deps.config.maxRevisions,
       isApproved: (state) => {
