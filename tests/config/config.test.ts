@@ -148,10 +148,12 @@ describe('loadConfig', () => {
     expect(config.stageTimeoutMs['worktree-teardown']).toBe(60_000);
   });
 
-  it('derives the revision-loop timeout from maxRevisions × (coder + reviewer) budgets', () => {
+  it('derives the revision-loop timeout from maxRevisions × (coder + reviewer + in-loop verify) budgets', () => {
     const config = loadConfig(validEnv);
-    // Default: 3 revisions × (30 min coder + 15 min reviewer) = 135 min.
-    expect(config.stageTimeoutMs['revision-loop']).toBe(3 * (1_800_000 + 900_000));
+    // Default: 3 revisions × (30 min coder + 60 min in-loop verify (2×15min
+    // pass + 1×30min fix, since SKIP_BUILD_TEST defaults false) + 15 min
+    // reviewer) = 315 min.
+    expect(config.stageTimeoutMs['revision-loop']).toBe(3 * (1_800_000 + 3_600_000 + 900_000));
   });
 
   it('derived revision-loop timeout follows overridden budgets', () => {
@@ -161,7 +163,9 @@ describe('loadConfig', () => {
       STAGE_TIMEOUT_MS_CODER: '600000',
       STAGE_TIMEOUT_MS_REVIEWER: '300000',
     });
-    expect(config.stageTimeoutMs['revision-loop']).toBe(2 * (600_000 + 300_000));
+    // in-loop verify: 2×900_000 (default VERIFY_PASS) + 1×600_000 (coder
+    // budget, since fix-findings falls back to it) = 2,400,000.
+    expect(config.stageTimeoutMs['revision-loop']).toBe(2 * (600_000 + 2_400_000 + 300_000));
   });
 
   it('STAGE_TIMEOUT_MS_REVISION_LOOP overrides the derived default', () => {
@@ -449,5 +453,61 @@ describe('LOG_DIR', () => {
     expect(loadConfig({ ...validEnv, LOG_DIR: '/var/log/devops-coder' }).logDir).toBe(
       '/var/log/devops-coder',
     );
+  });
+});
+
+describe('Plan 14 config', () => {
+  it('routes CLAUDE_MODEL_FIX_FINDINGS to the fix-findings step', () => {
+    const cfg = loadConfig({ ...validEnv, CLAUDE_MODEL_FIX_FINDINGS: 'claude-opus-5' });
+    expect(cfg.stepModel?.['fix-findings']).toBe('claude-opus-5');
+  });
+
+  it('leaves the fix-findings step unset when no model is named', () => {
+    const cfg = loadConfig({ ...validEnv });
+    expect(cfg.stepModel?.['fix-findings']).toBeUndefined();
+  });
+
+  it('falls FIX_FINDINGS_MAX_TURNS back to CODER_MAX_TURNS', () => {
+    expect(loadConfig({ ...validEnv, CODER_MAX_TURNS: '80' }).fixFindingsMaxTurns).toBe(80);
+    expect(
+      loadConfig({ ...validEnv, CODER_MAX_TURNS: '80', FIX_FINDINGS_MAX_TURNS: '40' })
+        .fixFindingsMaxTurns,
+    ).toBe(40);
+  });
+
+  it('defaults MAX_INLOOP_FIX_ATTEMPTS to 1', () => {
+    expect(loadConfig({ ...validEnv }).maxInLoopFixAttempts).toBe(1);
+    expect(loadConfig({ ...validEnv, MAX_INLOOP_FIX_ATTEMPTS: '0' }).maxInLoopFixAttempts).toBe(0);
+  });
+
+  it('sizes the revision-loop budget with the in-loop verify pass', () => {
+    const cfg = loadConfig({
+      ...validEnv,
+      SKIP_BUILD_TEST: 'false',
+      MAX_REVISIONS: '3',
+      MAX_INLOOP_FIX_ATTEMPTS: '1',
+      STAGE_TIMEOUT_MS_CODER: '1000',
+      STAGE_TIMEOUT_MS_REVIEWER: '2000',
+      STAGE_TIMEOUT_MS_VERIFY_PASS: '500',
+    });
+    // per round: max(coder, fixFindings)=1000 + verify(2*500 + 1*1000)=2000 + reviewer 2000
+    expect(cfg.stageTimeoutMs['revision-loop']).toBe(3 * (1000 + 2000 + 2000));
+  });
+
+  it('drops the in-loop verify budget when SKIP_BUILD_TEST is set', () => {
+    const cfg = loadConfig({
+      ...validEnv,
+      SKIP_BUILD_TEST: 'true',
+      MAX_REVISIONS: '3',
+      STAGE_TIMEOUT_MS_CODER: '1000',
+      STAGE_TIMEOUT_MS_REVIEWER: '2000',
+      STAGE_TIMEOUT_MS_VERIFY_PASS: '500',
+    });
+    expect(cfg.stageTimeoutMs['revision-loop']).toBe(3 * (1000 + 2000));
+  });
+
+  it('still honours an explicit STAGE_TIMEOUT_MS_REVISION_LOOP pin', () => {
+    const cfg = loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_REVISION_LOOP: '77' });
+    expect(cfg.stageTimeoutMs['revision-loop']).toBe(77);
   });
 });

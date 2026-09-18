@@ -6,11 +6,14 @@ import type { AppConfig } from '../types/index.ts';
  * test-fixer runs nested inside `build-and-test`, and `pr-message` runs nested
  * inside `draft-pr-creator`. These strings are the keys of
  * `config.stepModel`, the cost-ledger keys, and the runner log labels.
+ * The fix-findings step replaces the coder on revision rounds 2+ and runs
+ * nested inside 'revision-loop'.
  */
 export type PipelineStep =
   | 'analyzer'
   | 'coder-plan'
   | 'coder'
+  | 'fix-findings'
   | 'reviewer'
   | 'test-author-plan'
   | 'test-author'

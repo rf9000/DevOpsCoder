@@ -17,6 +17,8 @@ export interface AppConfig {
   maxRevisions: number;
   maxRejectCycles: number;
   coderMaxTurns: number;
+  /** Turn budget for the fix-findings step. Falls back to `coderMaxTurns`. */
+  fixFindingsMaxTurns?: number;
   /** Turn budget for EACH reviewer axis, not the fan-out as a whole. */
   reviewerMaxTurns: number;
   testAuthorMaxTurns: number;
@@ -56,6 +58,12 @@ export interface AppConfig {
   continiaTestAppPaths: string[];
   /** Max coder fix attempts when the deploy/test verification is red. */
   maxTestFixAttempts: number;
+  /**
+   * Test-fixer calls the in-loop verification gate may make per revision round.
+   * Deliberately separate from and smaller than `maxTestFixAttempts` — see
+   * MAX_INLOOP_FIX_ATTEMPTS in src/config/index.ts. Default 1.
+   */
+  maxInLoopFixAttempts?: number;
   /** `--timeout` (seconds) passed to each `continia test run`. */
   continiaTestTimeoutS: number;
   /** Dir containing an orchestrator-owned `skills/` tree (e.g. /app/.claude).
@@ -129,7 +137,10 @@ export interface PipelineState {
    * Per-stage outputs keyed by `Stage.name`. Reserved keys: `cost` carries
    * `PipelineCostInfo` (managed by createCostTracker, see src/utils/cost-tracker.ts);
    * `toolUsage` carries a cumulative per-tool call-count map (managed by
-   * createToolUsageTracker, see src/utils/tool-usage-tracker.ts).
+   * createToolUsageTracker, see src/utils/tool-usage-tracker.ts);
+   * `findingsAddressed` carries the fix-findings step's `FindingAddressed[]`
+   * self-report; `verificationSetup` carries the per-WI cache of environment-side
+   * verification setup (see src/pipeline/stages/_verification.ts).
    */
   outputs: Record<string, unknown>;
 }
@@ -320,6 +331,14 @@ export interface TestRunRecord {
 /**
  * Written to `state.outputs.verification` by the build-and-test stage after
  * every deploy/test round, so a mid-loop timeout still leaves diagnosable state.
+ *
+ * The in-loop `verify` gate (`_verify-gate.ts`) also writes this, on every
+ * exit path including its skips — so a consumer MUST check `skipped` before
+ * interpreting `compiled` / `passed`: a skipped round carries `false` for
+ * both without either being a statement about the code. `build-and-test`
+ * never sets `skipped`/`skipReason` (it throws instead — the final gate
+ * treats an unverified change as a failure), so their absence there is
+ * unchanged.
  */
 export interface VerificationOutput {
   /** Fix attempts consumed (0..maxTestFixAttempts). */
@@ -329,6 +348,15 @@ export interface VerificationOutput {
   deploy: DeployAppResult[];
   testRuns: TestRunRecord[];
   passed: boolean;
+  /**
+   * True when this round did not actually verify anything — nothing to
+   * discover/select, an environment-class deploy failure, or a CLI/programming
+   * fault the in-loop gate swallowed. `compiled`/`passed` are `false` in every
+   * one of these but say nothing about the code; read `skipReason` instead.
+   */
+  skipped?: boolean;
+  /** Human-readable reason this round was skipped. Set iff `skipped` is true. */
+  skipReason?: string;
 }
 
 /**
@@ -522,6 +550,24 @@ export interface Finding {
   axis: string;
 }
 
+/**
+ * One entry of the fix-findings step's self-report: what it did about a
+ * finding the reviewer raised.
+ *
+ * **Reporting only.** `declined` does NOT waive the finding — `approved` is
+ * still computed purely from the next reviewer run, so a declined blocking
+ * finding will be re-raised and will still hold the loop. These records exist
+ * to be rendered into the reviewer's next prompt and the PR, and to give us the
+ * evidence to decide separately whether a real waiver mechanism is worth
+ * building.
+ */
+export interface FindingAddressed {
+  file: string;
+  line?: number;
+  action: 'fixed' | 'declined';
+  reason: string;
+}
+
 export interface ReviewerOutput {
   /** True iff zero blocking AND zero critical findings. */
   approved: boolean;
@@ -529,6 +575,17 @@ export interface ReviewerOutput {
   findings: Finding[];
   /** Number of reviewer iterations run so far (revisionLoop tracks this). */
   attempts: number;
+  /**
+   * Findings keyed by the axis that ACTUALLY RAN, before aggregation. Optional
+   * so state files written before Plan 14 still resume.
+   *
+   * Keyed on the real axis rather than `Finding.axis` for the same reason the
+   * severity clamp is: that field is model-supplied and is part of what the
+   * reviewer polices. Used to carry each axis's own findings into its next
+   * round's prompt — never merged across axes, which would couple six
+   * deliberately independent agents.
+   */
+  byAxis?: Record<string, Finding[]>;
 }
 
 export interface DraftPrOutput {

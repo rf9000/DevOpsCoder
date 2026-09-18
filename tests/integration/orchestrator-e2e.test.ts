@@ -96,7 +96,7 @@ describe('orchestrator end-to-end (mock stages)', () => {
 
     const reviewLoop = revisionLoop({
       name: 'review-loop',
-      producer: coder,
+      initialProducer: coder,
       reviewer,
       maxAttempts: 3,
       isApproved: (s) =>

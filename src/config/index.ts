@@ -26,6 +26,10 @@ const envSchema = z.object({
   MAX_REVISIONS: z.coerce.number().default(3),
   MAX_REJECT_CYCLES: z.coerce.number().default(3),
   CODER_MAX_TURNS: z.coerce.number().default(80),
+  // Narrower task than the coder's — a bounded list of findings against an
+  // existing diff — but AL fixes sprawl, so the fallback is the coder's budget
+  // rather than a smaller guess.
+  FIX_FINDINGS_MAX_TURNS: z.coerce.number().int().positive().optional(),
   // The reviewer fans out to six axes and each explores the worktree with
   // Bash/Grep before reporting. 30 was a hardcoded literal with no knob, and a
   // safety-correctness axis blew through it on a real AL repo, failing the
@@ -35,6 +39,7 @@ const envSchema = z.object({
   MAX_COST_USD_PER_WI: z.coerce.number().positive('MAX_COST_USD_PER_WI must be > 0'),
   STAGE_TIMEOUT_MS_ANALYZER: z.coerce.number().int().positive().default(300_000),
   STAGE_TIMEOUT_MS_CODER: z.coerce.number().int().positive().default(1_800_000),
+  STAGE_TIMEOUT_MS_FIX_FINDINGS: z.coerce.number().int().positive().optional(),
   STAGE_TIMEOUT_MS_REVIEWER: z.coerce.number().int().positive().default(900_000),
   STAGE_TIMEOUT_MS_REVISION_LOOP: z.coerce.number().int().positive().optional(),
   STAGE_TIMEOUT_MS_ENV_PROVISION: z.coerce.number().int().positive().default(300_000),
@@ -50,6 +55,10 @@ const envSchema = z.object({
   TEST_SELECTION: z.enum(['changed', 'related', 'all']).default('related'),
   CONTINIA_MAX_TEST_CODEUNITS: z.coerce.number().int().nonnegative().default(25),
   MAX_TEST_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
+  // Separate from, and smaller than, MAX_TEST_FIX_ATTEMPTS on purpose. Sharing
+  // that key would make the worst case MAX_REVISIONS x MAX_TEST_FIX_ATTEMPTS
+  // fix calls inside the loop, on top of the final gate's own budget.
+  MAX_INLOOP_FIX_ATTEMPTS: z.coerce.number().int().nonnegative().default(1),
   CONTINIA_TEST_TIMEOUT_S: z.coerce.number().int().positive().default(600),
   STAGE_TIMEOUT_MS_TEST_AUTHOR: z.coerce.number().int().positive().default(1_200_000),
   // Push + the nested `pr-message` LLM call + the ADO calls. The push and the
@@ -69,6 +78,7 @@ const envSchema = z.object({
   CLAUDE_MODEL_TEST_AUTHOR_PLAN: z.string().optional(),
   CLAUDE_MODEL_TEST_AUTHOR: z.string().optional(),
   CLAUDE_MODEL_TEST_FIXER: z.string().optional(),
+  CLAUDE_MODEL_FIX_FINDINGS: z.string().optional(),
   // The PR-message step (nested in draft-pr-creator) reads one diff and writes
   // a title plus a handful of bullets — a cheap model is usually the right one.
   CLAUDE_MODEL_PR_MESSAGE: z.string().optional(),
@@ -145,6 +155,7 @@ export function loadConfig(
   setStep('analyzer', model(p.CLAUDE_MODEL_ANALYZER));
   setStep('coder-plan', coderPlanModel);
   setStep('coder', model(p.CLAUDE_MODEL_CODER));
+  setStep('fix-findings', model(p.CLAUDE_MODEL_FIX_FINDINGS));
   setStep('reviewer', model(p.CLAUDE_MODEL_REVIEWER));
   setStep('test-author-plan', testPlanModel);
   setStep('test-author', model(p.CLAUDE_MODEL_TEST_AUTHOR));
@@ -156,6 +167,18 @@ export function loadConfig(
   // timing out runs that used to fit.
   const coderPlanBudget = coderPlanModel !== undefined ? p.STAGE_TIMEOUT_MS_PLAN : 0;
   const testPlanBudget = testPlanModel !== undefined ? p.STAGE_TIMEOUT_MS_PLAN : 0;
+
+  // Rounds 2+ run fix-findings instead of the coder, never both, so one round's
+  // producer budget is whichever of the two is larger.
+  const fixFindingsBudget = p.STAGE_TIMEOUT_MS_FIX_FINDINGS ?? p.STAGE_TIMEOUT_MS_CODER;
+  const producerBudget = Math.max(p.STAGE_TIMEOUT_MS_CODER, fixFindingsBudget);
+  // Each round now ends with a deploy+test pass and up to MAX_INLOOP_FIX_ATTEMPTS
+  // test-fixer calls. SKIP_BUILD_TEST removes the in-loop gate entirely, so the
+  // budget must not reserve time for a stage that will not run.
+  const inLoopVerifyBudget = p.SKIP_BUILD_TEST
+    ? 0
+    : (p.MAX_INLOOP_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
+      p.MAX_INLOOP_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER;
 
   return {
     orgUrl: `https://dev.azure.com/${p.AZURE_DEVOPS_ORG}`,
@@ -172,6 +195,7 @@ export function loadConfig(
     maxRevisions: p.MAX_REVISIONS,
     maxRejectCycles: p.MAX_REJECT_CYCLES,
     coderMaxTurns: p.CODER_MAX_TURNS,
+    fixFindingsMaxTurns: p.FIX_FINDINGS_MAX_TURNS ?? p.CODER_MAX_TURNS,
     reviewerMaxTurns: p.REVIEWER_MAX_TURNS,
     testAuthorMaxTurns: p.TEST_AUTHOR_MAX_TURNS,
     maxCostUsdPerWi: p.MAX_COST_USD_PER_WI,
@@ -184,7 +208,10 @@ export function loadConfig(
       'revision-loop':
         p.STAGE_TIMEOUT_MS_REVISION_LOOP ??
         p.MAX_REVISIONS *
-          (coderPlanBudget + p.STAGE_TIMEOUT_MS_CODER + p.STAGE_TIMEOUT_MS_REVIEWER),
+          (coderPlanBudget + producerBudget + inLoopVerifyBudget + p.STAGE_TIMEOUT_MS_REVIEWER),
+      // Nested inside 'revision-loop', which is what the orchestrator times.
+      // Recorded so an operator can read the per-round budget back.
+      'fix-findings': fixFindingsBudget,
       'env-provision': p.STAGE_TIMEOUT_MS_ENV_PROVISION,
       // The build-and-test stage runs up to (fixAttempts+1) deterministic
       // deploy+test passes (VERIFY_PASS budget each) interleaved with up to
@@ -214,6 +241,7 @@ export function loadConfig(
     continiaAppPaths,
     continiaTestAppPaths,
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
+    maxInLoopFixAttempts: p.MAX_INLOOP_FIX_ATTEMPTS,
     continiaTestTimeoutS: p.CONTINIA_TEST_TIMEOUT_S,
     skillsSourceDir: p.SKILLS_SOURCE_DIR,
     claudeCodeExecutablePath: p.CLAUDE_CODE_EXECUTABLE_PATH,

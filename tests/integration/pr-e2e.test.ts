@@ -129,6 +129,10 @@ function makeBuildPipelineWrapper(
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
+      // fix-findings (the revision loop's round-2+ producer) reuses the
+      // coder's 'C' dispatch branch below — its own findings-only prompt
+      // shape is exercised in tests/integration/revision-round-shape.test.ts.
+      fixFindingsPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
       reviewerSharedPromptTemplate: 'R',
       reviewerAxisPromptTemplates: Object.fromEntries(
@@ -313,13 +317,19 @@ describe('PR e2e (Plan 5 full pipeline)', () => {
     // Reviewer approved on attempt 2
     expect((saved.outputs.reviewer as { attempts: number }).attempts).toBe(2);
 
-    // Coder was called twice (once per revision attempt)
-    const coderCalls = runner.calls.filter((c) => c.systemPromptAppend === 'C');
-    expect(coderCalls).toHaveLength(2);
+    // Round 1's producer is the coder; round 2's producer is fix-findings,
+    // NOT the coder again — Plan 14's revision loop replaces the producer on
+    // a revision, it does not re-run the coder with the findings folded in.
+    const coderCalls = runner.calls.filter((c) => c.label?.startsWith('coder ('));
+    const fixFindingsCalls = runner.calls.filter((c) => c.label?.startsWith('fix-findings'));
+    expect(coderCalls).toHaveLength(1);
+    expect(fixFindingsCalls).toHaveLength(1);
 
-    // Second coder call's prompt must include "Previous reviewer findings"
-    const secondCoderCall = coderCalls[1];
-    expect(secondCoderCall?.prompt).toContain('Previous reviewer findings');
+    // The fix-findings call carries round 1's finding, narrowly — not the
+    // coder's "Previous reviewer findings" framing (that section belongs to
+    // buildCoderUserPrompt, which round 2 never calls).
+    expect(fixFindingsCalls[0]?.prompt).toContain('null dereference');
+    expect(fixFindingsCalls[0]?.prompt).not.toContain('Previous reviewer findings');
 
     // Total runner calls: 1 analyzer + (1 coder + 6 axes) × 2 + 1 test-author + 1 pr-message = 17
     expect(runner.calls).toHaveLength(17);

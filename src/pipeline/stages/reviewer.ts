@@ -5,6 +5,7 @@ import type {
   AppConfig,
   CoderOutput,
   Finding,
+  FindingAddressed,
   FindingSeverity,
   ReviewerOutput,
   TestAuthorOutput,
@@ -156,8 +157,20 @@ export function buildReviewerUserPrompt(args: {
   worktree: WorktreeContext;
   attempts: number;
   maxAttempts: number;
+  previousFindings?: Finding[];
+  findingsAddressed?: FindingAddressed[];
 }): string {
-  const { wiCtx, analyzer, coder, testAuthor, worktree, attempts, maxAttempts } = args;
+  const {
+    wiCtx,
+    analyzer,
+    coder,
+    testAuthor,
+    worktree,
+    attempts,
+    maxAttempts,
+    previousFindings,
+    findingsAddressed,
+  } = args;
   const sections: string[] = [];
 
   // Work item
@@ -215,6 +228,41 @@ export function buildReviewerUserPrompt(args: {
   sections.push(`Attempt ${attempts} of ${maxAttempts}`);
   sections.push('');
 
+  if (previousFindings && previousFindings.length > 0) {
+    sections.push('## Previously raised by this axis');
+    sections.push(
+      'These are the findings YOU raised on the previous round, with what the fixing agent ' +
+        'reported doing about each. Re-raise only what the current diff still exhibits. Do not ' +
+        'carry a finding forward on the strength of having raised it before, and do not treat a ' +
+        '"declined" report as authority either way — read the code.',
+    );
+    for (const f of previousFindings) {
+      const loc = f.line != null ? `${f.file}:${f.line}` : f.file;
+      // `.filter`, not `.find`: two distinct file-level findings on the same
+      // file both carry `line: undefined`, so a naive first-match lookup
+      // would show the second one the first one's report. When more than one
+      // report matches, none can be attributed to THIS finding specifically —
+      // a wrong report is worse than no report, so say nothing rather than
+      // guess.
+      const matches = findingsAddressed?.filter(
+        (a) => a.file === f.file && a.line === f.line,
+      ) ?? [];
+      sections.push(`- ${f.severity} ${loc} — ${f.title}`);
+      let reportLine: string;
+      if (matches.length === 1) {
+        reportLine = `${matches[0]!.action} — ${matches[0]!.reason}`;
+      } else if (matches.length > 1) {
+        reportLine =
+          `${matches.length} file-level reports reference ${f.file} — ` +
+          'which one (if any) applies to this finding cannot be determined';
+      } else {
+        reportLine = 'not reported';
+      }
+      sections.push(`  Reported: ${reportLine}`);
+    }
+    sections.push('');
+  }
+
   // Your job
   sections.push('## Your job');
   sections.push(
@@ -258,15 +306,23 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         (state.outputs.reviewer as ReviewerOutput | undefined)?.attempts ?? 0;
       const attempts = prevAttempts + 1;
 
-      const prompt = buildReviewerUserPrompt({
-        wiCtx,
-        analyzer,
-        coder,
-        testAuthor,
-        worktree,
-        attempts,
-        maxAttempts: deps.config.maxRevisions,
-      });
+      // Each axis gets its own prior findings — never another axis's. Handing
+      // naming-style the safety-correctness findings would couple six
+      // deliberately independent agents and invite cross-axis echo.
+      const prev = (state.outputs.reviewer as ReviewerOutput | undefined)?.byAxis;
+      const addressed = state.outputs.findingsAddressed as FindingAddressed[] | undefined;
+      const promptFor = (axis: ReviewAxis): string =>
+        buildReviewerUserPrompt({
+          wiCtx,
+          analyzer,
+          coder,
+          testAuthor,
+          worktree,
+          attempts,
+          maxAttempts: deps.config.maxRevisions,
+          ...(prev?.[axis]?.length ? { previousFindings: prev[axis] } : {}),
+          ...(addressed ? { findingsAddressed: addressed } : {}),
+        });
 
       const canUseTool = composeCanUseTool([
         createBashAllowlist({ allow: REVIEWER_BASH_ALLOW, deny: REVIEWER_BASH_DENY }),
@@ -304,7 +360,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
           runWithParseRetry(
             () =>
               deps.runner.run<{ findings: Finding[] }>({
-                prompt,
+                prompt: promptFor(axis),
                 label: `reviewer:${axis}`,
                 schema: axisOutputSchema,
                 model: modelFor(deps.config, 'reviewer'),
@@ -367,7 +423,16 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       // a co-located finding from a stricter axis. Keyed on the axis that
       // actually ran, never on the model-supplied `axis` field — that field is
       // part of what is being policed.
-      const flat = axisResults.flatMap((r, i) => {
+      // Built once, per axis, as the clamped array — both `flat` (which feeds
+      // `findings`/`approved`) and `byAxis` (which feeds the next round's
+      // prompt) are derived from this same array so the two can never drift.
+      // `byAxis` deliberately carries the CLAMPED severity, not the axis's raw
+      // claim: the ceiling exists because axes over-rate despite being asked
+      // not to, and what actually stood from last round — what `findings`
+      // carried and what gated the loop — was the clamped value. Carrying the
+      // raw claim forward would re-anchor the exact inflation the ceiling
+      // suppresses and hand the axis evidence that it survived.
+      const clampedByAxis: Finding[][] = axisResults.map((r, i) => {
         const axis = REVIEW_AXES[i]!;
         const ceiling = AXIS_SEVERITY_CEILING[axis];
         return r.value.findings.map((f) => {
@@ -380,12 +445,20 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
           return { ...f, severity };
         });
       });
+      const flat = clampedByAxis.flat();
       const findings = aggregateReviewerFindings(flat);
       const approved = !findings.some(
         (f) => f.severity === 'blocking' || f.severity === 'critical',
       );
 
-      const output: ReviewerOutput = { approved, findings, attempts };
+      // Keyed on the axis that actually ran, never on `Finding.axis` — same
+      // reason as the severity clamp above.
+      const byAxis: Record<string, Finding[]> = {};
+      REVIEW_AXES.forEach((axis, i) => {
+        byAxis[axis] = clampedByAxis[i]!;
+      });
+
+      const output: ReviewerOutput = { approved, findings, attempts, byAxis };
       state.outputs.reviewer = output;
       return state;
     },

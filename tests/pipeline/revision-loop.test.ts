@@ -57,7 +57,7 @@ describe('revisionLoop', () => {
 
     const stage = revisionLoop({
       name: 'review-loop',
-      producer,
+      initialProducer: producer,
       reviewer,
       maxAttempts: 3,
       isApproved: (s) =>
@@ -82,7 +82,7 @@ describe('revisionLoop', () => {
 
     const stage = revisionLoop({
       name: 'review-loop',
-      producer,
+      initialProducer: producer,
       reviewer,
       maxAttempts: 5,
       isApproved: (s) =>
@@ -108,7 +108,7 @@ describe('revisionLoop', () => {
 
     const stage = revisionLoop({
       name: 'review-loop',
-      producer,
+      initialProducer: producer,
       reviewer,
       maxAttempts: 2,
       isApproved: () => false,
@@ -128,7 +128,7 @@ describe('revisionLoop', () => {
 
     const stage = revisionLoop({
       name: 'review-loop',
-      producer,
+      initialProducer: producer,
       reviewer,
       maxAttempts: 2,
       isApproved: () => false,
@@ -150,7 +150,7 @@ describe('revisionLoop', () => {
 
     const stage = revisionLoop({
       name: 'review-loop',
-      producer,
+      initialProducer: producer,
       reviewer,
       maxAttempts: 5,
       isApproved: () => false,
@@ -163,7 +163,7 @@ describe('revisionLoop', () => {
     const noop = makeStage('x', async (s) => s);
     const stage = revisionLoop({
       name: 'rl',
-      producer: noop,
+      initialProducer: noop,
       reviewer: noop,
       maxAttempts: 1,
       isApproved: () => true,
@@ -187,7 +187,7 @@ describe('revisionLoop cost cap', () => {
 
     const loop = revisionLoop({
       name: 'revision-loop',
-      producer: makeStage('coder', producer),
+      initialProducer: makeStage('coder', producer),
       reviewer: makeStage('reviewer', reviewer),
       maxAttempts: 3,
       isApproved: () => false,
@@ -202,7 +202,7 @@ describe('revisionLoop cost cap', () => {
     const reviewer = mock(async (s: PipelineState) => s);
     const loop = revisionLoop({
       name: 'revision-loop',
-      producer: makeStage('coder', async (s) => {
+      initialProducer: makeStage('coder', async (s) => {
         s.outputs.cost = { total: 7.5, perStage: {} };
         return s;
       }),
@@ -220,7 +220,7 @@ describe('revisionLoop cost cap', () => {
     const reviewer = mock(async (s: PipelineState) => s);
     const loop = revisionLoop({
       name: 'revision-loop',
-      producer: makeStage('coder', async (s) => {
+      initialProducer: makeStage('coder', async (s) => {
         s.outputs.cost = { total: 1.25, perStage: {} };
         return s;
       }),
@@ -231,5 +231,59 @@ describe('revisionLoop cost cap', () => {
 
     await loop.execute(mockState(), mockContext());
     expect(reviewer).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('revisionLoop producers and verify', () => {
+  it('runs initialProducer in round 1 and reviseProducer in rounds 2+', async () => {
+    const calls: string[] = [];
+    let round = 0;
+    const stage = revisionLoop({
+      name: 'revision-loop',
+      initialProducer: makeStage('coder', async (s) => { calls.push('coder'); return s; }),
+      reviseProducer: makeStage('fix-findings', async (s) => { calls.push('fix'); return s; }),
+      reviewer: makeStage('reviewer', async (s) => {
+        round++; calls.push('reviewer');
+        return { ...s, outputs: { ...s.outputs, reviewer: { approved: round >= 3 } } };
+      }),
+      maxAttempts: 3,
+      isApproved: (s) => (s.outputs.reviewer as { approved: boolean }).approved,
+    });
+    await stage.execute(mockState(), mockContext());
+    expect(calls).toEqual(['coder', 'reviewer', 'fix', 'reviewer', 'fix', 'reviewer']);
+  });
+
+  it('falls back to initialProducer every round when no reviseProducer is given', async () => {
+    const calls: string[] = [];
+    let round = 0;
+    const stage = revisionLoop({
+      name: 'revision-loop',
+      initialProducer: makeStage('coder', async (s) => { calls.push('coder'); return s; }),
+      reviewer: makeStage('reviewer', async (s) => {
+        round++;
+        return { ...s, outputs: { ...s.outputs, reviewer: { approved: round >= 2 } } };
+      }),
+      maxAttempts: 3,
+      isApproved: (s) => (s.outputs.reviewer as { approved: boolean }).approved,
+    });
+    await stage.execute(mockState(), mockContext());
+    expect(calls).toEqual(['coder', 'coder']);
+  });
+
+  it('runs verify between the producer and the reviewer', async () => {
+    const calls: string[] = [];
+    const stage = revisionLoop({
+      name: 'revision-loop',
+      initialProducer: makeStage('coder', async (s) => { calls.push('coder'); return s; }),
+      verify: makeStage('verify', async (s) => { calls.push('verify'); return s; }),
+      reviewer: makeStage('reviewer', async (s) => {
+        calls.push('reviewer');
+        return { ...s, outputs: { ...s.outputs, reviewer: { approved: true } } };
+      }),
+      maxAttempts: 3,
+      isApproved: (s) => (s.outputs.reviewer as { approved: boolean }).approved,
+    });
+    await stage.execute(mockState(), mockContext());
+    expect(calls).toEqual(['coder', 'verify', 'reviewer']);
   });
 });

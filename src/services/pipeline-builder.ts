@@ -24,6 +24,8 @@ import { createWorktreeSetupStage } from '../pipeline/stages/worktree-setup.ts';
 import { createEnvProvisionStage } from '../pipeline/stages/env-provision.ts';
 import { createBuildAndTestStage } from '../pipeline/stages/build-and-test.ts';
 import { createCoderStage } from '../pipeline/stages/coder.ts';
+import { createFixFindingsStage } from '../pipeline/stages/fix-findings.ts';
+import { createVerifyGateStage } from '../pipeline/stages/_verify-gate.ts';
 import { createTestAuthorStage } from '../pipeline/stages/test-author.ts';
 import { createReviewerStage, REVIEW_AXES } from '../pipeline/stages/reviewer.ts';
 import { revisionLoop } from '../pipeline/revision-loop.ts';
@@ -36,6 +38,7 @@ const CODER_PLANNER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder-planner.m
 const TEST_AUTHOR_PROMPT_PATH = `${import.meta.dir}/../prompts/test-author.md`;
 const TEST_PLANNER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-planner.md`;
 const TEST_FIXER_PROMPT_PATH = `${import.meta.dir}/../prompts/test-fixer.md`;
+const FIX_FINDINGS_PROMPT_PATH = `${import.meta.dir}/../prompts/fix-findings.md`;
 const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
 const DRAFT_PR_DESCRIPTION_PROMPT_PATH = `${import.meta.dir}/../prompts/draft-pr-description.md`;
 const PR_MESSAGE_PROMPT_PATH = `${import.meta.dir}/../prompts/pr-message.md`;
@@ -73,6 +76,8 @@ export interface PipelineBuilderDeps {
   coderPromptTemplate?: string;
   /** Optional code-planner prompt body override (plan step). */
   coderPlannerPromptTemplate?: string;
+  /** Optional fix-findings prompt body override (revision rounds 2+). */
+  fixFindingsPromptTemplate?: string;
   /** Optional test-author prompt body override. */
   testAuthorPromptTemplate?: string;
   /** Optional test-planner prompt body override (plan step). */
@@ -97,7 +102,7 @@ export interface PipelineBuilderDeps {
 
 /**
  * Builds the full Plan 5 stage chain:
- *   [analyzer, worktree-setup, revisionLoop(coder, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]
+ *   [analyzer, worktree-setup, revisionLoop(coder | fix-findings, verify, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]
  *
  * On exhaustion of the revision loop (reviewer rejected `maxRevisions` times),
  * onExhausted throws, the orchestrator records a terminalError, and the
@@ -145,6 +150,8 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     deps.testPlannerPromptTemplate ?? readFileSync(TEST_PLANNER_PROMPT_PATH, 'utf-8');
   const testFixerPromptTemplate =
     deps.testFixerPromptTemplate ?? readFileSync(TEST_FIXER_PROMPT_PATH, 'utf-8');
+  const fixFindingsPromptTemplate =
+    deps.fixFindingsPromptTemplate ?? readFileSync(FIX_FINDINGS_PROMPT_PATH, 'utf-8');
   const reviewerSharedPromptTemplate =
     deps.reviewerSharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8');
   // Object.fromEntries types as Record<string, string>; cast is safe because
@@ -171,6 +178,31 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     getCurrentHeadSha: deps.getCurrentHeadSha,
     resetWorktree: deps.resetWorktree,
   });
+
+  const fixFindings = createFixFindingsStage({
+    config: deps.config,
+    runner,
+    promptTemplate: fixFindingsPromptTemplate,
+    discoveredSkills,
+    getCurrentHeadSha: deps.getCurrentHeadSha,
+    resetWorktree: deps.resetWorktree,
+  });
+
+  // No in-loop verification without an environment — SKIP_BUILD_TEST removes
+  // env-provision, so there is nothing to deploy to.
+  const verify = deps.config.skipBuildTest
+    ? undefined
+    : createVerifyGateStage({
+        config: deps.config,
+        continiaCli,
+        runner,
+        logger: deps.logger,
+        fixerPromptTemplate: testFixerPromptTemplate,
+        discoveredSkills,
+        getCurrentHeadSha: deps.getCurrentHeadSha,
+        resetWorktree: deps.resetWorktree,
+        discoverTestCodeunits: deps.discoverTestCodeunits,
+      });
 
   const reviewer = createReviewerStage({
     config: deps.config,
@@ -201,7 +233,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
         ]),
     revisionLoop({
       name: 'revision-loop',
-      producer: coder,
+      initialProducer: coder,
+      reviseProducer: fixFindings,
+      ...(verify ? { verify } : {}),
       reviewer,
       maxAttempts: deps.config.maxRevisions,
       isApproved: (state) => {
