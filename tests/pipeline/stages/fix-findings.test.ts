@@ -113,7 +113,16 @@ describe('buildFixFindingsPrompt', () => {
   });
 
   // THE regression test for this plan: a revision round must not be handed the
-  // material that turns it back into a re-implementation.
+  // material that turns it back into a re-implementation. This checks only
+  // the section HEADINGS a leak would arrive under — a renamed heading would
+  // silently void it. It cannot check the actual body text (a WI description,
+  // repro steps, etc.) because `BuildFixFindingsPromptArgs` has no parameter
+  // that could carry it — `prompt()` above only ever passes `workItemId` /
+  // `workItemTitle`. The body-leak proof — with SENTINEL_* text asserted
+  // absent from the rendered prompt — lives in `createFixFindingsStage`'s
+  // 'does not leak WI description, repro steps, acceptance criteria or
+  // comments into the prompt' test below, which exercises the full
+  // WorkItemContext the stage actually holds.
   it('omits the work item description, repro steps, AC, comments and analyzer framing', () => {
     const p = prompt();
     expect(p).not.toContain('Reproduction Steps');

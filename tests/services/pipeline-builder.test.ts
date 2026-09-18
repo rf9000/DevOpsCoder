@@ -480,12 +480,65 @@ describe('buildPipeline (Task 8 — wire fix-findings + verify into revision-loo
     pushBranch: mock(async () => {}),
   };
 
-  it('omits the in-loop verify gate when SKIP_BUILD_TEST is set', () => {
+  it('omits env-provision and build-and-test (top-level) when SKIP_BUILD_TEST is set', () => {
     const stages = buildPipeline({ ...deps, config: { ...deps.config, skipBuildTest: true } });
     expect(stages.map((s) => s.name)).toEqual([
       'analyzer', 'worktree-setup', 'revision-loop', 'test-author',
       'draft-pr-creator', 'worktree-teardown',
     ]);
+  });
+
+  // `verify` is nested INSIDE revision-loop, never a top-level stage, so no
+  // assertion on `stages.map(s => s.name)` can prove it was omitted — that
+  // list is identical whether or not `pipeline-builder.ts` builds the gate at
+  // all. Proving the omission requires actually running the loop and
+  // observing that the verify gate's ContiniaCli is never touched.
+  it('never touches the verify gate\'s ContiniaCli when SKIP_BUILD_TEST is set', async () => {
+    const cli = makeGreenContiniaCli();
+    const runner = makeRecordingRunner((args) => {
+      const sys = args.systemPromptAppend ?? '';
+      if (sys.startsWith('R\n\n')) return { findings: [] };
+      return { summary: 's', filesChanged: [], commits: [] };
+    });
+    const stages = buildPipeline({
+      ...deps,
+      runner,
+      continiaCli: cli,
+      reviewerSharedPromptTemplate: 'R',
+      reviewerAxisPromptTemplates: Object.fromEntries(
+        REVIEW_AXES.map((a) => [a, a]),
+      ) as Record<typeof REVIEW_AXES[number], string>,
+      config: { ...deps.config, skipBuildTest: true },
+      getCurrentHeadSha: async () => 'deadbeef',
+      resetWorktree: async () => {},
+    });
+    const revisionLoopStage = stages.find((s) => s.name === 'revision-loop')!;
+    expect(revisionLoopStage).toBeDefined();
+
+    const state = makeState();
+    state.outputs.analyzer = { verdict: 'proceed', summary: 's', reasons: [] };
+    state.outputs.wiContext = {
+      id: 101,
+      title: 't',
+      workItemType: '',
+      state: '',
+      description: '',
+      reproSteps: '',
+      acceptanceCriteria: '',
+      images: [],
+      comments: [],
+    };
+    state.outputs.worktree = sampleWorktree;
+
+    const result = await revisionLoopStage!.execute(state, makeCtx());
+
+    // Approved on attempt 1 (reviewer returns no findings), so this proves
+    // the loop never even attempted a verify round — not merely that a
+    // verify round would have been a no-op.
+    expect((result.outputs.reviewer as { approved: boolean }).approved).toBe(true);
+    expect(result.outputs.verification).toBeUndefined();
+    expect((cli.deployApp as unknown as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+    expect((cli.runTests as unknown as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
   });
 
   it('builds the full chain with env-provision and build-and-test otherwise', () => {

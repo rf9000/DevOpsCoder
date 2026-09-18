@@ -256,7 +256,7 @@ describe('verification e2e (Plan 10 full pipeline)', () => {
     // makes its own `maxTestFixAttempts` before declaring the WI failed. The
     // total is the sum of the two budgets, not just the final gate's.
     const fixCalls = runner.calls.filter((c) => c.systemPromptAppend === 'F');
-    expect(fixCalls).toHaveLength(1 + config.maxTestFixAttempts);
+    expect(fixCalls).toHaveLength((config.maxInLoopFixAttempts ?? 1) + config.maxTestFixAttempts);
 
     // WI comment carries the failing test + stack fragment; blocked tag added.
     const addComment = ado.addWorkItemComment as ReturnType<typeof mock>;

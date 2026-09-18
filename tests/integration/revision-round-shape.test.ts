@@ -228,8 +228,12 @@ describe('revision loop round shape (Task 8 — fix-findings + verify wiring)', 
     expect(prompts['fix-findings (attempt 1)']).toContain('TRYFUNC MODIFY');
     // ...and omits the analyzer framing the coder's prompt carries — the
     // narrowness that keeps a revision round from re-implementing the WI
-    // from scratch.
+    // from scratch. Checking only the section HEADING ('Analyzer framing')
+    // would pass even if the body leaked in under a renamed heading, so also
+    // assert the WI description itself — the actual payload that cost WI
+    // 82205 $3.90 and 147 turns — never reaches the fix-findings prompt.
     expect(prompts['fix-findings (attempt 1)']).not.toContain('Analyzer framing');
+    expect(prompts['fix-findings (attempt 1)']).not.toContain('The login button is broken');
 
     // The verify gate actually ran each round (green throughout, via the
     // fake ContiniaCli) — it is wired into the loop, not merely typed in.
