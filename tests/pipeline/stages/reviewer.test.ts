@@ -32,6 +32,7 @@ import type {
   AgentRunner,
 } from '../../../src/pipeline/agent-stage.ts';
 import type {
+  AgentUsage,
   AppConfig,
   CoderOutput,
   Finding,
@@ -173,6 +174,67 @@ function makeRunner(
       return { value, costUsd: costUsdPerCall, toolUsage: toolUsagePerCall?.[idx] ?? {}, usage: TEST_USAGE };
     }) as AgentRunner['run'],
   };
+}
+
+/** Args for buildReviewerUserPrompt shared by the carry-forward tests below. */
+const basePromptArgs = {
+  wiCtx: sampleWiCtx,
+  analyzer: sampleAnalyzer,
+  coder: sampleCoder,
+  testAuthor: undefined,
+  worktree: sampleWorktree,
+  attempts: 1,
+  maxAttempts: 3,
+};
+
+/** Default deps for the carry-forward tests below; each test overrides `runner`. */
+const deps = makeDeps(makeRunner());
+
+/** A fresh PipelineState with no prior reviewer output (first review round). */
+function readyState(): PipelineState {
+  return makeState();
+}
+
+/**
+ * A PipelineState as if a previous reviewer round already ran, carrying the
+ * given ReviewerOutput overrides (e.g. `byAxis`) into `state.outputs.reviewer`.
+ */
+function stateWithPriorReview(overrides: Partial<ReviewerOutput> = {}): PipelineState {
+  return makeState({
+    outputs: {
+      wiContext: sampleWiCtx,
+      analyzer: sampleAnalyzer,
+      coder: sampleCoder,
+      worktree: sampleWorktree,
+      reviewer: { approved: false, findings: [], attempts: 1, ...overrides },
+    },
+  });
+}
+
+/**
+ * An AgentRunResult<{findings}> shape for runner mocks that bypass makeRunner's
+ * wrapping and return directly from `run`.
+ */
+function emptyFindingsResult(): {
+  value: { findings: Finding[] };
+  costUsd: number;
+  toolUsage: Record<string, number>;
+  usage: AgentUsage;
+} {
+  return { value: { findings: [] }, costUsd: 0.1, toolUsage: {}, usage: TEST_USAGE };
+}
+
+function findingsResult(findings: Finding[]): {
+  value: { findings: Finding[] };
+  costUsd: number;
+  toolUsage: Record<string, number>;
+  usage: AgentUsage;
+} {
+  return { value: { findings }, costUsd: 0.1, toolUsage: {}, usage: TEST_USAGE };
+}
+
+function mockContext() {
+  return makeCtx();
 }
 
 // ---------------------------------------------------------------------------
@@ -762,5 +824,65 @@ describe('createReviewerStage', () => {
     const stage = createReviewerStage(makeDeps(runner));
     const result = await stage.execute(makeState(), makeCtx());
     expect(result.outputs.toolUsage).toEqual({ Read: 3, Grep: 3 });
+  });
+});
+
+describe('reviewer finding carry-forward', () => {
+  it('renders this axis\'s prior findings with the coder\'s reported action', () => {
+    const p = buildReviewerUserPrompt({
+      ...basePromptArgs,
+      previousFindings: [{
+        severity: 'blocking', file: 'a/A.al', line: 69,
+        title: '[TryFunction] performs a database Modify',
+        description: 'd', axis: 'safety-correctness',
+      }],
+      findingsAddressed: [{ file: 'a/A.al', line: 69, action: 'fixed', reason: 'moved the Modify out' }],
+    });
+    expect(p).toContain('## Previously raised by this axis');
+    expect(p).toContain('a/A.al:69');
+    expect(p).toContain('moved the Modify out');
+    expect(p).toContain('Re-raise only what the current diff still exhibits');
+  });
+
+  it('omits the section entirely on round 1', () => {
+    expect(buildReviewerUserPrompt(basePromptArgs)).not.toContain('Previously raised');
+  });
+
+  it('gives each axis only its own prior findings', async () => {
+    const prompts: Record<string, string> = {};
+    const runner = {
+      run: mock(async (opts: any) => {
+        prompts[opts.label] = opts.prompt;
+        return emptyFindingsResult();
+      }),
+    } as unknown as AgentRunner;
+
+    const state = stateWithPriorReview({
+      byAxis: {
+        'safety-correctness': [{ severity: 'blocking', file: 'a/A.al', line: 69, title: 'TRYFUNC', description: 'd', axis: 'safety-correctness' }],
+        'naming-style': [{ severity: 'minor', file: 'a/B.al', line: 9, title: 'NAMING', description: 'd', axis: 'naming-style' }],
+      },
+    });
+    await createReviewerStage({ ...deps, runner }).execute(state, mockContext());
+
+    expect(prompts['reviewer:safety-correctness']).toContain('TRYFUNC');
+    expect(prompts['reviewer:safety-correctness']).not.toContain('NAMING');
+    expect(prompts['reviewer:naming-style']).toContain('NAMING');
+    expect(prompts['reviewer:naming-style']).not.toContain('TRYFUNC');
+  });
+
+  it('keys byAxis on the axis that ran, not the model-supplied axis field', async () => {
+    const runner = {
+      run: mock(async (opts: any) =>
+        opts.label === 'reviewer:security'
+          ? findingsResult([{ severity: 'minor', file: 'a/A.al', line: 1, title: 't', description: 'd', axis: 'i-am-lying' }])
+          : emptyFindingsResult(),
+      ),
+    } as unknown as AgentRunner;
+
+    const out = await createReviewerStage({ ...deps, runner }).execute(readyState(), mockContext());
+    const byAxis = (out.outputs.reviewer as ReviewerOutput).byAxis!;
+    expect(byAxis['security']).toHaveLength(1);
+    expect(byAxis['i-am-lying']).toBeUndefined();
   });
 });

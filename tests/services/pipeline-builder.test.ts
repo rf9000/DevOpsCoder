@@ -226,7 +226,12 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       filesChanged: ['x.ts'],
       commits: ['abc'],
     });
-    expect(state.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 1 });
+    expect(state.outputs.reviewer).toEqual({
+      approved: true,
+      findings: [],
+      attempts: 1,
+      byAxis: Object.fromEntries(REVIEW_AXES.map((a) => [a, []])),
+    });
     expect(state.outputs.testAuthor).toEqual({
       summary: 'tested',
       testFilesChanged: ['x.test.ts'],
@@ -286,7 +291,12 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
     };
     state.outputs.worktree = sampleWorktree;
     const result = await revisionLoopStage.execute(state, makeCtx());
-    expect(result.outputs.reviewer).toEqual({ approved: true, findings: [], attempts: 1 });
+    expect(result.outputs.reviewer).toEqual({
+      approved: true,
+      findings: [],
+      attempts: 1,
+      byAxis: Object.fromEntries(REVIEW_AXES.map((a) => [a, []])),
+    });
     // 7 = coder + 6 reviewer axes
     expect(runner.calls).toHaveLength(7);
   });

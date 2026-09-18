@@ -5,6 +5,7 @@ import type {
   AppConfig,
   CoderOutput,
   Finding,
+  FindingAddressed,
   FindingSeverity,
   ReviewerOutput,
   TestAuthorOutput,
@@ -156,8 +157,20 @@ export function buildReviewerUserPrompt(args: {
   worktree: WorktreeContext;
   attempts: number;
   maxAttempts: number;
+  previousFindings?: Finding[];
+  findingsAddressed?: FindingAddressed[];
 }): string {
-  const { wiCtx, analyzer, coder, testAuthor, worktree, attempts, maxAttempts } = args;
+  const {
+    wiCtx,
+    analyzer,
+    coder,
+    testAuthor,
+    worktree,
+    attempts,
+    maxAttempts,
+    previousFindings,
+    findingsAddressed,
+  } = args;
   const sections: string[] = [];
 
   // Work item
@@ -215,6 +228,23 @@ export function buildReviewerUserPrompt(args: {
   sections.push(`Attempt ${attempts} of ${maxAttempts}`);
   sections.push('');
 
+  if (previousFindings && previousFindings.length > 0) {
+    sections.push('## Previously raised by this axis');
+    sections.push(
+      'These are the findings YOU raised on the previous round, with what the fixing agent ' +
+        'reported doing about each. Re-raise only what the current diff still exhibits. Do not ' +
+        'carry a finding forward on the strength of having raised it before, and do not treat a ' +
+        '"declined" report as authority either way — read the code.',
+    );
+    for (const f of previousFindings) {
+      const loc = f.line != null ? `${f.file}:${f.line}` : f.file;
+      const report = findingsAddressed?.find((a) => a.file === f.file && a.line === f.line);
+      sections.push(`- ${f.severity} ${loc} — ${f.title}`);
+      sections.push(`  Reported: ${report ? `${report.action} — ${report.reason}` : 'not reported'}`);
+    }
+    sections.push('');
+  }
+
   // Your job
   sections.push('## Your job');
   sections.push(
@@ -258,15 +288,23 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         (state.outputs.reviewer as ReviewerOutput | undefined)?.attempts ?? 0;
       const attempts = prevAttempts + 1;
 
-      const prompt = buildReviewerUserPrompt({
-        wiCtx,
-        analyzer,
-        coder,
-        testAuthor,
-        worktree,
-        attempts,
-        maxAttempts: deps.config.maxRevisions,
-      });
+      // Each axis gets its own prior findings — never another axis's. Handing
+      // naming-style the safety-correctness findings would couple six
+      // deliberately independent agents and invite cross-axis echo.
+      const prev = (state.outputs.reviewer as ReviewerOutput | undefined)?.byAxis;
+      const addressed = state.outputs.findingsAddressed as FindingAddressed[] | undefined;
+      const promptFor = (axis: ReviewAxis): string =>
+        buildReviewerUserPrompt({
+          wiCtx,
+          analyzer,
+          coder,
+          testAuthor,
+          worktree,
+          attempts,
+          maxAttempts: deps.config.maxRevisions,
+          ...(prev?.[axis]?.length ? { previousFindings: prev[axis] } : {}),
+          ...(addressed ? { findingsAddressed: addressed } : {}),
+        });
 
       const canUseTool = composeCanUseTool([
         createBashAllowlist({ allow: REVIEWER_BASH_ALLOW, deny: REVIEWER_BASH_DENY }),
@@ -304,7 +342,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
           runWithParseRetry(
             () =>
               deps.runner.run<{ findings: Finding[] }>({
-                prompt,
+                prompt: promptFor(axis),
                 label: `reviewer:${axis}`,
                 schema: axisOutputSchema,
                 model: modelFor(deps.config, 'reviewer'),
@@ -385,7 +423,14 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         (f) => f.severity === 'blocking' || f.severity === 'critical',
       );
 
-      const output: ReviewerOutput = { approved, findings, attempts };
+      // Keyed on the axis that actually ran, never on `Finding.axis` — same
+      // reason as the severity clamp above.
+      const byAxis: Record<string, Finding[]> = {};
+      axisResults.forEach((r, i) => {
+        byAxis[REVIEW_AXES[i]!] = r.value.findings;
+      });
+
+      const output: ReviewerOutput = { approved, findings, attempts, byAxis };
       state.outputs.reviewer = output;
       return state;
     },

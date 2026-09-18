@@ -575,6 +575,17 @@ export interface ReviewerOutput {
   findings: Finding[];
   /** Number of reviewer iterations run so far (revisionLoop tracks this). */
   attempts: number;
+  /**
+   * Findings keyed by the axis that ACTUALLY RAN, before aggregation. Optional
+   * so state files written before Plan 14 still resume.
+   *
+   * Keyed on the real axis rather than `Finding.axis` for the same reason the
+   * severity clamp is: that field is model-supplied and is part of what the
+   * reviewer polices. Used to carry each axis's own findings into its next
+   * round's prompt — never merged across axes, which would couple six
+   * deliberately independent agents.
+   */
+  byAxis?: Record<string, Finding[]>;
 }
 
 export interface DraftPrOutput {
