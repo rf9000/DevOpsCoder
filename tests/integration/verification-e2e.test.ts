@@ -223,13 +223,19 @@ describe('verification e2e (Plan 10 full pipeline)', () => {
     const outcome = await processor.processWorkItem(101);
     expect(outcome.kind).toBe('completed');
 
+    // The in-loop verify gate runs every revision round, before the reviewer,
+    // and reaches `runTests` first — so it is the one that sees the red run
+    // and fixes it, not build-and-test's final gate.
     const fixCalls = runner.calls.filter((c) => c.systemPromptAppend === 'F');
     expect(fixCalls).toHaveLength(1);
     expect(fixCalls[0]?.prompt).toContain('RedTest');
 
     expect(ado.createPullRequest as ReturnType<typeof mock>).toHaveBeenCalledTimes(1);
     const state = store.load(101)!;
-    expect((state.outputs.verification as VerificationOutput)).toMatchObject({ passed: true, attempts: 1 });
+    // By the time build-and-test's final gate re-verifies, the environment is
+    // already green (fixed in-loop), so its own round needs no further fix —
+    // attempts: 0 describes THAT round, not the one the verify gate fixed.
+    expect((state.outputs.verification as VerificationOutput)).toMatchObject({ passed: true, attempts: 0 });
   });
 
   it('scenario 3: red after all fix attempts — failed outcome, comment with failure, blocked tag, no PR, worktree retained', async () => {
@@ -243,9 +249,14 @@ describe('verification e2e (Plan 10 full pipeline)', () => {
       expect(outcome.error.message).toMatch(/verification failed/);
     }
 
-    // maxTestFixAttempts fix calls happened, then hard failure.
+    // Both gates make their own bounded fix attempts against the same
+    // always-red mock: the in-loop verify gate makes its own (1, its
+    // `maxInLoopFixAttempts` default) every revision round before letting the
+    // reviewer judge the round regardless, then build-and-test's final gate
+    // makes its own `maxTestFixAttempts` before declaring the WI failed. The
+    // total is the sum of the two budgets, not just the final gate's.
     const fixCalls = runner.calls.filter((c) => c.systemPromptAppend === 'F');
-    expect(fixCalls).toHaveLength(config.maxTestFixAttempts);
+    expect(fixCalls).toHaveLength(1 + config.maxTestFixAttempts);
 
     // WI comment carries the failing test + stack fragment; blocked tag added.
     const addComment = ado.addWorkItemComment as ReturnType<typeof mock>;

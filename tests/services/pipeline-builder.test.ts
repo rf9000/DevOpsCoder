@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { buildPipeline } from '../../src/services/pipeline-builder.ts';
+import { buildPipeline, type PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
 import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
@@ -326,6 +326,10 @@ describe('buildPipeline (Plan 5 full chain)', () => {
       discoveredSkills: [],
       analyzerPromptTemplate: 'A',
       coderPromptTemplate: 'C',
+      // Round 2 (maxRevisions: 2 with a reviewer that always blocks) runs
+      // fix-findings, not the coder — reuse the same 'C' dispatch so the
+      // recording runner's coded response also covers it.
+      fixFindingsPromptTemplate: 'C',
       testAuthorPromptTemplate: 'T',
       testFixerPromptTemplate: 'F',
       reviewerSharedPromptTemplate: 'R',
@@ -453,6 +457,42 @@ describe('buildPipeline (Task 11 — SKIP_BUILD_TEST smoke bypass)', () => {
       'test-author',
       'draft-pr-creator',
       'worktree-teardown',
+    ]);
+  });
+});
+
+describe('buildPipeline (Task 8 — wire fix-findings + verify into revision-loop)', () => {
+  const deps: PipelineBuilderDeps = {
+    config,
+    logger: createLogger(),
+    ado: makeAdo(),
+    runner: makeRecordingRunner(() => ({})),
+    worktreeManager: makeWorktreeManager(),
+    continiaCli: makeGreenContiniaCli(),
+    discoveredSkills: [],
+    analyzerPromptTemplate: 'A',
+    coderPromptTemplate: 'C',
+    fixFindingsPromptTemplate: 'C',
+    testAuthorPromptTemplate: 'T',
+    testFixerPromptTemplate: 'F',
+    prDescriptionTemplate: 'D',
+    prMessagePromptTemplate: 'P',
+    pushBranch: mock(async () => {}),
+  };
+
+  it('omits the in-loop verify gate when SKIP_BUILD_TEST is set', () => {
+    const stages = buildPipeline({ ...deps, config: { ...deps.config, skipBuildTest: true } });
+    expect(stages.map((s) => s.name)).toEqual([
+      'analyzer', 'worktree-setup', 'revision-loop', 'test-author',
+      'draft-pr-creator', 'worktree-teardown',
+    ]);
+  });
+
+  it('builds the full chain with env-provision and build-and-test otherwise', () => {
+    const stages = buildPipeline({ ...deps, config: { ...deps.config, skipBuildTest: false } });
+    expect(stages.map((s) => s.name)).toEqual([
+      'analyzer', 'worktree-setup', 'env-provision', 'revision-loop', 'test-author',
+      'build-and-test', 'draft-pr-creator', 'worktree-teardown',
     ]);
   });
 });
