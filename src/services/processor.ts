@@ -293,6 +293,12 @@ export function renderReviewerFindingsMarkdown(
   reviewer: ReviewerOutput,
   config: AppConfig,
   workItemId: number,
+  /**
+   * The last in-loop verification round, when the pipeline has one. Undefined
+   * for deployments running with `SKIP_BUILD_TEST` (no verification stage at
+   * all) or a resumed WI old enough to predate it.
+   */
+  verification?: VerificationOutput,
 ): string {
   const lines: string[] = [];
   const totalFindings = reviewer.findings.length;
@@ -326,6 +332,27 @@ export function renderReviewerFindingsMarkdown(
     lines.push(`- …and ${totalFindings - shown} more`);
   }
   lines.push('');
+
+  // "Review not passed (3×)" on its own conceals whether the change also
+  // failed to build — two very different things for whoever picks this up.
+  // Ordering matters here: `skipped` MUST be checked before `compiled`/
+  // `passed`. A skipped round (nothing to discover/select, an
+  // environment-class deploy fault, SKIP_BUILD_TEST) stamps both `compiled`
+  // and `passed` false without either being a statement about the code —
+  // reporting "did not compile" for a skipped round would misattribute an
+  // environment or config problem as a code defect.
+  if (verification?.skipped) {
+    lines.push(
+      `Verification did not run for the last round: ${verification.skipReason ?? 'no reason recorded'}.`,
+    );
+    lines.push('');
+  } else if (verification && !verification.compiled) {
+    lines.push(`The last verified round **did not compile**.`);
+    lines.push('');
+  } else if (verification && !verification.passed) {
+    lines.push(`The last verified round also had failing tests.`);
+    lines.push('');
+  }
 
   lines.push(
     `Re-add \`${config.triggerTag}\` to retry, or operator: \`reset-state ${workItemId}\`.`,
@@ -668,7 +695,13 @@ export function createProcessor(deps: ProcessorDeps): Processor {
             // reviewer can approve with non-blocking findings and the pipeline
             // then die later (e.g. a draft-PR 404). Reporting that as "reviewer
             // rejected" told humans something false.
-            const markdown = renderReviewerFindingsMarkdown(reviewer, config, workItemId);
+            //
+            // state.outputs.verification is last-writer-wins between the
+            // in-loop gate (every round) and the final build-and-test stage.
+            // On this exhaustion path build-and-test never ran, so what's here
+            // is the last in-loop round — exactly what we want to report.
+            const verification = persisted?.outputs.verification as VerificationOutput | undefined;
+            const markdown = renderReviewerFindingsMarkdown(reviewer, config, workItemId, verification);
             const html = await marked(markdown);
             await safeAdoOp(logger, workItemId, 'addWorkItemComment', () =>
               ado.addWorkItemComment(workItemId, html),

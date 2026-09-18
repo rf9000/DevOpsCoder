@@ -805,6 +805,171 @@ describe('createProcessor', () => {
     expect(callOrder).toEqual(['comment', 'tag']);
   });
 
+  it('names a red last verification in the revision-loop exhaustion comment', async () => {
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      findings: [
+        {
+          severity: 'major',
+          file: 'src/foo.ts',
+          title: 'Some finding',
+          description: 'desc',
+          axis: 'code-structure',
+        },
+      ],
+      attempts: 3,
+    };
+
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        state.outputs.verification = {
+          attempts: 1,
+          compiled: false,
+          deploy: [],
+          testRuns: [],
+          passed: false,
+        } as unknown;
+        throw new Error('reviewer rejected 3 times — exhausted revision loop');
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(postedHtml).toContain('did not compile');
+  });
+
+  it('says nothing about verification when the last round was green', async () => {
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      findings: [
+        {
+          severity: 'major',
+          file: 'src/foo.ts',
+          title: 'Some finding',
+          description: 'desc',
+          axis: 'code-structure',
+        },
+      ],
+      attempts: 3,
+    };
+
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        state.outputs.verification = {
+          attempts: 0,
+          compiled: true,
+          deploy: [],
+          testRuns: [],
+          passed: true,
+        } as unknown;
+        throw new Error('reviewer rejected 3 times — exhausted revision loop');
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(postedHtml).not.toContain('did not compile');
+  });
+
+  it('reports a skipped last verification without implying the code failed', async () => {
+    // A skipped round (nothing to discover/select, an environment-class
+    // deploy fault, SKIP_BUILD_TEST) stamps compiled/passed false without
+    // either being a statement about the code — the comment must say so
+    // rather than reusing the "did not compile" / "failing tests" wording.
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      findings: [
+        {
+          severity: 'major',
+          file: 'src/foo.ts',
+          title: 'Some finding',
+          description: 'desc',
+          axis: 'code-structure',
+        },
+      ],
+      attempts: 3,
+    };
+
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        state.outputs.verification = {
+          attempts: 0,
+          compiled: false,
+          deploy: [],
+          testRuns: [],
+          passed: false,
+          skipped: true,
+          skipReason: 'no test codeunits discovered',
+        } as unknown;
+        throw new Error('reviewer rejected 3 times — exhausted revision loop');
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(postedHtml).not.toContain('did not compile');
+    expect(postedHtml).not.toContain('failing tests');
+    expect(postedHtml).toContain('did not run');
+    expect(postedHtml).toContain('no test codeunits discovered');
+  });
+
   it('blocking a WI removes the trigger tag so polling does not re-enter the pipeline', async () => {
     const boomStage: Stage = {
       name: 'revision-loop',
