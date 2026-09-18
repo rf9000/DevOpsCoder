@@ -909,6 +909,65 @@ describe('createProcessor', () => {
     expect(postedHtml).not.toContain('did not compile');
   });
 
+  it('names failing tests (not "did not compile") when the last round compiled but failed tests', async () => {
+    // Distinct from the compiled:false,passed:false case above: this is the
+    // only state in which branch 3 ("also had failing tests") is the branch
+    // that decides the output, rather than branch 2 or the fallthrough
+    // no-op. The negative assertion is load-bearing — without it, a bug that
+    // deleted branch 3 (falling through to branch 2's message) would still
+    // pass this test.
+    const reviewerOutput: ReviewerOutput = {
+      approved: false,
+      findings: [
+        {
+          severity: 'major',
+          file: 'src/foo.ts',
+          title: 'Some finding',
+          description: 'desc',
+          axis: 'code-structure',
+        },
+      ],
+      attempts: 3,
+    };
+
+    let postedHtml = '';
+    const ado = makeAdo({
+      addWorkItemComment: mock(async (_id: number, html: string) => {
+        postedHtml = html;
+      }),
+    });
+
+    const boomStage: Stage = {
+      name: 'revision-loop',
+      canRun: () => true,
+      execute: async (state) => {
+        state.outputs.reviewer = reviewerOutput as unknown;
+        state.outputs.verification = {
+          attempts: 1,
+          compiled: true,
+          deploy: [],
+          testRuns: [],
+          passed: false,
+        } as unknown;
+        throw new Error('reviewer rejected 3 times — exhausted revision loop');
+      },
+    };
+
+    const proc = createProcessor({
+      config: baseConfig,
+      logger: createLogger(),
+      ado,
+      store,
+      buildPipeline: () => [boomStage],
+      abortFlag: { aborted: false },
+    });
+
+    const outcome = await proc.processWorkItem(101);
+    expect(outcome.kind).toBe('failed');
+    expect(postedHtml).toContain('failing tests');
+    expect(postedHtml).not.toContain('did not compile');
+  });
+
   it('reports a skipped last verification without implying the code failed', async () => {
     // A skipped round (nothing to discover/select, an environment-class
     // deploy fault, SKIP_BUILD_TEST) stamps compiled/passed false without

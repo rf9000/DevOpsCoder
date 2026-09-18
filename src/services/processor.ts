@@ -343,14 +343,14 @@ export function renderReviewerFindingsMarkdown(
   // environment or config problem as a code defect.
   if (verification?.skipped) {
     lines.push(
-      `Verification did not run for the last round: ${verification.skipReason ?? 'no reason recorded'}.`,
+      `Verification **did not run** for the last round: ${verification.skipReason ?? 'no reason recorded'}.`,
     );
     lines.push('');
   } else if (verification && !verification.compiled) {
     lines.push(`The last verified round **did not compile**.`);
     lines.push('');
   } else if (verification && !verification.passed) {
-    lines.push(`The last verified round also had failing tests.`);
+    lines.push(`The last verified round also had **failing tests**.`);
     lines.push('');
   }
 
