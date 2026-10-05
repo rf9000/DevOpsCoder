@@ -11,3 +11,8 @@ logs/
 .claude/todos*
 .mcp.json
 .tools/
+experiments/runs/
+experiments/corpus.json
+experiments/variants.json
+experiments/corpus.smoke.json
+experiments/corpus.[0-9]*.json

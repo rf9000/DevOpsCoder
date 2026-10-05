@@ -1,0 +1,23 @@
+[
+  { "name": "baseline", "env": {} },
+  {
+    "name": "coder-effort-medium",
+    "env": { "CLAUDE_EFFORT_CODER": "medium", "CLAUDE_EFFORT_FIX_FINDINGS": "medium" }
+  },
+  { "name": "fixer-effort-medium", "env": { "CLAUDE_EFFORT_TEST_FIXER": "medium" } },
+  { "name": "plan-effort-low", "env": { "CLAUDE_EFFORT_PLANNING": "low" } },
+  {
+    "name": "cheap-axes",
+    "env": {
+      "CLAUDE_MODEL_REVIEWER_NAMING_STYLE": "claude-haiku-4-5-20251001",
+      "CLAUDE_MODEL_REVIEWER_PERFORMANCE": "claude-haiku-4-5-20251001",
+      "CLAUDE_MODEL_REVIEWER_CODE_STRUCTURE": "claude-haiku-4-5-20251001"
+    }
+  },
+  { "name": "pr-message-haiku", "env": { "CLAUDE_MODEL_PR_MESSAGE": "claude-haiku-4-5-20251001" } },
+  {
+    "name": "no-plan",
+    "env": { "CLAUDE_MODEL_PLANNING": "", "CLAUDE_MODEL_CODER_PLAN": "", "CLAUDE_MODEL_TEST_AUTHOR_PLAN": "" }
+  },
+  { "name": "analyzer-sonnet", "rerunAnalyzer": true, "env": { "CLAUDE_MODEL_ANALYZER": "claude-sonnet-5-5" } }
+]
