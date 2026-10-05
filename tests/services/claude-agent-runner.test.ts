@@ -160,8 +160,14 @@ describe('buildQueryOptions', () => {
     );
   });
 
+  it('forwards effort when set', () => {
+    const opts = buildQueryOptions({ ...minimalArgs, effort: 'medium' }, deps);
+    expect(opts.effort).toBe('medium');
+  });
+
   it('omits optional fields when undefined', () => {
     const opts = buildQueryOptions(minimalArgs, deps);
+    expect('effort' in opts).toBe(false);
     expect(opts.maxTurns).toBeUndefined();
     expect(opts.cwd).toBeUndefined();
     expect(opts.canUseTool).toBeUndefined();

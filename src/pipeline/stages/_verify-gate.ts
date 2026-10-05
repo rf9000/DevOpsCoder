@@ -156,6 +156,7 @@ export function createVerifyGateStage(deps: VerifyGateDeps): Stage {
             });
           }
           const round = await runVerificationRound({
+            logger: deps.logger,
             continiaCli: deps.continiaCli,
             env: setup.env,
             worktree,

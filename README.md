@@ -106,6 +106,7 @@ like any other:
 | `bun run src/cli/index.ts reset-state <id>` | Delete `.state/{id}.json` + remove worktree + delete branch (`--keep-worktree` opt-out) |
 | `bun run src/cli/index.ts debug-tags` | List work item IDs tagged TRIGGER_TAG |
 | `bun run src/cli/index.ts debug-pr <id>` | Print the draft-PR record stored in state for a work item |
+| `bun run src/cli/index.ts experiment --corpus <f> --variants <f>` | Replay corpus WIs under each model/effort variant and write a cost-vs-quality report — see [Model/effort experiments](#modeleffort-experiments) |
 
 ## Layout
 
@@ -260,6 +261,13 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CLAUDE_MODEL_TEST_AUTHOR` | no | `CLAUDE_MODEL` | The test-author's write call |
 | `CLAUDE_MODEL_TEST_FIXER` | no | `CLAUDE_MODEL` | The build-and-test fix loop |
 | `CLAUDE_MODEL_PR_MESSAGE` | no | `CLAUDE_MODEL` | The PR-message step nested in `draft-pr-creator`: reads the branch diff, writes the PR title and bullets. One short read-only call — a cheap model is usually right |
+| `CLAUDE_MODEL_REVIEWER_<AXIS>` | no | `CLAUDE_MODEL_REVIEWER` | One reviewer axis only. `<AXIS>` is `SAFETY_CORRECTNESS`, `PERFORMANCE`, `CODE_STRUCTURE`, `NAMING_STYLE`, `SECURITY` or `INTEGRATION` |
+| `CLAUDE_EFFORT` | no | SDK default (`high`) | Global reasoning effort: `low`, `medium`, `high`, `xhigh` or `max` |
+| `CLAUDE_EFFORT_<STEP>` | no | `CLAUDE_EFFORT` | Per-step effort, same step names as the model vars (`ANALYZER`, `CODER_PLAN`, `CODER`, `FIX_FINDINGS`, `REVIEWER`, `TEST_AUTHOR_PLAN`, `TEST_AUTHOR`, `TEST_FIXER`, `PR_MESSAGE`). `CLAUDE_EFFORT_PLANNING` covers both plan steps, and `CLAUDE_EFFORT_REVIEWER_<AXIS>` covers one axis |
+| `WORKTREE_OVERLAY_DIR` | no | — | Directory copied into every worktree, keeping relative paths. Comma-separated for several, applied in order. The `experiment` command also appends `config/worktree-overlay-experiment` and deploys with its `.cli-ruleset.experiment.json`. Use it for build files the repo doesn't track, such as `config/worktree-overlay/` with the Banking `.cli-ruleset.json`. Tracked files are refused, and copied paths are added to the clone's `info/exclude` |
+| `CONTINIA_UNPUBLISH_DEPENDENTS` | no | true | Pass `--unpublish-dependents` to every deploy, so a changed signature never makes BC recompile a stale installed test app mid-publish |
+| `CONTINIA_RULESET` | no | — | Path, relative to the worktree, passed to every `continia deploy` as `--ruleset`, e.g. `Banking Rulesets/.cli-ruleset.json` |
+| `WORKTREE_BASE_REF` | no | `origin/main` | Ref or sha the worktree branches from. Set by the experiment harness. Leave unset in production |
 | `REVIEWER_MAX_TURNS` | no | 50 | Turn budget for **each** reviewer axis, not the fan-out as a whole; raise it if a run fails with "Reached maximum number of turns" (cost multiplies by six) |
 | `PLAN_MAX_TURNS` | no | 30 | Turn budget for a plan call (read-only work, so well below `CODER_MAX_TURNS`) |
 | `FIX_FINDINGS_MAX_TURNS` | no | `CODER_MAX_TURNS` | Turn budget for the fix-findings step |
@@ -390,6 +398,36 @@ The entrypoint runs `chown -R claude:claude /home/claude/.claude` inside the con
 
 **Paused WI fails to resume after container restart**
 - The worktree base mount (`~/repos/.worktrees`) is not persistent across restarts (e.g., it is an anonymous volume or tmpfs). Use a named bind mount so the directory survives restarts.
+
+## Model/effort experiments
+
+`experiment` replays real work items under several config variants and reports which variants are cheaper without being worse. It runs locally, so it uses your Claude Code subscription login. It removes `ANTHROPIC_API_KEY` from the environment unless you pass `--allow-api-key`.
+
+```
+cp experiments/corpus.example.json experiments/corpus.json      # WI ids + base shas
+cp experiments/variants.example.json experiments/variants.json  # env overrides per variant
+bun run src/cli/index.ts experiment --corpus experiments/corpus.json   --variants experiments/variants.json --max-total-usd 300 [--reps 2] [--only cheap-axes] [--run-id <id>]
+```
+
+**Use a dedicated clone.** Replays create and delete branches, run `git worktree prune` and add worktrees in the target repo's `.git`. Set `EXPERIMENT_TARGET_REPO_PATH` (a separate clone, e.g. `git clone --reference <your clone> --dissociate <origin url>`) and `EXPERIMENT_WORKTREE_BASE`. The command uses them instead of `TARGET_REPO_PATH` / `WORKTREE_BASE`. It refuses to run against a linked worktree, or against a repo that has worktrees the harness did not create.
+
+Each corpus entry gives a `wiId`, a `baseSha` (the commit on main before the human fix landed) and an optional `commentsBefore` cutoff. The cutoff drops comments from the resolution onward, so the fix cannot leak into the prompt. Each variant is a `name` plus `env` overrides on top of your normal env. A blank value unsets a var. One variant must be named `baseline`.
+
+What a run does:
+- **No external writes.** The ADO client is wrapped read-only, `draft-pr-creator` and `worktree-teardown` are dropped, and nothing is pushed. The `pr-message` step still runs, so its cost is measured.
+- **Full gate.** `env-provision` and `build-and-test` run as in production, so each run creates its own BC environment. Set `SKIP_BUILD_TEST=true` for a cheap smoke test.
+- **Shared analyzer.** The analyzer runs once per WI, on the baseline config, against a detached checkout of `baseSha`. Every variant reuses that output. Set `"rerunAnalyzer": true` on a variant to test the analyzer itself.
+- **Referee.** After each run, the six-axis reviewer runs again on the final diff with the **baseline** config. A variant that cheapens the reviewer is never the judge of its own output. Referee and analyzer spend is reported as overhead, not billed to any variant. Turn it off with `--no-referee`.
+- **Resumable.** Everything lands under `experiments/runs/<run-id>/<wi>/<variant>-<rep>/`: state, the WI log with its cost table, `diff.patch`, `referee.json` and `result.json`. Rerunning with the same `--run-id` skips finished runs. A run that hit a usage limit (`rate-limited`) writes no `result.json`, so a rerun resumes it at the failed stage.
+
+**Base check.** Before any variant runs, each work item's `baseSha` is deployed once and the tests its fix touches are run, with no LLM calls. Set `fixSha` on the corpus entry to the commit holding the human fix. If the base does not compile, every variant of that work item is skipped. Tests that are already red are listed in the report. Ctrl+C stops after the current step, and a second Ctrl+C exits immediately. Either way, rerun the same `--run-id` to resume.
+
+`report.md` ranks variants on **tokens**, because tokens are what count against the subscription usage limit. The `est. $` column is the SDK's API-price estimate, not a bill. A variant is flagged **cheaper, no quality loss** when all three hold, compared with baseline:
+- it uses fewer tokens
+- its gate pass rate (compiled and every test green) is at least as high
+- its referee blocking+critical count is no higher
+
+A skipped gate never counts as a pass.
 
 ## See also
 

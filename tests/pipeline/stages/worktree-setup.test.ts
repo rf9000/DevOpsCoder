@@ -164,4 +164,20 @@ describe('createWorktreeSetupStage', () => {
     await stage.execute(makeState(), makeCtx());
     expect(wireCalls).toEqual([]);
   });
+
+  it('copies each worktree overlay dir in order when worktreeOverlayDirs is set, and skips it otherwise', async () => {
+    const calls: Array<[string, string]> = [];
+    const applyOverlay = (src: string, wt: string) => { calls.push([src, wt]); return []; };
+    await createWorktreeSetupStage({
+      worktreeManager: makeMgr(sampleCtx),
+      config: { ...baseConfig, worktreeOverlayDirs: ['/app/config/worktree-overlay', '/app/config/worktree-overlay-experiment'] },
+      applyOverlay,
+    }).execute(makeState(), makeCtx());
+    await createWorktreeSetupStage({ worktreeManager: makeMgr(sampleCtx), config: baseConfig, applyOverlay })
+      .execute(makeState(), makeCtx());
+    expect(calls).toEqual([
+      ['/app/config/worktree-overlay', sampleCtx.path],
+      ['/app/config/worktree-overlay-experiment', sampleCtx.path],
+    ]);
+  });
 });

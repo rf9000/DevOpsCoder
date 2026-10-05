@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { AgentUsage } from '../types/index.ts';
+import type { AgentUsage, EffortLevel } from '../types/index.ts';
 
 export type { AgentUsage };
 
@@ -16,6 +16,8 @@ export interface AgentRunArgs<T> {
   tools?: string[];
   disallowedTools?: string[];
   model?: string;
+  /** Reasoning effort, passed to the SDK as `effort`. Undefined → SDK default. */
+  effort?: EffortLevel;
   maxTurns?: number;
   cwd?: string;
   systemPromptAppend?: string;

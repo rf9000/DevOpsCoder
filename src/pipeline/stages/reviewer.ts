@@ -24,7 +24,7 @@ import {
 } from './_stage-helpers.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
 import type { AgentRunResult } from '../agent-stage.ts';
-import { modelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker, mergeToolUsage } from '../../utils/tool-usage-tracker.ts';
 
@@ -363,7 +363,8 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
                 prompt: promptFor(axis),
                 label: `reviewer:${axis}`,
                 schema: axisOutputSchema,
-                model: modelFor(deps.config, 'reviewer'),
+                model: modelFor(deps.config, 'reviewer', axis),
+                effort: effortFor(deps.config, 'reviewer', axis),
                 tools: ['Read', 'Grep', 'Glob', 'Bash'],
                 disallowedTools: [
                   'Edit',

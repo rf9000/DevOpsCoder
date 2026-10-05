@@ -1,4 +1,4 @@
-import type { AppConfig } from '../types/index.ts';
+import type { AppConfig, EffortLevel } from '../types/index.ts';
 
 /**
  * One LLM-calling step of the pipeline. Not the same set as `Stage.name`: the
@@ -31,8 +31,31 @@ export const DEFAULT_PLAN_MAX_TURNS = 30;
  * Every LLM call site goes through this rather than reading `config.claudeModel`
  * directly, so a per-step override is impossible to forget at one call site.
  */
-export function modelFor(config: AppConfig, step: PipelineStep): string {
-  return config.stepModel?.[step] ?? config.claudeModel;
+export function modelFor(config: AppConfig, step: PipelineStep, axis?: string): string {
+  return (
+    (axis !== undefined ? config.stepModel?.[`${step}:${axis}`] : undefined) ??
+    config.stepModel?.[step] ??
+    config.claudeModel
+  );
+}
+
+/**
+ * Which reasoning effort a step runs at, resolved like `modelFor`: the
+ * `<step>:<axis>` key (reviewer axes only), then the step, then the global
+ * `CLAUDE_EFFORT`. `undefined` means "leave it to the SDK default" — the
+ * runner then omits the option entirely, which is what every deployment ran
+ * at before effort was configurable.
+ */
+export function effortFor(
+  config: AppConfig,
+  step: PipelineStep,
+  axis?: string,
+): EffortLevel | undefined {
+  return (
+    (axis !== undefined ? config.stepEffort?.[`${step}:${axis}`] : undefined) ??
+    config.stepEffort?.[step] ??
+    config.claudeEffort
+  );
 }
 
 /**

@@ -184,12 +184,45 @@ describe('createContiniaCli', () => {
       const absApp = resolve(WORKTREE, 'Core/Cloud');
       expect(call.cwd).toBe(WORKTREE);
       expect(call.argv.slice(1)).toEqual([
-        'deploy', 'env-1', absApp, '--allow-downgrade', '--json',
+        'deploy', 'env-1', absApp, '--unpublish-dependents', '--allow-downgrade', '--json',
       ]);
       expect(call.argv).not.toContain('--workspace-root');
       expect(call.argv).not.toContain('--with-deps');
       expect(call.argv).not.toContain('--all');
       expect(result).toEqual([{ app: 'Continia_Core', compiled: true, published: true }]);
+    });
+
+    it('omits --unpublish-dependents when continiaUnpublishDependents is false', async () => {
+      const { cli, calls } = makeCli(
+        [ok('[{"app":"A","compiled":true,"published":true}]')],
+        { ...baseConfig, continiaUnpublishDependents: false },
+      );
+      await cli.deployApp('env-1', 'Core/Cloud', opts);
+      expect(calls[0]!.argv).not.toContain('--unpublish-dependents');
+    });
+
+    it('passes --sync-mode only when continiaSyncMode is set', async () => {
+      const { cli, calls } = makeCli(
+        [ok('[{"app":"A","compiled":true,"published":true}]')],
+        { ...baseConfig, continiaSyncMode: 'ForceSync' },
+      );
+      await cli.deployApp('env-1', 'Core/Cloud', opts);
+      expect(calls[0]!.argv.slice(1)).toEqual([
+        'deploy', 'env-1', resolve(WORKTREE, 'Core/Cloud'), '--sync-mode', 'ForceSync', '--unpublish-dependents', '--allow-downgrade', '--json',
+      ]);
+    });
+
+    it('passes --ruleset resolved against the worktree when continiaRuleset is set', async () => {
+      const { cli, calls } = makeCli(
+        [ok('[{"app":"A","compiled":true,"published":true}]')],
+        { ...baseConfig, continiaRuleset: 'Banking Rulesets/.cli-ruleset.json' },
+      );
+      await cli.deployApp('env-1', 'Core/Cloud', opts);
+      expect(calls[0]!.argv.slice(1)).toEqual([
+        'deploy', 'env-1', resolve(WORKTREE, 'Core/Cloud'),
+        '--ruleset', resolve(WORKTREE, 'Banking Rulesets/.cli-ruleset.json'),
+        '--unpublish-dependents', '--allow-downgrade', '--json',
+      ]);
     });
 
     // The CLI resolves the positional appPath against --workspace-root (default
@@ -210,7 +243,7 @@ describe('createContiniaCli', () => {
       const abs = resolve(WORKTREE, 'Core/Cloud');
       await cli.deployApp('env-1', abs, opts);
       expect(calls[0]!.argv.slice(1)).toEqual([
-        'deploy', 'env-1', abs, '--allow-downgrade', '--json',
+        'deploy', 'env-1', abs, '--unpublish-dependents', '--allow-downgrade', '--json',
       ]);
     });
 
@@ -677,5 +710,102 @@ describe('environment description', () => {
     const cli = createContiniaCli({ config: baseConfig, exec: exec as unknown as ExecFn });
 
     expect((await cli.getEnvironment('env-1', { worktreePath: '/wt' })).description).toBeUndefined();
+  });
+});
+
+describe('waitForRunning on a stopped environment', () => {
+  it('starts it once and keeps polling', async () => {
+    const env = (status: string) => ok(JSON.stringify({ id: 'e', name: 'n', status }));
+    const { cli, calls } = makeCli([env('Stopped'), ok(''), env('Starting'), env('Running')]);
+    const out = await cli.waitForRunning('e', { ...opts, pollIntervalMs: 1 });
+    expect(out.status).toBe('Running');
+    expect(calls.map((c) => c.argv.slice(1, 3).join(' '))).toEqual(['env get', 'env start', 'env get', 'env get']);
+  });
+});
+
+describe('transient retry', () => {
+  const timeout: ExecResult = {
+    exitCode: 1,
+    stdout: '',
+    stderr: 'Error: Error installing Continia Banking - Import | Request to https://demoportaldev.continiaonline.com/api/v1.0/environments/e/apps.json timed out after 120000ms',
+  };
+  const symbol503 = JSON.stringify([
+    {
+      app: 'Permission Sets',
+      compiled: false,
+      published: false,
+      code: 'symbol-fetch-failed',
+      error: 'Cannot compile: Microsoft_System 29.0.0.0 (fetch-failed: 503 Service Temporarily Unavailable)',
+    },
+  ]);
+  const deployed = JSON.stringify([{ app: 'Permission Sets', compiled: true, published: true }]);
+
+  it('retries deps install on a timeout and succeeds, with the configured backoff', async () => {
+    const retries: string[] = [];
+    const { exec, calls } = makeExec([timeout, timeout, ok('{"installed":[],"skipped":[],"symbolsMissing":[]}')]);
+    const sleeps: number[] = [];
+    const cli = createContiniaCli({
+      config: baseConfig,
+      exec,
+      sleep: async (ms) => { sleeps.push(ms); },
+      retryDelaysMs: [1, 2, 3],
+      onRetry: (m) => retries.push(m),
+    });
+    await cli.installDependencies('e', 'banking-w1', opts);
+    expect(calls).toHaveLength(3);
+    expect(sleeps).toEqual([1, 2]);
+    expect(retries[0]).toMatch(/deps install banking-w1: transient failure \(attempt 1 of 4\)/);
+  });
+
+  it('gives up after the last delay and throws the original error', async () => {
+    const { exec, calls } = makeExec([timeout, timeout]);
+    const cli = createContiniaCli({ config: baseConfig, exec, sleep: async () => {}, retryDelaysMs: [1] });
+    await expect(cli.installDependencies('e', 'banking-w1', opts)).rejects.toThrow(/timed out after 120000ms/);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('does not retry a non-transient failure', async () => {
+    const { exec, calls } = makeExec([{ exitCode: 1, stdout: '', stderr: 'app.json not found' }]);
+    const cli = createContiniaCli({ config: baseConfig, exec, sleep: async () => {}, retryDelaysMs: [1, 2] });
+    await expect(cli.installDependencies('e', 'x', opts)).rejects.toThrow(/app.json not found/);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('re-runs a deploy whose only failures are transient symbol fetches', async () => {
+    const { exec, calls } = makeExec([{ exitCode: 1, stdout: symbol503, stderr: '' }, ok(deployed)]);
+    const cli = createContiniaCli({ config: baseConfig, exec, sleep: async () => {}, retryDelaysMs: [1] });
+    const rows = await cli.deployApp('e', 'permission-sets', opts);
+    expect(rows[0]?.published).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('returns a compile failure at once — it is a result, not a fault', async () => {
+    const compileRed = JSON.stringify([{ app: 'A', compiled: false, published: false, code: 'compile-failed', error: 'AA0139' }]);
+    const { exec, calls } = makeExec([{ exitCode: 1, stdout: compileRed, stderr: '' }]);
+    const cli = createContiniaCli({ config: baseConfig, exec, sleep: async () => {}, retryDelaysMs: [1] });
+    const rows = await cli.deployApp('e', 'a', opts);
+    expect(rows[0]?.code).toBe('compile-failed');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('returns the last transient deploy result when retries run out', async () => {
+    const { exec } = makeExec([{ exitCode: 1, stdout: symbol503, stderr: '' }, { exitCode: 1, stdout: symbol503, stderr: '' }]);
+    const cli = createContiniaCli({ config: baseConfig, exec, sleep: async () => {}, retryDelaysMs: [1] });
+    const rows = await cli.deployApp('e', 'permission-sets', opts);
+    expect(rows[0]?.code).toBe('symbol-fetch-failed');
+  });
+
+  it('stops retrying once the signal is aborted', async () => {
+    const ctrl = new AbortController();
+    const { exec, calls } = makeExec([timeout, ok('{}')]);
+    const cli = createContiniaCli({
+      config: baseConfig,
+      exec,
+      sleep: async () => {},
+      retryDelaysMs: [1, 2],
+    });
+    ctrl.abort();
+    await expect(cli.installDependencies('e', 'x', { ...opts, signal: ctrl.signal })).rejects.toThrow(/timed out/);
+    expect(calls).toHaveLength(1);
   });
 });

@@ -1,0 +1,143 @@
+{
+    "name": "Ruleset for shipped apps",
+    "description": "This ruleset applies to shipped apps.",
+    "includedRuleSets": [
+        {
+            "action": "Default",
+            "path": "./continia.appsource.ruleset.json"
+        },
+        {
+            "action": "Default",
+            "path": "./CodeCop.ruleset.json"
+        },
+        {
+            "action": "Default",
+            "path": "./Compiler.ruleset.json"
+        },
+        {
+            "action": "Default",
+            "path": "./UICop.ruleset.json"
+        },
+        {
+            "action": "Default",
+            "path": "./LinterCop.ruleset.json"
+        }
+    ],
+    "rules": [
+        {
+            "id": "AS0029",
+            "action": "Error",
+            "justification": "[Evergreen] Removing a page is allowed for partners."
+        },
+        {
+            "id": "AS0030",
+            "action": "Error",
+            "justification": "[Evergreen] Renaming a page is allowed for partners."
+        },
+        {
+            "id": "AS0031",
+            "action": "Error",
+            "justification": "[Evergreen] Removing an action is allowed for partners."
+        },
+        {
+            "id": "AS0032",
+            "action": "Error",
+            "justification": "[Evergreen] Removing a control is allowed for partners."
+        },
+        {
+            "id": "AS0033",
+            "action": "Error",
+            "justification": "[Evergreen] Removing a view is allowed for partners."
+        },
+        {
+            "id": "AS0050",
+            "action": "Hidden",
+            "justification": "[Temporary] Allow changing the extensibility of enums."
+        },
+        {
+            "id": "AS0051",
+            "action": "Hidden",
+            "justification": "[Temporary] Remove required property validation as it was a known exception."
+        },
+        {
+            "id": "AS0064",
+            "action": "Hidden",
+            "justification": "[Temporary] Allow removing interfaces from codeunit."
+        },
+        {
+            "id": "AS0066",
+            "action": "Hidden",
+            "justification": "[Temporary] Allow adding procedures to interfaces."
+        },
+        {
+            "id": "AS0084",
+            "action": "Hidden",
+            "justification": "50000..99999 is used for the test apps."
+        },
+        {
+            "id": "AS0126",
+            "action": "Info",
+            "justification": "Publisher defined in internalsVisibleTo is different from app.json publisher. We allow this in two cases. Either the publisher is 'Continia Software Partner' or it is 'Ã˜konomistyrelsen' for the BCStat app."
+        },
+        {
+            "id": "AA0248",
+            "action": "None",
+            "justification": "Add 'this' qualification to improve readability. We don't want to enforce the use of 'this' at the current time."
+        },
+        {
+            "id": "AW0006",
+            "action": "Info",
+            "justification": "We currently dont't want Usage Category on all pages as they should not be searchable."
+        },
+        {
+            "id": "AA0219",
+            "action": "Info",
+            "justification": "Not all tooltips should start with specifies. For assisted setup pages we want more descriptive tooltips."
+        },
+        {
+            "id": "AL0842",
+            "action": "Info",
+            "justification": "Internal conflict error. Should be fixed."
+        },
+        {
+            "id": "AL0749",
+            "action": "Info",
+            "justification": "Internal conflict error. Should be fixed."
+        },
+        {
+            "id": "AA0240",
+            "action": "None",
+            "justification": "We have mail and phone numbers in the demo app. "
+        },
+        {
+            "id": "AA0471",
+            "action": "Info",
+            "justification": "We allow missing autoformattype for now."
+        },
+        {
+            "id": "AA0473",
+            "action": "Info",
+            "justification": "We allow missing autoformattype for now."
+        },
+        {
+            "id": "AL1025",
+            "action": "Warning",
+            "justification": "The object contains invalid characters. TODO: Remove pragma"
+        },
+        {
+            "id": "AS0087",
+            "action": "Info",
+            "justification": "Function is obsolete. Mirrors the local Compiler.ruleset.json override the team builds with; kept here so the tracked file stays untouched."
+        },
+        {
+            "id": "AL0275",
+            "action": "Info",
+            "justification": "Method is obsolete. Mirrors the local Compiler.ruleset.json override the team builds with; kept here so the tracked file stays untouched."
+        },
+        {
+            "id": "AL0133",
+            "action": "Info",
+            "justification": "Cannot access the obsolete member. Mirrors the local Compiler.ruleset.json override the team builds with; kept here so the tracked file stays untouched."
+        }
+    ]
+}

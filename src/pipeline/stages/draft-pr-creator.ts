@@ -17,7 +17,7 @@ import { buildGitAuthArgs, redactPat } from '../../utils/git-auth.ts';
 import { findTagAdder, formatAdoMentionMarkdown } from '../../utils/tag-history.ts';
 import { pickAdminUser, type ContiniaCli } from '../../services/continia-cli.ts';
 import { runPrMessageStep } from './_pr-message.ts';
-import { modelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -281,6 +281,7 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
           const { message, costUsd, toolUsage, usage } = await runPrMessageStep({
             runner: deps.runner,
             model: modelFor(deps.config, 'pr-message'),
+            effort: effortFor(deps.config, 'pr-message'),
             systemPromptAppend: deps.prMessagePromptTemplate,
             wiCtx,
             worktree,

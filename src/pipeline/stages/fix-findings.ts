@@ -26,7 +26,7 @@ import {
   STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from './_stage-helpers.ts';
 import { CODER_BASH_ALLOW, CODER_BASH_DENY } from './coder-policy.ts';
-import { modelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -262,6 +262,7 @@ export function createFixFindingsStage(deps: FixFindingsStageDeps): Stage {
               label: `fix-findings (attempt ${attempt + 1})`,
               schema: fixFindingsOutputSchema,
               model: modelFor(deps.config, 'fix-findings'),
+              effort: effortFor(deps.config, 'fix-findings'),
               tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
               disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
               cwd: worktree.path,

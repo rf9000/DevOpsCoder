@@ -2,12 +2,15 @@ import type { Stage } from '../stage.ts';
 import type { WorktreeManager } from '../../services/worktree-manager.ts';
 import type { AppConfig, WorktreeContext } from '../../types/index.ts';
 import { wireOrchestratorSkills } from '../../services/skill-wiring.ts';
+import { applyWorktreeOverlay } from '../../services/worktree-overlay.ts';
 
 export interface WorktreeSetupDeps {
   worktreeManager: WorktreeManager;
   config: AppConfig;
   /** Test override for the skill symlinker. */
   wireSkills?: (skillsSourceDir: string, worktreePath: string) => void;
+  /** Test override for the overlay copier. */
+  applyOverlay?: (sourceDir: string, worktreePath: string) => string[];
 }
 
 /**
@@ -23,6 +26,7 @@ export interface WorktreeSetupDeps {
  */
 export function createWorktreeSetupStage(deps: WorktreeSetupDeps): Stage {
   const wire = deps.wireSkills ?? wireOrchestratorSkills;
+  const overlay = deps.applyOverlay ?? ((src: string, wt: string) => applyWorktreeOverlay(src, wt));
   return {
     name: 'worktree-setup',
     canRun: () => true,
@@ -35,6 +39,11 @@ export function createWorktreeSetupStage(deps: WorktreeSetupDeps): Stage {
       });
       if (deps.config.skillsSourceDir) {
         wire(deps.config.skillsSourceDir, ctx.path);
+      }
+      // Re-applied on every entry: a resumed worktree may predate the overlay,
+      // and the copy is idempotent.
+      for (const dir of deps.config.worktreeOverlayDirs ?? []) {
+        overlay(dir, ctx.path);
       }
       state.outputs.worktree = ctx;
       return state;

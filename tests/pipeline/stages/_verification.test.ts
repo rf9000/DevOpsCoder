@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
 import {
+  isSiblingRace,
   prepareVerification,
   runVerificationRound,
   type PrepareVerificationArgs,
@@ -249,5 +250,52 @@ describe('runVerificationRound', () => {
     expect(res.failure).toBeUndefined();
     expect(res.output.passed).toBe(true);
     expect(res.output.compiled).toBe(true);
+  });
+
+  it('redeploys once the environment settles when a just-published sibling is reported missing', async () => {
+    const base = { app: 'Continia Software_Continia Banking', compiled: true, published: true };
+    const race = {
+      app: 'Continia Software_Continia Banking - Base App - Test Suite',
+      compiled: false,
+      published: false,
+      code: 'unpublished-sibling',
+      error: 'Cannot compile: Continia Software_Continia Banking 29.0.0.0 (Continia Software_Continia Banking is not published on env env-9; deploy it first)',
+    };
+    const testOk = { ...race, compiled: true, published: true, code: undefined, error: undefined };
+    const queue = [[base], [race], [testOk]];
+    const deployApp = mock(async () => queue.shift()!);
+    const sleeps: number[] = [];
+    const res = await runVerificationRound({
+      ...makeRoundArgs(),
+      appPaths: ['base-application', 'base-application-test'],
+      continiaCli: makeCliMock({ deployApp }) as unknown as ContiniaCli,
+      sleep: async (ms) => { sleeps.push(ms); },
+      siblingRetryDelaysMs: [5, 10],
+    });
+    expect(deployApp).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([5]);
+    expect(res.environmentBlocker).toBeUndefined();
+    expect(res.output.compiled).toBe(true);
+  });
+
+  it('does not retry an unpublished-sibling for an app this round never published', async () => {
+    const deployApp = mock(async () => [
+      { app: 'Test', compiled: false, published: false, code: 'unpublished-sibling', error: 'Continia Software_Continia Banking - Export is not published on env' },
+    ]);
+    const res = await runVerificationRound({
+      ...makeRoundArgs(),
+      continiaCli: makeCliMock({ deployApp }) as unknown as ContiniaCli,
+      sleep: async () => {},
+    });
+    expect(deployApp).toHaveBeenCalledTimes(1);
+    expect(res.environmentBlocker?.code).toBe('unpublished-sibling');
+  });
+});
+
+describe('isSiblingRace', () => {
+  it('matches the whole app name, so a prefix app never counts', () => {
+    const row = { app: 'T', compiled: false, published: false, code: 'unpublished-sibling', error: 'Continia Software_Continia Banking - Export is not published' };
+    expect(isSiblingRace([row], new Set(['Continia Software_Continia Banking']))).toBe(false);
+    expect(isSiblingRace([row], new Set(['Continia Software_Continia Banking - Export']))).toBe(true);
   });
 });

@@ -149,8 +149,13 @@ export function createWorktreeManager(deps: WorktreeManagerDeps): WorktreeManage
     return result !== null;
   }
 
-  async function getOriginMainSha(): Promise<string> {
-    const { stdout } = await runGit(['rev-parse', 'origin/main'], baseRepoPath);
+  // origin/main in production. The experiment harness pins WORKTREE_BASE_REF
+  // to the commit a work item was filed against, so every variant replays it
+  // on identical code rather than on whatever main has become since.
+  const baseRef = deps.config.worktreeBaseRef ?? 'origin/main';
+
+  async function getBaseSha(): Promise<string> {
+    const { stdout } = await runGit(['rev-parse', '--verify', `${baseRef}^{commit}`], baseRepoPath);
     return stdout.trim();
   }
 
@@ -194,16 +199,16 @@ export function createWorktreeManager(deps: WorktreeManagerDeps): WorktreeManage
         rmSync(path, { recursive: true, force: true });
       }
 
-      const baseSha = await getOriginMainSha();
+      const baseSha = await getBaseSha();
 
       // If the branch exists already (e.g. from a prior crashed run), reuse it.
-      // Otherwise create fresh from origin/main.
+      // Otherwise create fresh from the base ref (origin/main unless pinned).
       const branchAlreadyExists = await branchExists(branch);
       if (branchAlreadyExists) {
         await runGit(['worktree', 'add', path, branch], baseRepoPath);
       } else {
         await runGit(
-          ['worktree', 'add', path, '-b', branch, 'origin/main'],
+          ['worktree', 'add', path, '-b', branch, baseSha],
           baseRepoPath,
         );
       }

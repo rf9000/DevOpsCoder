@@ -85,6 +85,18 @@ describe('createCostTracker', () => {
     expect(tracker.perStage()['coder']!.models).toEqual(['claude-opus-5', 'claude-sonnet-5']);
   });
 
+  it('add records each distinct effort once; absent when no call set one', () => {
+    const state = makeState();
+    const t = createCostTracker(state);
+    const base = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, turns: 1, model: 'm' };
+    t.add('coder', 1, base);
+    expect(t.perStage().coder?.efforts).toBeUndefined();
+    t.add('coder', 1, { ...base, effort: 'medium' });
+    t.add('coder', 1, { ...base, effort: 'medium' });
+    t.add('coder', 1, { ...base, effort: 'low' });
+    expect(t.perStage().coder?.efforts).toEqual(['medium', 'low']);
+  });
+
   it('add without usage still counts the call and leaves tokens at zero', () => {
     const state = makeState();
     const tracker = createCostTracker(state);

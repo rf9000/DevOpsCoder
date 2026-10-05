@@ -109,7 +109,7 @@ export function renderCostReport(input: CostReportInput): string {
       cacheWrite += s.cacheCreationInputTokens;
       cacheRead += s.cacheReadInputTokens;
       lines.push(
-        `| ${step} | $${s.usd.toFixed(4)} | ${s.calls} | ${s.models.join(', ')} | ` +
+        `| ${step} | $${s.usd.toFixed(4)} | ${s.calls} | ${s.models.join(', ')}${s.efforts?.length ? ` @ ${s.efforts.join(', ')}` : ''} | ` +
           `${group(s.inputTokens)} / ${group(s.outputTokens)} | ` +
           `${group(s.cacheCreationInputTokens)} / ${group(s.cacheReadInputTokens)} | ` +
           `${cacheHitRate(s)} | ${s.turns} |`,

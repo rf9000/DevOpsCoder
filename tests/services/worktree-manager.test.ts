@@ -128,6 +128,24 @@ describe('createWorktreeManager', () => {
     expect(list).toContain('branch refs/heads/agent/wi-101-fix-login');
   }, 30000);
 
+  it('ensureWorktree branches from worktreeBaseRef instead of origin/main when pinned', async () => {
+    // Replay on fixed code: the seed commit is the pin, and origin/main moves on.
+    const pinned = (await runGit(['rev-parse', 'origin/main'], sandbox.targetRepoPath)).trim();
+    const seedPath = join(sandbox.root, 'seed');
+    writeFileSync(join(seedPath, 'later.md'), 'later\n', 'utf-8');
+    await runGit(['add', 'later.md'], seedPath);
+    await runGit(['commit', '-m', 'later'], seedPath);
+    await runGit(['push', 'origin', 'main'], seedPath);
+
+    const mgr = createWorktreeManager({
+      config: { ...makeConfig(sandbox.targetRepoPath, sandbox.worktreeBase), worktreeBaseRef: pinned },
+    });
+    const ctx = await mgr.ensureWorktree({ workItemId: 102, slug: 'replay' });
+    expect(ctx.baseSha).toBe(pinned);
+    expect((await runGit(['rev-parse', 'HEAD'], ctx.path)).trim()).toBe(pinned);
+    expect(existsSync(join(ctx.path, 'later.md'))).toBe(false);
+  }, 30000);
+
   it('ensureWorktree reuses when persistedWorktree validates on disk + registry', async () => {
     const mgr = createWorktreeManager({
       config: makeConfig(sandbox.targetRepoPath, sandbox.worktreeBase),

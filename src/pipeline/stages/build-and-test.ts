@@ -146,6 +146,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
         }
 
         const round = await runVerificationRound({
+          logger: deps.logger,
           continiaCli: deps.continiaCli,
           env: setup.env,
           worktree,
