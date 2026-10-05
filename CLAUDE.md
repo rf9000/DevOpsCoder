@@ -42,6 +42,61 @@ Plan 11 hardens the verification gate against sibling-repo drift and adds WI-lin
 
 **Per-WI log files.** `src/services/wi-log.ts` writes `<LOG_DIR>/WI<id>.log` (default `logs/`, bind-mounted in Docker). `createLogger(prefix?, sinks?)` takes `LogSink`s that receive the *already formatted* line, so the file is byte-identical to the console and cannot drift. `createProcessor` takes an optional `wiLogs: WiLogFactory`; `processWorkItem` opens the WI's log and calls `makeInner(wiLog.logger)` — the inner object is a factory whose `logger` parameter **shadows** the outer one, which is what threads the WI-scoped logger through every call site (including `buildPipeline`) without passing it by hand. Each open appends a `=== run <ts> ===` separator rather than truncating, so a resumed WI keeps the cycle that banked most of its spend; `recordSpend` closes the file with `renderCostReport`. Writes are best-effort and warn once per factory — a log that cannot be written must never fail a run. Dry runs get neither the ledger nor the log files.
 
+**Worktree overlay and ruleset.** The team builds Banking with a gitignored `Banking Rulesets/.cli-ruleset.json`, which includes `continia.appsource.ruleset.json` in place of the committed `AppSourceCop.ruleset.json`. The committed rules are stricter, so the agent was failing compiles that pass for developers.
+
+Two settings fix this:
+- `WORKTREE_OVERLAY_DIR` (`config/worktree-overlay/`) is copied into every worktree by `worktree-setup` (`applyWorktreeOverlay`, `src/services/worktree-overlay.ts`).
+- `CONTINIA_RULESET` is passed to every `continia deploy` as `--ruleset`.
+
+The overlay refuses to overwrite a tracked file, and it adds every path it writes to the clone's `info/exclude`. The repo's `.gitignore` does **not** list these files (a developer's local edit did). Without the exclude, they would be stageable, and the pipeline's `git clean -fd` reset would delete them mid-run, so `--ruleset` would point at a missing file, which is a hard error.
+
+The developer's local `Compiler.ruleset.json` overrides (`AS0087`/`AL0275`/`AL0133` to Info) live in the overlay's `.cli-ruleset.json` `rules`, never in the tracked file. Refresh the overlay when the team's local rulesets change. `WORKTREE_OVERLAY_DIR` takes a comma-separated list, applied in order.
+
+Experiment-only relaxations live apart from the team rules:
+- They are in `config/worktree-overlay-experiment/` as `.cli-ruleset.experiment.json`. It includes the team `.cli-ruleset.json` and adds rules only. Today that is `AA0210` → Info, because main's `CurrExchCatalogTests:578` filters on an unkeyed field and is being fixed in production.
+- The `experiment` command appends that overlay and switches `CONTINIA_RULESET` to it automatically. `EXPERIMENT_WORKTREE_OVERLAY_DIR` / `EXPERIMENT_CONTINIA_RULESET` override this.
+- Production runs never see the experiment ruleset.
+
+**Deploys unpublish their dependents.** Every `continia deploy` passes `--unpublish-dependents` (`CONTINIA_UNPUBLISH_DEPENDENTS`, default true). Without it, a fix that changes a signature the *installed* test app calls makes BC recompile that stale test app while it publishes the base app. The recompile fails `AL0126`, the publish rolls back, and the test app is then refused as `unpublished-sibling`. WI 82605 lost two ~$30 runs to this at the final gate. The round redeploys the dependents in dependency order right after, so nothing is lost.
+
+**Transient Continia CLI retries.** DemoPortal fails in ways that say nothing about the call or the code. On 2026-10-02 these hit freshly booted and just-woken environments, which report `Running` before they serve:
+- `apps.json` timed out after 120000ms during `deps install`.
+- Every symbol fetch answered `503 Service Temporarily Unavailable`.
+
+`withTransientRetry` (`src/services/continia-cli.ts`) retries only calls that are safe to repeat, when the error matches `TRANSIENT_CLI_ERROR`, using backoff `TRANSIENT_RETRY_DELAYS_MS` (30s/60s/120s):
+- `env get`
+- `deps install`, `deps install-by-id` and `deps download`
+- a `deploy` whose every failed row is `symbol-fetch-failed` with a transient error. Such a deploy compiled and published nothing.
+
+Separately, `runVerificationRound` redeploys an app up to twice (`SIBLING_RACE_RETRY_DELAYS_MS`, 30s/60s) when the app is refused as `unpublished-sibling` for an app the same round just published (`isSiblingRace`). On freshly created environments the base app's publish succeeds and the very next compile still reports it missing; the identical deploy goes green once the environment has settled. The app name is matched whole ("<app> is not published"), so `Continia Banking` never matches `Continia Banking - Export`.
+
+Never wrap `env create` (a retry makes a second environment) or `test run` (a timed-out test job may still be running). A compile failure is a result, not a fault, and returns at once. Retries are logged through `onRetry`.
+
+**Model/effort experiments.** `experiment` (`src/services/experiment-runner.ts`, report in `src/utils/experiment-report.ts`) replays corpus WIs under N env variants, so a per-step model or effort change is adopted on evidence. It is not a production path. Effort is a first-class knob: `CLAUDE_EFFORT` / `CLAUDE_EFFORT_<STEP>` resolve through `effortFor(config, step, axis?)` exactly as models resolve through `modelFor`. Reviewer axes take `CLAUDE_MODEL_REVIEWER_<AXIS>` / `CLAUDE_EFFORT_REVIEWER_<AXIS>`, stored under the `reviewer:<axis>` keys the cost ledger already uses. The runner omits `effort` when it is unset, so an unconfigured step still runs at the SDK default. `StepSpend.efforts` stays absent unless a call set one.
+
+The replay invariants are the point of the harness. Do not loosen them:
+- `WORKTREE_BASE_REF` pins the worktree to the WI's `baseSha`.
+- The analyzer runs against a detached checkout of that sha, never the main checkout, because the main checkout may already contain the fix.
+- Comments at or after `commentsBefore` are dropped, and the replayed WI state reads `Active`.
+- ADO is wrapped by `createReadOnlyAdoClient`, whose writes *throw* rather than no-op, so a stage the strip list missed fails loudly.
+- `draft-pr-creator` and `worktree-teardown` are stripped. `pr-message` runs directly, so its cost is still measured.
+- The referee review always uses the baseline config. A variant that cheapens the reviewer must not grade itself.
+- A rate-limited run writes no `result.json`, so a rerun resumes it rather than scoring it.
+
+Replays run against `EXPERIMENT_TARGET_REPO_PATH` / `EXPERIMENT_WORKTREE_BASE` when set, and `assertIsolatedTargetRepo` refuses a linked worktree or any repo holding worktrees without a replay slug. A developer's clone shares one `.git` with all of its worktrees, so branch churn and `worktree prune` would land on their work. Before any variant runs, a **base check** runs once per WI, with no LLM calls. It deploys the WI's `baseSha`, then runs the tests selected by `git diff baseSha fixSha`.
+- `compile-failed` skips every variant of that WI. Every variant would otherwise pay to repair main: WI 83666's first base sat in a window where main did not compile, and one run spent $14 fixing unrelated code.
+- `tests-red` lets the variants run, and records the failing codeunits.
+- `env-blocked` and `unchecked` are not cached and skip nothing. They describe the environment, not the code, and variants get their own environments.
+
+The harness chains `abortFlag` into a signal for everything it drives directly, so Ctrl+C stops a base check immediately. A second Ctrl+C exits at once. A replayed base is usually older than the Continia Banking build that the localization deps install brings onto a fresh environment. BC then refuses to publish it: "Removing fields is not allowed".
+- The `experiment` command therefore sets `CONTINIA_SYNC_MODE=ForceSync`, passed as `deploy --sync-mode`. `EXPERIMENT_CONTINIA_SYNC_MODE` overrides it.
+- This is safe only because experiment environments are throwaway. Production leaves it unset (the CLI default `Synchronize`), so a schema-breaking change by the coder fails instead of being forced through.
+- A publish that still fails that way is classified `base-too-old` (`SCHEMA_DOWNGRADE_ERROR`). It is cached and skips the WI, like `compile-failed`.
+
+**The harness deletes its own environments.** After every run and every base check it runs `continia env delete`, but only for a name matching `HARNESS_ENV_NAME` (`wi-<id>-x<5 hex>-`). Production never deletes, because DemoPortal expires environments on its own. One 30-run experiment exhausted the account's 50-environment quota overnight, which blocks production too. A run whose `env-provision` throws is classified `env-failed`, so it is not scored and is resumed on rerun.
+
+Local runs use the operator's subscription: the CLI deletes `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` unless `--allow-api-key` is passed. The report therefore ranks on tokens and labels dollars "est.".
+
 ## Architecture
 
 - **Runtime:** Bun (TypeScript)
@@ -69,6 +124,7 @@ Plan 11 hardens the verification gate against sibling-repo drift and adds WI-lin
 - `bun run src/cli/index.ts reset-state <id>` — delete `.state/{id}.json`
 - `bun run src/cli/index.ts debug-tags` — list WI IDs tagged with `TRIGGER_TAG`
 - `bun run src/cli/index.ts debug-pr <id>` — print the draft-PR record stored in state for a WI
+- `bun run src/cli/index.ts experiment --corpus <f> --variants <f>` — model/effort A/B replay (see README)
 
 ## File Layout
 

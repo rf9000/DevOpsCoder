@@ -46,8 +46,15 @@ against the environment.
 ## Deploy invocation
 
 ```bash
-continia deploy <envId> <absolute app dir> --allow-downgrade --json
+continia deploy <envId> <absolute app dir> --ruleset "<worktree>/Banking Rulesets/.cli-ruleset.json" --unpublish-dependents --allow-downgrade --json
 ```
+
+Pass `--ruleset` whenever `Banking Rulesets/.cli-ruleset.json` exists in the
+worktree — the pipeline copies it in, and its own deploys use it. It is the
+ruleset the team builds with; without it the CLI falls back to the committed
+`ruleset.json`, which is stricter, so your deploy could fail on rules the
+pipeline's gate does not enforce. Do not edit, stage or commit either ruleset
+file — they are excluded from git on purpose.
 
 Run from the worktree root. Three deliberate omissions, each of which has cost
 a debugging session before:
