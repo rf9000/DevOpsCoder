@@ -19,7 +19,7 @@ import {
 } from './worktree-manager.ts';
 import { createContiniaCli, type ContiniaCli } from './continia-cli.ts';
 import type { DiscoveredTestCodeunit } from '../utils/al-test-discovery.ts';
-import { createAnalyzerStage } from '../pipeline/stages/analyzer.ts';
+import { createAnalyzerStage, type AnalyzerStageDeps } from '../pipeline/stages/analyzer.ts';
 import { createWorktreeSetupStage } from '../pipeline/stages/worktree-setup.ts';
 import { createEnvProvisionStage } from '../pipeline/stages/env-provision.ts';
 import { createBuildAndTestStage } from '../pipeline/stages/build-and-test.ts';
@@ -30,6 +30,7 @@ import { createTestAuthorStage } from '../pipeline/stages/test-author.ts';
 import { createReviewerStage, REVIEW_AXES } from '../pipeline/stages/reviewer.ts';
 import { revisionLoop } from '../pipeline/revision-loop.ts';
 import { createDraftPrCreatorStage } from '../pipeline/stages/draft-pr-creator.ts';
+import { createFinalReviewStage } from '../pipeline/stages/final-review.ts';
 import { createWorktreeTeardownStage } from '../pipeline/stages/worktree-teardown.ts';
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
@@ -98,11 +99,43 @@ export interface PipelineBuilderDeps {
   prMessagePromptTemplate?: string;
   /** Optional pushBranch override for the draft-PR creator. Defaults to a real `git push origin <branch>` call. */
   pushBranch?: (branch: string, cwd: string) => Promise<void>;
+  /** Optional WI-context fetcher for the analyzer (the experiment harness filters replayed comments). */
+  fetchWiContext?: AnalyzerStageDeps['fetchWiContext'];
+}
+
+/**
+ * The six-axis reviewer with its shipped prompts. Exported so the experiment
+ * harness can run a *referee* review on the baseline config — a variant that
+ * cheapens the reviewer cannot be trusted to grade its own output.
+ */
+export function createDefaultReviewerStage(deps: {
+  config: AppConfig;
+  runner: AgentRunner;
+  sharedPromptTemplate?: string;
+  axisPromptTemplates?: Record<typeof REVIEW_AXES[number], string>;
+  label?: 'reviewer' | 'final-review';
+}): Stage {
+  // Object.fromEntries types as Record<string, string>; cast is safe because
+  // the source array is REVIEW_AXES — the same union the cast widens to.
+  const axisPromptTemplates =
+    deps.axisPromptTemplates ??
+    (Object.fromEntries(
+      REVIEW_AXES.map((axis) => [axis, readFileSync(REVIEWER_AXIS_PROMPT_PATHS[axis], 'utf-8')]),
+    ) as Record<typeof REVIEW_AXES[number], string>);
+  return createReviewerStage({
+    config: deps.config,
+    runner: deps.runner,
+    maxTurnsPerAxis: deps.config.reviewerMaxTurns,
+    sharedPromptTemplate:
+      deps.sharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8'),
+    axisPromptTemplates,
+    ...(deps.label ? { label: deps.label } : {}),
+  });
 }
 
 /**
  * Builds the full Plan 5 stage chain:
- *   [analyzer, worktree-setup, revisionLoop(coder | fix-findings, verify, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]
+ *   [analyzer, worktree-setup, env-provision, revisionLoop(coder | fix-findings, verify, reviewer, onExhausted), test-author, build-and-test, final-review, draft-pr-creator, worktree-teardown]
  *
  * On exhaustion of the revision loop (reviewer rejected `maxRevisions` times),
  * onExhausted throws, the orchestrator records a terminalError, and the
@@ -128,7 +161,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     createClaudeAgentRunner({ config: deps.config, logger: deps.logger });
   const worktreeManager =
     deps.worktreeManager ?? createWorktreeManager({ config: deps.config });
-  const continiaCli = deps.continiaCli ?? createContiniaCli({ config: deps.config });
+  const continiaCli =
+    deps.continiaCli ??
+    createContiniaCli({ config: deps.config, onRetry: (message) => deps.logger.warn(message) });
   const discoveredSkills =
     deps.discoveredSkills ??
     mergeSkills(
@@ -152,18 +187,6 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
     deps.testFixerPromptTemplate ?? readFileSync(TEST_FIXER_PROMPT_PATH, 'utf-8');
   const fixFindingsPromptTemplate =
     deps.fixFindingsPromptTemplate ?? readFileSync(FIX_FINDINGS_PROMPT_PATH, 'utf-8');
-  const reviewerSharedPromptTemplate =
-    deps.reviewerSharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8');
-  // Object.fromEntries types as Record<string, string>; cast is safe because
-  // the source array is REVIEW_AXES — the same union the cast widens to.
-  const reviewerAxisPromptTemplates =
-    deps.reviewerAxisPromptTemplates ??
-    Object.fromEntries(
-      REVIEW_AXES.map((axis) => [
-        axis,
-        readFileSync(REVIEWER_AXIS_PROMPT_PATHS[axis], 'utf-8'),
-      ]),
-    ) as Record<typeof REVIEW_AXES[number], string>;
   const prDescriptionTemplate =
     deps.prDescriptionTemplate ?? readFileSync(DRAFT_PR_DESCRIPTION_PROMPT_PATH, 'utf-8');
   const prMessagePromptTemplate =
@@ -204,12 +227,48 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
         discoverTestCodeunits: deps.discoverTestCodeunits,
       });
 
-  const reviewer = createReviewerStage({
+  const reviewer = createDefaultReviewerStage({
     config: deps.config,
     runner,
-    maxTurnsPerAxis: deps.config.reviewerMaxTurns,
-    sharedPromptTemplate: reviewerSharedPromptTemplate,
-    axisPromptTemplates: reviewerAxisPromptTemplates,
+    ...(deps.reviewerSharedPromptTemplate !== undefined
+      ? { sharedPromptTemplate: deps.reviewerSharedPromptTemplate }
+      : {}),
+    ...(deps.reviewerAxisPromptTemplates !== undefined
+      ? { axisPromptTemplates: deps.reviewerAxisPromptTemplates }
+      : {}),
+  });
+
+  const buildAndTest = deps.config.skipBuildTest
+    ? undefined
+    : createBuildAndTestStage({
+        config: deps.config,
+        continiaCli,
+        runner,
+        logger: deps.logger,
+        fixerPromptTemplate: testFixerPromptTemplate,
+        discoveredSkills,
+        getCurrentHeadSha: deps.getCurrentHeadSha,
+        resetWorktree: deps.resetWorktree,
+        discoverTestCodeunits: deps.discoverTestCodeunits,
+      });
+
+  const finalReview = createFinalReviewStage({
+    config: deps.config,
+    reviewer: createDefaultReviewerStage({
+      config: deps.config,
+      runner,
+      label: 'final-review',
+      ...(deps.reviewerSharedPromptTemplate !== undefined
+        ? { sharedPromptTemplate: deps.reviewerSharedPromptTemplate }
+        : {}),
+      ...(deps.reviewerAxisPromptTemplates !== undefined
+        ? { axisPromptTemplates: deps.reviewerAxisPromptTemplates }
+        : {}),
+    }),
+    fixFindings,
+    ...(buildAndTest ? { buildAndTest } : {}),
+    ...(deps.getCurrentHeadSha ? { getCurrentHeadSha: deps.getCurrentHeadSha } : {}),
+    ...(deps.resetWorktree ? { resetWorktree: deps.resetWorktree } : {}),
   });
 
   return [
@@ -220,6 +279,7 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       discoveredSkills,
       promptTemplate: analyzerPromptTemplate,
       canUseTool: deps.canUseTool,
+      fetchWiContext: deps.fetchWiContext,
     }),
     createWorktreeSetupStage({ worktreeManager, config: deps.config }),
     ...(deps.config.skipBuildTest
@@ -257,21 +317,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       getCurrentHeadSha: deps.getCurrentHeadSha,
       resetWorktree: deps.resetWorktree,
     }),
-    ...(deps.config.skipBuildTest
-      ? []
-      : [
-          createBuildAndTestStage({
-            config: deps.config,
-            continiaCli,
-            runner,
-            logger: deps.logger,
-            fixerPromptTemplate: testFixerPromptTemplate,
-            discoveredSkills,
-            getCurrentHeadSha: deps.getCurrentHeadSha,
-            resetWorktree: deps.resetWorktree,
-            discoverTestCodeunits: deps.discoverTestCodeunits,
-          }),
-        ]),
+    ...(buildAndTest ? [buildAndTest] : []),
+    // Disabled (config.finalReviewMinLines unset) it records a skip and costs nothing.
+    finalReview,
     createDraftPrCreatorStage({
       config: deps.config,
       ado: deps.ado,

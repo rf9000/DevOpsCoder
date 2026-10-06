@@ -142,6 +142,9 @@ export function buildQueryOptions<T>(
     ...new Set([...ALWAYS_DENIED_TOOLS, ...(args.disallowedTools ?? [])]),
   ];
   if (args.maxTurns !== undefined) opts.maxTurns = args.maxTurns;
+  // Omitted rather than defaulted: the SDK's own default ('high') is what an
+  // unconfigured step has always run at.
+  if (args.effort !== undefined) opts.effort = args.effort;
   if (args.cwd !== undefined) opts.cwd = args.cwd;
   if (args.canUseTool !== undefined) opts.canUseTool = args.canUseTool;
   if (args.settingSources !== undefined) opts.settingSources = args.settingSources;
@@ -166,6 +169,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
         cacheReadInputTokens: 0,
         turns: 0,
         model: args.model ?? deps.config.claudeModel,
+        ...(args.effort !== undefined ? { effort: args.effort } : {}),
       };
 
       const options = buildQueryOptions(args, deps);
@@ -206,6 +210,7 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
             `agent: $${costUsd.toFixed(4)} | ${usage.inputTokens} in ` +
               `(+${usage.cacheCreationInputTokens} cache write, ${usage.cacheReadInputTokens} cache read) ` +
               `/ ${usage.outputTokens} out | ${usage.turns} turns` +
+              (args.effort ? ` | effort ${args.effort}` : '') +
               (args.label ? ` | ${args.label}` : ''),
           );
           if (message.subtype === 'success') {

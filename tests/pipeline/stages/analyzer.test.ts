@@ -58,6 +58,7 @@ function makeMockAdo(): AdoClient {
     getWorkItemComments: async () => [],
     getWorkItemUpdates: async () => [],
     createPullRequestThread: async () => {},
+    getPullRequestStatus: async () => 'active' as const,
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},

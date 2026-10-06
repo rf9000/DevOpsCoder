@@ -21,7 +21,7 @@ import {
 } from '../../utils/al-test-discovery.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
-import { modelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 import {
@@ -200,10 +200,20 @@ export const CODER_FIXABLE_DEPLOY_CODES = new Set([
  * The first deploy row that failed for a reason the coder cannot fix, if any.
  * A failed row carrying no `code` is treated as coder-fixable — that is the
  * pre-`code` shape, and a compile error is the overwhelmingly common case.
+ *
+ * A round with any coder-fixable failure returns none: the apps deployed after
+ * it then fail `unpublished-sibling` *because* it did not publish, and blaming
+ * that cascade on the environment hides the compile error from the fixer.
+ * WI 82605 lost a run this way — `base-application` failed to compile, the
+ * test app reported it unpublished, and every round was skipped as an
+ * environment problem until the final gate failed on it. A real environment
+ * fault still surfaces in the round after the compile is fixed.
  */
 export function findEnvironmentDeployFailure(
   deploy: DeployAppResult[],
 ): DeployAppResult | undefined {
+  const failed = deploy.filter((e) => !(e.compiled && e.published));
+  if (failed.some((e) => e.code === undefined || CODER_FIXABLE_DEPLOY_CODES.has(e.code))) return undefined;
   return deploy.find(
     (e) =>
       !(e.compiled && e.published) &&
@@ -532,6 +542,34 @@ export interface RunVerificationRoundArgs {
   /** Fix attempts consumed before this round — recorded on the output. */
   attempt: number;
   signal?: AbortSignal;
+  /** Receives a line per sibling-race retry. */
+  logger?: Logger;
+  /** Test override for the sibling-race backoff. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Backoff between sibling-race redeploys. Default SIBLING_RACE_RETRY_DELAYS_MS. */
+  siblingRetryDelaysMs?: readonly number[];
+}
+
+/**
+ * Backoff for a deploy that reports a sibling this same round just published
+ * as "not published". Seen on freshly created environments: the base app's
+ * publish succeeds, and the very next app's compile is refused with
+ * `unpublished-sibling` naming it — while the identical deploy against the
+ * same, now-settled environment goes green.
+ */
+export const SIBLING_RACE_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000];
+
+/**
+ * True when a row is refused as `unpublished-sibling` for an app this round
+ * already published. The phrase is matched whole ("<app> is not published")
+ * so `Continia Banking` never matches `Continia Banking - Export`.
+ */
+export function isSiblingRace(rows: DeployAppResult[], publishedApps: ReadonlySet<string>): boolean {
+  return rows.some(
+    (r) =>
+      r.code === 'unpublished-sibling' &&
+      [...publishedApps].some((app) => String(r.error ?? '').includes(`${app} is not published`)),
+  );
 }
 
 /**
@@ -553,8 +591,21 @@ export async function runVerificationRound(
   }
 
   const deploy: DeployAppResult[] = [];
+  const published = new Set<string>();
+  const delays = args.siblingRetryDelaysMs ?? SIBLING_RACE_RETRY_DELAYS_MS;
+  const sleep = args.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   for (const appPath of appPaths) {
-    deploy.push(...(await args.continiaCli.deployApp(env.envId, appPath, callOpts)));
+    let rows = await args.continiaCli.deployApp(env.envId, appPath, callOpts);
+    for (const delay of delays) {
+      if (!isSiblingRace(rows, published) || args.signal?.aborted) break;
+      args.logger?.warn(
+        `deploy ${appPath}: an app this round just published is reported as not published (unpublished-sibling) — environment still settling, redeploying in ${Math.round(delay / 1000)}s`,
+      );
+      await sleep(delay);
+      rows = await args.continiaCli.deployApp(env.envId, appPath, callOpts);
+    }
+    for (const r of rows) if (r.compiled && r.published) published.add(r.app);
+    deploy.push(...rows);
   }
 
   // Stop before the fix loop when the deploy failed for a reason no
@@ -659,6 +710,7 @@ export async function runTestFixCall(args: RunTestFixCallArgs): Promise<void> {
         label: `test-fixer (attempt ${args.attempt} of ${args.maxAttempts})`,
         schema: coderOutputSchema,
         model: modelFor(config, 'test-fixer'),
+        effort: effortFor(config, 'test-fixer'),
         tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
         disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
         cwd: worktree.path,

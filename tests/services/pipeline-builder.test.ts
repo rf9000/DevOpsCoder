@@ -57,6 +57,7 @@ function makeAdo(): AdoClient {
     getWorkItemComments: async () => [],
     getWorkItemUpdates: async () => [],
     createPullRequestThread: async () => {},
+    getPullRequestStatus: async () => 'active' as const,
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},
@@ -132,7 +133,7 @@ function makeRecordingRunner(
 }
 
 describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
-  it('returns the 8-stage pipeline in order: analyzer → worktree-setup → env-provision → revision-loop → test-author → build-and-test → draft-pr-creator → worktree-teardown', () => {
+  it('returns the 9-stage pipeline in order: analyzer → worktree-setup → env-provision → revision-loop → test-author → build-and-test → final-review → draft-pr-creator → worktree-teardown', () => {
     const stages = buildPipeline({
       config,
       logger: createLogger(),
@@ -149,7 +150,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       prMessagePromptTemplate: 'P',
       pushBranch: mock(async () => {}),
     });
-    expect(stages).toHaveLength(8);
+    expect(stages).toHaveLength(9);
     expect(stages.map((s) => s.name)).toEqual([
       'analyzer',
       'worktree-setup',
@@ -157,6 +158,7 @@ describe('buildPipeline (Plan 5 full chain, legacy tests)', () => {
       'revision-loop',
       'test-author',
       'build-and-test',
+      'final-review',
       'draft-pr-creator',
       'worktree-teardown',
     ]);
@@ -455,6 +457,7 @@ describe('buildPipeline (Task 11 — SKIP_BUILD_TEST smoke bypass)', () => {
       'worktree-setup',
       'revision-loop',
       'test-author',
+      'final-review',
       'draft-pr-creator',
       'worktree-teardown',
     ]);
@@ -484,7 +487,7 @@ describe('buildPipeline (Task 8 — wire fix-findings + verify into revision-loo
     const stages = buildPipeline({ ...deps, config: { ...deps.config, skipBuildTest: true } });
     expect(stages.map((s) => s.name)).toEqual([
       'analyzer', 'worktree-setup', 'revision-loop', 'test-author',
-      'draft-pr-creator', 'worktree-teardown',
+      'final-review', 'draft-pr-creator', 'worktree-teardown',
     ]);
   });
 
@@ -545,7 +548,7 @@ describe('buildPipeline (Task 8 — wire fix-findings + verify into revision-loo
     const stages = buildPipeline({ ...deps, config: { ...deps.config, skipBuildTest: false } });
     expect(stages.map((s) => s.name)).toEqual([
       'analyzer', 'worktree-setup', 'env-provision', 'revision-loop', 'test-author',
-      'build-and-test', 'draft-pr-creator', 'worktree-teardown',
+      'build-and-test', 'final-review', 'draft-pr-creator', 'worktree-teardown',
     ]);
   });
 });

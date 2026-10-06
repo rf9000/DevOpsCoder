@@ -139,6 +139,8 @@ export interface ContiniaCli {
   /** Profiles published for one BC version, one per localization. */
   listProfiles(bcVersion: string, opts: ContiniaCallOpts): Promise<EnvProfile[]>;
   startEnvironment(envId: string, opts: ContiniaCallOpts): Promise<void>;
+  /** `continia env delete <id>`. Used by the experiment harness and by the closed-PR sweep (`env-cleanup.ts`). */
+  deleteEnvironment(envId: string, opts: ContiniaCallOpts): Promise<void>;
   getEnvironment(envId: string, opts: ContiniaCallOpts): Promise<EnvironmentInfo>;
   waitForRunning(
     envId: string,
@@ -161,9 +163,36 @@ export interface ContiniaCliDeps {
   config: AppConfig;
   /** Test override; default wraps Bun.spawn. */
   exec?: ExecFn;
-  /** Test override for waitForRunning's poll delay. */
+  /** Test override for waitForRunning's poll delay and the transient-retry backoff. */
   sleep?: (ms: number) => Promise<void>;
+  /** Backoff between retries of a transiently failed call. Default TRANSIENT_RETRY_DELAYS_MS. */
+  retryDelaysMs?: readonly number[];
+  /** Receives one line per retry, so a slow stage is explained in the log. */
+  onRetry?: (message: string) => void;
 }
+
+/**
+ * DemoPortal faults that say nothing about the call or the code: an HTTP
+ * timeout inside the CLI, a 5xx from the gateway, a dropped socket. Seen on
+ * 2026-10-02 against freshly booted and just-woken environments — `apps.json`
+ * timing out after 120000ms during `deps install`, and every symbol fetch
+ * answering `503 Service Temporarily Unavailable` — while the same calls
+ * against an environment that had been up ten minutes succeeded.
+ */
+export const TRANSIENT_CLI_ERROR =
+  /timed out|50[234]|Service (Temporarily )?Unavailable|Bad Gateway|Gateway Time-?out|ECONNRESET|ETIMEDOUT|socket hang up/i;
+
+/**
+ * A deploy row refused because `--unpublish-dependents` tried to uninstall a
+ * dependent that is published but not installed. Nothing was compiled or
+ * published, so the deploy is safe to repeat without the sweep.
+ */
+export function isSweepNotInstalled(row: DeployAppResult): boolean {
+  return row.code === 'unpublish-sweep-failed' && /is not installed/i.test(String(row.error ?? ''));
+}
+
+/** Backoff for transient retries: long enough for a waking environment to start serving. */
+export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000, 120_000];
 
 // Lenient schemas: unknown CLI fields must never break us — the exact JSON
 // field names are confirmed against the real exe on the first smoke run.
@@ -337,7 +366,46 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
   const exec = deps.exec ?? defaultExec;
   const sleep = deps.sleep ?? defaultSleep;
+  const retryDelaysMs = deps.retryDelaysMs ?? TRANSIENT_RETRY_DELAYS_MS;
   const { config } = deps;
+
+  /**
+   * Retry a call whose failure matched `TRANSIENT_CLI_ERROR`. Only wrapped
+   * around calls that are safe to repeat — reads, `deps install`/`download`
+   * (idempotent by design) and a deploy that never got past symbol fetch.
+   * Never around `env create` (a retry would make a second environment) or
+   * `test run` (a timed-out test job may still be running on the env).
+   */
+  async function withTransientRetry<T>(
+    what: string,
+    opts: ContiniaCallOpts,
+    call: () => Promise<T>,
+    isTransientResult?: (value: T) => string | undefined,
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      let reason: string | undefined;
+      let value: T | undefined;
+      let error: unknown;
+      try {
+        value = await call();
+        reason = isTransientResult?.(value);
+        if (reason === undefined) return value;
+      } catch (err) {
+        if (!(err instanceof ContiniaCliError) || !TRANSIENT_CLI_ERROR.test(err.message)) throw err;
+        error = err;
+        reason = err.message;
+      }
+      const delay = retryDelaysMs[attempt];
+      if (delay === undefined || opts.signal?.aborted) {
+        if (error !== undefined) throw error;
+        return value as T;
+      }
+      deps.onRetry?.(
+        `continia ${what}: transient failure (attempt ${attempt + 1} of ${retryDelaysMs.length + 1}), retrying in ${Math.round(delay / 1000)}s :: ${reason.slice(0, 300)}`,
+      );
+      await sleep(delay);
+    }
+  }
 
   function resolveExe(worktreePath: string): string {
     return isAbsolute(config.continiaCliPath)
@@ -505,17 +573,26 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
       assertZeroExit(args, result);
     },
 
-    async getEnvironment(envId, opts) {
-      const args = ['env', 'get', envId, '--json'];
+    async deleteEnvironment(envId, opts) {
+      const args = ['env', 'delete', envId];
       const result = await run(args, opts);
       assertZeroExit(args, result);
-      return toEnvironmentInfo(args, parseJson(args, result), result);
+    },
+
+    async getEnvironment(envId, opts) {
+      const args = ['env', 'get', envId, '--json'];
+      return withTransientRetry(`env get ${envId}`, opts, async () => {
+        const result = await run(args, opts);
+        assertZeroExit(args, result);
+        return toEnvironmentInfo(args, parseJson(args, result), result);
+      });
     },
 
     async waitForRunning(envId, opts) {
       const pollIntervalMs = opts.pollIntervalMs ?? 10_000;
       const maxWaitMs = opts.maxWaitMs ?? 600_000;
       let waitedMs = 0;
+      let startRequested = false;
       // First check is immediate; the poll delay accrues between checks.
       for (;;) {
         if (opts.signal?.aborted) {
@@ -529,6 +606,14 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         }
         const env = await this.getEnvironment(envId, opts);
         if (env.status === 'Running') return env;
+        // DemoPortal auto-stops an idle environment, and a long stage (a
+        // 100-turn test-author, or a machine that slept) is idle time. Polling
+        // a Stopped environment waits out the whole budget for nothing, so ask
+        // for a start once and keep polling.
+        if (env.status === 'Stopped' && !startRequested) {
+          startRequested = true;
+          await this.startEnvironment(envId, opts);
+        }
         if (TERMINAL_ENV_STATUSES.has(env.status)) {
           throw new ContiniaCliError(
             `environment ${envId} is in terminal status ${env.status} and will never reach Running`,
@@ -553,7 +638,9 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     },
 
     async installDependencies(envId, appPathRel, opts) {
-      const raw = await runJson(['deps', 'install', envId, appPathRel, '--json'], opts);
+      const raw = await withTransientRetry(`deps install ${appPathRel}`, opts, () =>
+        runJson(['deps', 'install', envId, appPathRel, '--json'], opts),
+      );
       const parsed = depsInstallSchema.parse(raw ?? {});
       return {
         skippedCount: parsed.skipped.length,
@@ -562,85 +649,134 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     },
 
     async installAppById(envId, appId, opts) {
-      await runJson(['deps', 'install-by-id', envId, appId, '--json'], opts);
+      await withTransientRetry(`deps install-by-id ${appId}`, opts, () =>
+        runJson(['deps', 'install-by-id', envId, appId, '--json'], opts),
+      );
     },
 
     async downloadSymbols(envId, appPathRel, opts) {
-      await runJson(['deps', 'download', envId, appPathRel, '--json'], opts);
+      await withTransientRetry(`deps download ${appPathRel}`, opts, () =>
+        runJson(['deps', 'download', envId, appPathRel, '--json'], opts),
+      );
     },
 
     async deployApp(envId, appPathRel, opts) {
-      // Invocation contract per the current continia-deploy skill: naming one
-      // app path is what scopes the run — deploy discovers siblings but only
-      // builds the app named unless --with-deps is passed, which we
-      // deliberately never do (it recompiles dependency apps from source —
-      // slow, and it fails when their own deps aren't staged). --allow-downgrade
-      // lets a branch build (e.g. 29.0.0.0) replace a higher CI baseline, which
-      // BC otherwise refuses (conflict: "higher-version-installed").
-      //
-      // --workspace-root is deliberately NOT passed. Two reasons: the CLI
-      // resolves the positional appPath *against* workspace-root rather than
-      // against cwd, so the same relative path in both slots is joined onto
-      // itself (`permission-sets/permission-sets` -> "No app.json found"); and
-      // scoping discovery to a single app hides the sibling apps the
-      // unpublished-dependency gate needs to see. The app dir is passed
-      // absolute so the invocation does not depend on cwd.
-      const appPathAbs = isAbsolute(appPathRel)
-        ? appPathRel
-        : resolve(opts.worktreePath, appPathRel);
-      const args = ['deploy', envId, appPathAbs, '--allow-downgrade', '--json'];
+      const deployOnce = async (unpublishDependents: boolean): Promise<DeployAppResult[]> => {
+        // Invocation contract per the current continia-deploy skill: naming one
+        // app path is what scopes the run — deploy discovers siblings but only
+        // builds the app named unless --with-deps is passed, which we
+        // deliberately never do (it recompiles dependency apps from source —
+        // slow, and it fails when their own deps aren't staged). --allow-downgrade
+        // lets a branch build (e.g. 29.0.0.0) replace a higher CI baseline, which
+        // BC otherwise refuses (conflict: "higher-version-installed").
+        //
+        // --workspace-root is deliberately NOT passed. Two reasons: the CLI
+        // resolves the positional appPath *against* workspace-root rather than
+        // against cwd, so the same relative path in both slots is joined onto
+        // itself (`permission-sets/permission-sets` -> "No app.json found"); and
+        // scoping discovery to a single app hides the sibling apps the
+        // unpublished-dependency gate needs to see. The app dir is passed
+        // absolute so the invocation does not depend on cwd.
+        const appPathAbs = isAbsolute(appPathRel)
+          ? appPathRel
+          : resolve(opts.worktreePath, appPathRel);
+        // --ruleset pins the rules the team builds with (a gitignored
+        // `.cli-ruleset.json` copied in by the worktree overlay). It applies to
+        // the named app only, which is every app here: each is deployed as its
+        // own target.
+        const rulesetArgs = config.continiaRuleset
+          ? ['--ruleset', isAbsolute(config.continiaRuleset) ? config.continiaRuleset : resolve(opts.worktreePath, config.continiaRuleset)]
+          : [];
+        const syncArgs = config.continiaSyncMode ? ['--sync-mode', config.continiaSyncMode] : [];
+        // Unpublish installed workspace apps that depend on this one before
+        // publishing it. The round redeploys them right after (dependency
+        // order), so nothing is lost — and BC no longer recompiles a stale
+        // test app against a changed signature mid-publish.
+        const unpublishArgs = unpublishDependents ? ['--unpublish-dependents'] : [];
+        const args = ['deploy', envId, appPathAbs, ...rulesetArgs, ...syncArgs, ...unpublishArgs, '--allow-downgrade', '--json'];
 
-      // The CLI exits 1 when a deploy FAILS but still writes the failure JSON
-      // to stdout — the per-app rows carry `code` and alc's full output in
-      // `error`, which is the only copy of why the build broke. Parse stdout
-      // first (same contract as runTests): a red deploy is a verification
-      // result the fix loop can act on, not an infra error. Only fall back to
-      // the exit-code error path when there is no usable JSON at all.
-      const result = await run(args, opts);
-      let raw: unknown;
-      try {
-        raw = JSON.parse(result.stdout);
-      } catch {
+        // The CLI exits 1 when a deploy FAILS but still writes the failure JSON
+        // to stdout — the per-app rows carry `code` and alc's full output in
+        // `error`, which is the only copy of why the build broke. Parse stdout
+        // first (same contract as runTests): a red deploy is a verification
+        // result the fix loop can act on, not an infra error. Only fall back to
+        // the exit-code error path when there is no usable JSON at all.
+        const result = await run(args, opts);
+        let raw: unknown;
+        try {
+          raw = JSON.parse(result.stdout);
+        } catch {
+          assertZeroExit(args, result);
+          throw new ContiniaCliError(
+            `continia ${args.join(' ')} returned invalid JSON: ${result.stdout.slice(0, 500)}`,
+            result.argv,
+            result.exitCode,
+            result.stdout,
+            result.stderr,
+          );
+        }
+
+        const rows = deployResultSchema.safeParse(raw);
+        if (rows.success) return rows.data as DeployAppResult[];
+
+        // A run that never reached the per-app loop: one object, not an array.
+        // Normalize it to a single failed row so callers have one shape to read.
+        const runLevel = deployRunErrorSchema.safeParse(raw);
+        if (runLevel.success) {
+          return [
+            {
+              app: appPathRel,
+              compiled: false,
+              published: false,
+              error:
+                runLevel.data.error?.message ??
+                result.stderr.trim() ??
+                'deploy failed without a message',
+              code: runLevel.data.error?.code,
+            },
+          ];
+        }
+
         assertZeroExit(args, result);
         throw new ContiniaCliError(
-          `continia ${args.join(' ')} returned invalid JSON: ${result.stdout.slice(0, 500)}`,
+          `continia ${args.join(' ')} returned an unexpected deploy-result shape ` +
+            `(refusing to guess pass/fail): ${result.stdout.slice(0, 500)}`,
           result.argv,
           result.exitCode,
           result.stdout,
           result.stderr,
         );
+      };
+
+      // A deploy whose only failures are symbol fetches the environment
+      // answered with a transient error never compiled or published anything,
+      // so repeating it is safe. Any other red row is a real result.
+      const deployWithRetry = (unpublishDependents: boolean) =>
+        withTransientRetry(`deploy ${appPathRel}`, opts, () => deployOnce(unpublishDependents), (rows) => {
+          const failed = rows.filter((r) => !(r.compiled && r.published));
+          const transient =
+            failed.length > 0 &&
+            failed.every(
+              (r) => r.code === 'symbol-fetch-failed' && TRANSIENT_CLI_ERROR.test(String(r.error ?? '')),
+            );
+          return transient ? String(failed[0]?.error ?? 'symbol-fetch-failed') : undefined;
+        });
+
+      const unpublishDependents = config.continiaUnpublishDependents !== false;
+      const rows = await deployWithRetry(unpublishDependents);
+      // The dependent sweep uninstalls every workspace app that depends on this
+      // one, and the CLI aborts the whole deploy when one of them is published
+      // but not installed (seen on fresh environments: "The extension Continia
+      // Approval is not installed"). An uninstalled dependent cannot be
+      // recompiled mid-publish, so the sweep had nothing to protect against —
+      // deploy again without it.
+      if (unpublishDependents && rows.some(isSweepNotInstalled)) {
+        deps.onRetry?.(
+          `continia deploy ${appPathRel}: dependent sweep failed on an app that is not installed — redeploying without --unpublish-dependents`,
+        );
+        return deployWithRetry(false);
       }
-
-      const rows = deployResultSchema.safeParse(raw);
-      if (rows.success) return rows.data as DeployAppResult[];
-
-      // A run that never reached the per-app loop: one object, not an array.
-      // Normalize it to a single failed row so callers have one shape to read.
-      const runLevel = deployRunErrorSchema.safeParse(raw);
-      if (runLevel.success) {
-        return [
-          {
-            app: appPathRel,
-            compiled: false,
-            published: false,
-            error:
-              runLevel.data.error?.message ??
-              result.stderr.trim() ??
-              'deploy failed without a message',
-            code: runLevel.data.error?.code,
-          },
-        ];
-      }
-
-      assertZeroExit(args, result);
-      throw new ContiniaCliError(
-        `continia ${args.join(' ')} returned an unexpected deploy-result shape ` +
-          `(refusing to guess pass/fail): ${result.stdout.slice(0, 500)}`,
-        result.argv,
-        result.exitCode,
-        result.stdout,
-        result.stderr,
-      );
+      return rows;
     },
 
     async runTests(envId, codeunitId, opts) {

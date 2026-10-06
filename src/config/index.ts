@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AppConfig } from '../types/index.ts';
+import type { AppConfig, EffortLevel } from '../types/index.ts';
 
 /** '1' | 'true' | 'yes' | 'on' (case-insensitive) → true; blank/unset → default. */
 const boolFlag = (defaultValue: boolean) =>
@@ -11,7 +11,37 @@ const boolFlag = (defaultValue: boolean) =>
       return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
     });
 
+/** The SDK's `EffortLevel`. Blank reads as unset (the SDK default). */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const effortVar = z
+  .string()
+  .optional()
+  .transform((v) => (v === undefined || v.trim() === '' ? undefined : v.trim().toLowerCase()))
+  .pipe(z.enum(EFFORT_LEVELS).optional());
+
+/**
+ * Env-var suffix for each reviewer axis. Kept as a literal here rather than
+ * imported from the reviewer stage so config does not depend on a stage
+ * module; a test pins it to `REVIEW_AXES`.
+ */
+export const REVIEWER_AXIS_ENV_SUFFIX = {
+  'safety-correctness': 'SAFETY_CORRECTNESS',
+  'performance': 'PERFORMANCE',
+  'code-structure': 'CODE_STRUCTURE',
+  'naming-style': 'NAMING_STYLE',
+  'security': 'SECURITY',
+  'integration': 'INTEGRATION',
+} as const;
+
+const axisVars = Object.fromEntries(
+  Object.values(REVIEWER_AXIS_ENV_SUFFIX).flatMap((suffix) => [
+    [`CLAUDE_MODEL_REVIEWER_${suffix}`, z.string().optional()],
+    [`CLAUDE_EFFORT_REVIEWER_${suffix}`, effortVar],
+  ]),
+) as Record<string, z.ZodTypeAny>;
+
 const envSchema = z.object({
+  ...axisVars,
   AZURE_DEVOPS_PAT: z.string().min(1, 'AZURE_DEVOPS_PAT is required'),
   AZURE_DEVOPS_ORG: z.string().min(1, 'AZURE_DEVOPS_ORG is required'),
   AZURE_DEVOPS_PROJECT: z.string().min(1, 'AZURE_DEVOPS_PROJECT is required'),
@@ -82,12 +112,59 @@ const envSchema = z.object({
   // The PR-message step (nested in draft-pr-creator) reads one diff and writes
   // a title plus a handful of bullets — a cheap model is usually the right one.
   CLAUDE_MODEL_PR_MESSAGE: z.string().optional(),
+  // Per-step reasoning effort, passed to the SDK as `effort`. Unset → the SDK
+  // default. Same step set and fallback order as the model vars, with
+  // CLAUDE_EFFORT as the global fallback.
+  CLAUDE_EFFORT: effortVar,
+  CLAUDE_EFFORT_PLANNING: effortVar,
+  CLAUDE_EFFORT_ANALYZER: effortVar,
+  CLAUDE_EFFORT_CODER_PLAN: effortVar,
+  CLAUDE_EFFORT_CODER: effortVar,
+  CLAUDE_EFFORT_REVIEWER: effortVar,
+  CLAUDE_EFFORT_TEST_AUTHOR_PLAN: effortVar,
+  CLAUDE_EFFORT_TEST_AUTHOR: effortVar,
+  CLAUDE_EFFORT_TEST_FIXER: effortVar,
+  CLAUDE_EFFORT_FIX_FINDINGS: effortVar,
+  CLAUDE_EFFORT_PR_MESSAGE: effortVar,
+  // Replay a WI on fixed code: the worktree branches from this ref instead of
+  // origin/main. Used by the experiment harness; unset in production.
+  WORKTREE_BASE_REF: z.string().optional(),
   PLAN_MAX_TURNS: z.coerce.number().int().positive().default(30),
   STAGE_TIMEOUT_MS_PLAN: z.coerce.number().int().positive().default(600_000),
   STATE_DIR: z.string().default('.state'),
   LOG_DIR: z.string().default('logs'),
   ASSIGNED_TO_FILTER: z.string().optional(),
   SKILLS_SOURCE_DIR: z.string().optional(),
+  // Orchestrator-owned file tree(s) copied into every worktree (e.g. the
+  // Banking .cli-ruleset.json the team builds with). Comma-separated; applied
+  // in order, so a later dir overrides a file from an earlier one.
+  WORKTREE_OVERLAY_DIR: z.string().optional(),
+  // Worktree-relative ruleset passed to every `continia deploy` as --ruleset.
+  CONTINIA_RULESET: z.string().optional(),
+  // `continia deploy --sync-mode`. Unset → the CLI default (Synchronize), which
+  // is what production wants: a schema-breaking change should fail, not be
+  // forced through. The experiment harness sets ForceSync so an old base can
+  // publish over the newer build the dependency install brought along.
+  // `continia deploy --unpublish-dependents`. On by default: without it a
+  // change to a signature the installed test app calls makes BC recompile that
+  // test app during the base app's publish, which fails and rolls the publish
+  // back — WI 82605 lost two ~$30 runs to it at the final gate.
+  CONTINIA_UNPUBLISH_DEPENDENTS: boolFlag(true),
+  // One fresh six-axis review of the final diff before the draft PR. On WI
+  // 82605 a replay referee found three blocking/critical bugs the in-loop
+  // reviewer had approved; small WIs never showed anything above minor, so it
+  // runs only above a diff size.
+  FINAL_REVIEW: boolFlag(true),
+  FINAL_REVIEW_MIN_LINES: z.coerce.number().int().nonnegative().default(300),
+  STAGE_TIMEOUT_MS_FINAL_REVIEW: z.coerce.number().int().positive().optional(),
+  // Delete a WI's environment once its PR is completed or abandoned. The
+  // account has a 50-environment quota and DemoPortal's expiry is ~14 days.
+  DELETE_ENV_ON_PR_CLOSE: boolFlag(true),
+  CONTINIA_SYNC_MODE: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? undefined : v.trim()))
+    .pipe(z.enum(['Synchronize', 'ForceSync', 'Recreate']).optional()),
   CLAUDE_CODE_EXECUTABLE_PATH: z.string().optional(),
   COST_LOG_PATH: z.string().optional(),
 });
@@ -162,6 +239,33 @@ export function loadConfig(
   setStep('test-fixer', model(p.CLAUDE_MODEL_TEST_FIXER));
   setStep('pr-message', model(p.CLAUDE_MODEL_PR_MESSAGE));
 
+  // `p` is typed off the spread `axisVars` too loosely to index by template
+  // string, so the axis vars are read through this view.
+  const raw = p as unknown as Record<string, string | undefined>;
+  for (const [axis, suffix] of Object.entries(REVIEWER_AXIS_ENV_SUFFIX)) {
+    setStep(`reviewer:${axis}`, model(raw[`CLAUDE_MODEL_REVIEWER_${suffix}`]));
+  }
+
+  // Same shape as stepModel. Effort has a global fallback (CLAUDE_EFFORT) that
+  // effortFor applies, so only explicit per-step values land here.
+  const planningEffort = p.CLAUDE_EFFORT_PLANNING;
+  const stepEffort: Record<string, EffortLevel> = {};
+  const setEffort = (step: string, value: EffortLevel | undefined): void => {
+    if (value !== undefined) stepEffort[step] = value;
+  };
+  setEffort('analyzer', p.CLAUDE_EFFORT_ANALYZER);
+  setEffort('coder-plan', p.CLAUDE_EFFORT_CODER_PLAN ?? planningEffort);
+  setEffort('coder', p.CLAUDE_EFFORT_CODER);
+  setEffort('fix-findings', p.CLAUDE_EFFORT_FIX_FINDINGS);
+  setEffort('reviewer', p.CLAUDE_EFFORT_REVIEWER);
+  setEffort('test-author-plan', p.CLAUDE_EFFORT_TEST_AUTHOR_PLAN ?? planningEffort);
+  setEffort('test-author', p.CLAUDE_EFFORT_TEST_AUTHOR);
+  setEffort('test-fixer', p.CLAUDE_EFFORT_TEST_FIXER);
+  setEffort('pr-message', p.CLAUDE_EFFORT_PR_MESSAGE);
+  for (const [axis, suffix] of Object.entries(REVIEWER_AXIS_ENV_SUFFIX)) {
+    setEffort(`reviewer:${axis}`, raw[`CLAUDE_EFFORT_REVIEWER_${suffix}`] as EffortLevel | undefined);
+  }
+
   // A configured plan step adds one read-only call to the stage it fronts, so
   // the stage's wall-clock budget has to grow with it or the split would start
   // timing out runs that used to fit.
@@ -221,11 +325,28 @@ export function loadConfig(
         (p.MAX_TEST_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
           p.MAX_TEST_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER,
       'test-author': p.STAGE_TIMEOUT_MS_TEST_AUTHOR + testPlanBudget,
+      // One review, at most one fix call, and up to two gate runs (the re-check
+      // after the fix, and the restore after a revert).
+      'final-review':
+        p.STAGE_TIMEOUT_MS_FINAL_REVIEW ??
+        p.STAGE_TIMEOUT_MS_REVIEWER +
+          fixFindingsBudget +
+          (p.SKIP_BUILD_TEST
+            ? 0
+            : 2 *
+              (p.STAGE_TIMEOUT_MS_BUILD_AND_TEST ??
+                (p.MAX_TEST_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
+                  p.MAX_TEST_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER)),
       'draft-pr-creator': p.STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR,
       'worktree-teardown': p.STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN,
     },
     claudeModel: p.CLAUDE_MODEL,
     stepModel,
+    ...(p.CLAUDE_EFFORT !== undefined ? { claudeEffort: p.CLAUDE_EFFORT } : {}),
+    stepEffort,
+    ...(model(p.WORKTREE_BASE_REF) !== undefined
+      ? { worktreeBaseRef: model(p.WORKTREE_BASE_REF) }
+      : {}),
     planMaxTurns: p.PLAN_MAX_TURNS,
     stateDir: p.STATE_DIR,
     logDir: p.LOG_DIR,
@@ -244,6 +365,14 @@ export function loadConfig(
     maxInLoopFixAttempts: p.MAX_INLOOP_FIX_ATTEMPTS,
     continiaTestTimeoutS: p.CONTINIA_TEST_TIMEOUT_S,
     skillsSourceDir: p.SKILLS_SOURCE_DIR,
+    ...(splitPaths(p.WORKTREE_OVERLAY_DIR ?? '').length > 0
+      ? { worktreeOverlayDirs: splitPaths(p.WORKTREE_OVERLAY_DIR ?? '') }
+      : {}),
+    ...(model(p.CONTINIA_RULESET) !== undefined ? { continiaRuleset: model(p.CONTINIA_RULESET) } : {}),
+    ...(p.CONTINIA_SYNC_MODE !== undefined ? { continiaSyncMode: p.CONTINIA_SYNC_MODE } : {}),
+    continiaUnpublishDependents: p.CONTINIA_UNPUBLISH_DEPENDENTS,
+    ...(p.FINAL_REVIEW ? { finalReviewMinLines: p.FINAL_REVIEW_MIN_LINES } : {}),
+    deleteEnvOnPrClose: p.DELETE_ENV_ON_PR_CLOSE,
     claudeCodeExecutablePath: p.CLAUDE_CODE_EXECUTABLE_PATH,
     skipBuildTest: p.SKIP_BUILD_TEST,
     testSelection: p.TEST_SELECTION,

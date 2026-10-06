@@ -1,0 +1,8 @@
+[
+  {
+    "wiId": 82205,
+    "baseSha": "<commit on main before the human fix landed>",
+    "commentsBefore": "2026-09-20T00:00:00Z",
+    "note": "drop comments from the resolution onward so the fix cannot leak into the prompt"
+  }
+]

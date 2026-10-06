@@ -6,6 +6,7 @@ import { join } from 'path';
 import {
   runPollCycle,
   createAbortFlag,
+  startWatcher,
 } from '../../src/services/watcher.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
@@ -62,6 +63,7 @@ function makeAdo(ids: number[]): AdoClient {
     getWorkItemComments: mock(async () => []),
     getWorkItemUpdates: mock(async () => []),
     createPullRequestThread: mock(async () => {}),
+    getPullRequestStatus: async () => 'active' as const,
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),
@@ -586,5 +588,34 @@ describe('runPollCycle', () => {
     expect(line).toBeDefined();
     expect(line).toContain('closed-state');
     expect(line).not.toContain('cost:');
+  });
+});
+
+
+describe('startWatcher environment sweep', () => {
+  it('sweeps after each cycle and survives a sweep that throws', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'watcher-sweep-'));
+    try {
+      const abortFlag = createAbortFlag();
+      const logger = makeCaptureLogger();
+      let sweeps = 0;
+      await startWatcher({
+        config: baseConfig,
+        logger,
+        ado: makeAdo([]),
+        store: new PipelineStateStore(dir),
+        processor: makeProcessor(async (id) => ({ kind: 'skipped', workItemId: id, reason: 'x' })),
+        abortFlag,
+        sweepEnvironments: async () => {
+          sweeps += 1;
+          abortFlag.aborted = true;
+          throw new Error('DemoPortal down');
+        },
+      });
+      expect(sweeps).toBe(1);
+      expect(logger.errorLines.some((l) => l.includes('environment sweep threw'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

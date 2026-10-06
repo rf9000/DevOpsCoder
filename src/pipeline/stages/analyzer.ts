@@ -11,7 +11,7 @@ import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AppConfig } from '../../types/index.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { STRUCTURED_OUTPUT_DENIED_TOOLS } from './_stage-helpers.ts';
-import { modelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
 
@@ -129,6 +129,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
         label: 'analyzer',
         schema: analyzerOutputSchema,
         model: modelFor(deps.config, 'analyzer'),
+        effort: effortFor(deps.config, 'analyzer'),
         tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill'],
         disallowedTools: ['Edit', 'Write', 'NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
         cwd: deps.config.targetRepoPath,

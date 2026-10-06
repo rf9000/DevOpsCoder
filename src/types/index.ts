@@ -2,6 +2,9 @@ import type { TestSelectionMode } from '../utils/test-selection.ts';
 
 export type { TestSelectionMode };
 
+/** The Agent SDK's reasoning-effort level (`Options.effort`). */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface AppConfig {
   orgUrl: string;
   project: string;
@@ -34,6 +37,18 @@ export interface AppConfig {
    * `modelFor()` / `planModelFor()`, never directly.
    */
   stepModel?: Record<string, string>;
+  /** Global reasoning-effort default (`CLAUDE_EFFORT`). Unset → the SDK default. */
+  claudeEffort?: EffortLevel;
+  /**
+   * Per-step effort overrides, same keys as `stepModel` (including
+   * `reviewer:<axis>`). Read it through `effortFor()`, never directly.
+   */
+  stepEffort?: Record<string, EffortLevel>;
+  /**
+   * Ref the worktree branches from instead of `origin/main`. Set only by the
+   * experiment harness, to replay a work item on the code it was filed against.
+   */
+  worktreeBaseRef?: string;
   /** Turn budget for a plan call. Unset → DEFAULT_PLAN_MAX_TURNS. */
   planMaxTurns?: number;
   stateDir: string;
@@ -70,6 +85,25 @@ export interface AppConfig {
    * When set, worktree-setup symlinks each skill into the worktree's .claude/.
    * Unset → only the target repo's own committed skills are available. */
   skillsSourceDir?: string;
+  /**
+   * Dirs whose files worktree-setup copies into every worktree, in order,
+   * keeping relative paths. For build files the repo does not track. Never a tracked
+   * file — see applyWorktreeOverlay.
+   */
+  worktreeOverlayDirs?: string[];
+  /** Worktree-relative ruleset passed to `continia deploy --ruleset`. Unset → the CLI's auto-discovery. */
+  continiaRuleset?: string;
+  /** `continia deploy --sync-mode`. Unset → CLI default (Synchronize). ForceSync is experiment-only. */
+  continiaSyncMode?: 'Synchronize' | 'ForceSync' | 'Recreate';
+  /** `continia deploy --unpublish-dependents`. Unset is treated as true. */
+  continiaUnpublishDependents?: boolean;
+  /**
+   * Smallest final diff (insertions + deletions) that gets a final review.
+   * 0 reviews every WI; undefined disables the stage (`FINAL_REVIEW=false`).
+   */
+  finalReviewMinLines?: number;
+  /** Delete a WI's BC environment once its draft PR is completed or abandoned. Unset → false. */
+  deleteEnvOnPrClose?: boolean;
   /** Absolute path to the Claude Code executable, forwarded to the Agent SDK as
    * `pathToClaudeCodeExecutable`. Unset → the SDK probes for its own bundled
    * native binary. Under Bun on a glibc image that probe picks the *-musl
@@ -190,6 +224,12 @@ export interface StepSpend {
   turns: number;
   /** Distinct models this step ran on, in first-seen order. */
   models: string[];
+  /**
+   * Distinct reasoning-effort levels this step ran at, first-seen order.
+   * Absent when every call left effort to the SDK default (and on records
+   * written before effort was tracked).
+   */
+  efforts?: string[];
 }
 
 /**
@@ -209,6 +249,8 @@ export interface AgentUsage {
   cacheReadInputTokens: number;
   turns: number;
   model: string;
+  /** Effort the call ran at; undefined means the SDK default. */
+  effort?: EffortLevel;
 }
 
 /**
@@ -587,6 +629,45 @@ export interface ReviewerOutput {
    */
   byAxis?: Record<string, Finding[]>;
 }
+
+/**
+ * One revision-loop review round, kept in `state.outputs.reviewHistory`.
+ * `outputs.reviewer` holds only the latest round, so without this nothing
+ * records which findings held the loop for rounds 2 and 3.
+ */
+export interface ReviewRoundRecord {
+  round: number;
+  approved: boolean;
+  counts: Record<FindingSeverity, number>;
+  /** The blocking/critical findings — the ones that decided the round. */
+  blockers: Array<Pick<Finding, 'severity' | 'axis' | 'file' | 'line' | 'title'>>;
+}
+
+/**
+ * Outcome of the `final-review` stage: one fresh six-axis review of the whole
+ * final diff, after the tests exist and the gate is green.
+ *
+ * `fix`:
+ * - `none`: nothing blocking or critical was found.
+ * - `verified`: fix-findings ran on the blockers and the gate went green again.
+ * - `reverted`: the fix broke the gate (or threw), so the branch was reset to
+ *   the last verified commit. The findings stand and go to the PR.
+ * - `skipped`: blockers found, but no verification gate is configured
+ *   (SKIP_BUILD_TEST), so no unverified fix is attempted.
+ */
+export interface FinalReviewOutput {
+  ran: boolean;
+  skipReason?: string;
+  diffLines: number;
+  findings: Finding[];
+  fix: 'none' | 'verified' | 'reverted' | 'skipped';
+  /** The fixer's self-report on each blocker, when a fix ran. */
+  findingsAddressed?: FindingAddressed[];
+  /** Why a fix was reverted. */
+  fixError?: string;
+}
+
+export type PullRequestStatus = 'active' | 'completed' | 'abandoned' | 'notSet';
 
 export interface DraftPrOutput {
   id: number;

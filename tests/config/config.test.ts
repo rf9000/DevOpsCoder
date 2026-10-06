@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { loadConfig } from '../../src/config/index.ts';
+import { loadConfig, REVIEWER_AXIS_ENV_SUFFIX } from '../../src/config/index.ts';
+import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import {
   DEFAULT_PLAN_MAX_TURNS,
+  effortFor,
   modelFor,
   planMaxTurns,
   planModelFor,
@@ -509,5 +511,89 @@ describe('Plan 14 config', () => {
   it('still honours an explicit STAGE_TIMEOUT_MS_REVISION_LOOP pin', () => {
     const cfg = loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_REVISION_LOOP: '77' });
     expect(cfg.stageTimeoutMs['revision-loop']).toBe(77);
+  });
+});
+
+describe('per-step effort and per-axis reviewer overrides', () => {
+  it('no CLAUDE_EFFORT_* set → every step resolves to undefined (SDK default)', () => {
+    const config = loadConfig(validEnv);
+    expect(config.stepEffort).toEqual({});
+    expect(config.claudeEffort).toBeUndefined();
+    for (const step of ['analyzer', 'coder', 'reviewer', 'test-fixer', 'pr-message'] as const) {
+      expect(effortFor(config, step)).toBeUndefined();
+    }
+  });
+
+  it('step effort wins over CLAUDE_EFFORT; blank reads as unset; case-insensitive', () => {
+    const config = loadConfig({
+      ...validEnv,
+      CLAUDE_EFFORT: 'high',
+      CLAUDE_EFFORT_CODER: 'Medium',
+      CLAUDE_EFFORT_TEST_FIXER: '  ',
+    });
+    expect(effortFor(config, 'coder')).toBe('medium');
+    expect(effortFor(config, 'test-fixer')).toBe('high');
+    expect(effortFor(config, 'analyzer')).toBe('high');
+  });
+
+  it('CLAUDE_EFFORT_PLANNING covers both plan steps; a specific plan var wins', () => {
+    const config = loadConfig({
+      ...validEnv,
+      CLAUDE_EFFORT_PLANNING: 'low',
+      CLAUDE_EFFORT_TEST_AUTHOR_PLAN: 'max',
+    });
+    expect(effortFor(config, 'coder-plan')).toBe('low');
+    expect(effortFor(config, 'test-author-plan')).toBe('max');
+    expect(effortFor(config, 'coder')).toBeUndefined();
+  });
+
+  it('rejects an unknown effort level', () => {
+    expect(() => loadConfig({ ...validEnv, CLAUDE_EFFORT_CODER: 'turbo' })).toThrow(
+      /CLAUDE_EFFORT_CODER/,
+    );
+  });
+
+  it('reviewer axis model/effort fall back to reviewer, then the global default', () => {
+    const config = loadConfig({
+      ...validEnv,
+      CLAUDE_MODEL: 'claude-opus-5',
+      CLAUDE_MODEL_REVIEWER: 'claude-sonnet-5',
+      CLAUDE_MODEL_REVIEWER_NAMING_STYLE: 'claude-haiku-4-5',
+      CLAUDE_EFFORT_REVIEWER_PERFORMANCE: 'low',
+    });
+    expect(modelFor(config, 'reviewer', 'naming-style')).toBe('claude-haiku-4-5');
+    expect(modelFor(config, 'reviewer', 'security')).toBe('claude-sonnet-5');
+    expect(modelFor(config, 'reviewer')).toBe('claude-sonnet-5');
+    expect(effortFor(config, 'reviewer', 'performance')).toBe('low');
+    expect(effortFor(config, 'reviewer', 'security')).toBeUndefined();
+  });
+
+  it('REVIEWER_AXIS_ENV_SUFFIX covers exactly REVIEW_AXES', () => {
+    expect(Object.keys(REVIEWER_AXIS_ENV_SUFFIX).sort()).toEqual([...REVIEW_AXES].sort());
+  });
+
+  it('WORKTREE_BASE_REF is unset by default and trimmed when set', () => {
+    expect(loadConfig(validEnv).worktreeBaseRef).toBeUndefined();
+    expect(loadConfig({ ...validEnv, WORKTREE_BASE_REF: ' abc123 ' }).worktreeBaseRef).toBe('abc123');
+  });
+});
+
+
+describe('final review and environment cleanup config', () => {
+  it('enables the final review above 300 lines and the closed-PR sweep by default', () => {
+    const config = loadConfig(validEnv);
+    expect(config.finalReviewMinLines).toBe(300);
+    expect(config.deleteEnvOnPrClose).toBe(true);
+    expect(config.stageTimeoutMs['final-review']).toBeGreaterThan(config.stageTimeoutMs['build-and-test']!);
+  });
+
+  it('FINAL_REVIEW=false disables the stage; FINAL_REVIEW_MIN_LINES=0 reviews every WI', () => {
+    expect(loadConfig({ ...validEnv, FINAL_REVIEW: 'false' }).finalReviewMinLines).toBeUndefined();
+    expect(loadConfig({ ...validEnv, FINAL_REVIEW_MIN_LINES: '0' }).finalReviewMinLines).toBe(0);
+    expect(loadConfig({ ...validEnv, DELETE_ENV_ON_PR_CLOSE: 'false' }).deleteEnvOnPrClose).toBe(false);
+  });
+
+  it('pins the final-review timeout with STAGE_TIMEOUT_MS_FINAL_REVIEW', () => {
+    expect(loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_FINAL_REVIEW: '1234' }).stageTimeoutMs['final-review']).toBe(1234);
   });
 });

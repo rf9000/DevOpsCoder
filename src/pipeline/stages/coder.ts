@@ -23,7 +23,7 @@ import {
   STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from './_stage-helpers.ts';
 import { CODER_BASH_ALLOW, CODER_BASH_DENY } from './coder-policy.ts';
-import { modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
 import { renderPlanSection, runPlanStep } from './_plan.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
@@ -215,6 +215,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
           step: 'coder-plan',
           label: 'coder:plan',
           model: planModel,
+          effort: effortFor(deps.config, 'coder-plan'),
           maxTurns: planMaxTurns(deps.config),
           prompt: buildCoderUserPrompt(
             analyzer,
@@ -253,6 +254,7 @@ export function createCoderStage(deps: CoderStageDeps): Stage {
             label: `coder (attempt ${attempt + 1})`,
             schema: coderOutputSchema,
             model: modelFor(deps.config, 'coder'),
+            effort: effortFor(deps.config, 'coder'),
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
             disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
             cwd: worktree.path,

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AgentRunner, AgentUsage } from '../agent-stage.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
-import type { PrMessageOutput, WorktreeContext } from '../../types/index.ts';
+import type { EffortLevel, PrMessageOutput, WorktreeContext } from '../../types/index.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
@@ -88,6 +88,8 @@ export function buildPrMessagePrompt(args: {
 export interface RunPrMessageStepArgs {
   runner: AgentRunner;
   model: string;
+  /** Reasoning effort; undefined → SDK default. */
+  effort?: EffortLevel;
   /** Contents of `src/prompts/pr-message.md`. */
   systemPromptAppend: string;
   wiCtx: WorkItemContext;
@@ -126,6 +128,7 @@ export async function runPrMessageStep(
         label: 'pr-message',
         schema: prMessageOutputSchema,
         model: args.model,
+        effort: args.effort,
         tools: [...PR_MESSAGE_TOOLS],
         disallowedTools: [...PR_MESSAGE_DISALLOWED_TOOLS],
         cwd: args.worktree.path,

@@ -1,0 +1,56 @@
+{
+    "name": "Continia Software AppSource ruleset",
+    "description": "These rules must be respected by the AL code written in the company",
+    "rules": [
+        {
+            "id": "AS0081",
+            "action": "None",
+            "justification": "InternalsVisibleTo should not be used as a security feature."
+        },
+        {
+            "id": "AS0092",
+            "action": "None",
+            "justification": "The app.json file must specify an Azure Application Insights resource."
+        },
+        {
+            "id": "AS0073",
+            "action": "Error",
+            "justification": "Validating that obsolete tags are specified is important"
+        },
+        {
+            "id": "AS0075",
+            "action": "Error",
+            "justification": "Validating that obsolete reasons are specified is important"
+        },
+        {
+            "id": "AS0076",
+            "action": "Error",
+            "justification": "Validating that obsolete tags are formated properly is important"
+        },
+        {
+            "id": "AS0089",
+            "action": "Error",
+            "justification": "Objects that can be referenced and which have been published must not be deleted."
+        },
+        {
+            "id": "AS0094",
+            "action": "Error",
+            "justification": "Permission Sets should not be defined in XML files."
+        },
+        {
+            "id": "AS0103",
+            "action": "Error",
+            "justification": "Table definitions must have a matching permission set."
+        },
+        {
+            "id": "AS0113",
+            "action": "Error",
+            "justification": "Permission set extensions should not include wildcard permissions."
+        },
+        {
+            "id": "AS0126",
+            "action": "Error",
+            "justification": "InternalsVisibleTo should not specifying a different publisher name than the one of this extension."
+        }
+    ]
+}

@@ -142,6 +142,14 @@ describe('renderCostReport', () => {
     expect(row).toBe('| coder | $8.2100 | 3 | claude-opus-5 | 412,033 / 38,120 | 0 / 0 | 0% | 96 |');
   });
 
+  it('appends the effort to the model column when one was set', () => {
+    const md = renderCostReport({
+      ...base,
+      perStage: { coder: spend({ usd: 1, models: ['claude-sonnet-5'], efforts: ['medium'] }) },
+    });
+    expect(md).toContain('| claude-sonnet-5 @ medium |');
+  });
+
   it('joins multiple models for a step that ran on more than one', () => {
     const out = renderCostReport({
       ...base,

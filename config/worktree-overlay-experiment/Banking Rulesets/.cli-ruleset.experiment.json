@@ -1,0 +1,17 @@
+{
+    "name": "Experiment ruleset",
+    "description": "The team ruleset (.cli-ruleset.json) plus relaxations that only the A/B experiment harness may use. Never used by production runs.",
+    "includedRuleSets": [
+        {
+            "action": "Default",
+            "path": "./.cli-ruleset.json"
+        }
+    ],
+    "rules": [
+        {
+            "id": "AA0210",
+            "action": "Info",
+            "justification": "[Experiment only] Main has SetRange on \"Base Rate Provider\" (CurrExchCatalogTests:578) with no key on that field. Production keeps it an error and main is being fixed; relaxed here so A/B runs do not pay to repair it."
+        }
+    ]
+}

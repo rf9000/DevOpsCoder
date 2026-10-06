@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AgentRunner, AgentUsage } from '../agent-stage.ts';
 import { AgentOutputParseError } from '../../services/claude-agent-runner.ts';
-import type { PlanOutput } from '../../types/index.ts';
+import type { EffortLevel, PlanOutput } from '../../types/index.ts';
 import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
 import type { PlanStep } from '../../utils/model-selection.ts';
@@ -52,6 +52,8 @@ export interface RunPlanStepArgs {
   /** Label for the runner's cost line, e.g. 'coder:plan'. */
   label: string;
   model: string;
+  /** Reasoning effort; undefined → SDK default. */
+  effort?: EffortLevel;
   maxTurns: number;
   /** Same context prompt the write call gets, minus the plan section. */
   prompt: string;
@@ -88,6 +90,7 @@ export async function runPlanStep(args: RunPlanStepArgs): Promise<PlanStepResult
         label: args.label,
         schema: planOutputSchema,
         model: args.model,
+        effort: args.effort,
         tools: [...PLAN_TOOLS],
         disallowedTools: [...PLAN_DISALLOWED_TOOLS],
         cwd: args.worktreePath,

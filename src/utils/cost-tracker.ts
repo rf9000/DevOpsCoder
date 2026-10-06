@@ -28,7 +28,7 @@ function emptySpend(): StepSpend {
 }
 
 function cloneSpend(s: StepSpend): StepSpend {
-  return { ...s, models: [...s.models] };
+  return { ...s, models: [...s.models], ...(s.efforts ? { efforts: [...s.efforts] } : {}) };
 }
 
 /**
@@ -65,6 +65,7 @@ export function normalizePerStage(raw: unknown): Record<string, StepSpend> {
           typeof e.cacheReadInputTokens === 'number' ? e.cacheReadInputTokens : 0,
         turns: typeof e.turns === 'number' ? e.turns : 0,
         models: Array.isArray(e.models) ? [...e.models] : [],
+        ...(Array.isArray(e.efforts) ? { efforts: [...e.efforts] } : {}),
       };
     }
   }
@@ -108,6 +109,12 @@ export function createCostTracker(state: PipelineState): CostTracker {
         spend.turns += usage.turns;
         if (usage.model && !spend.models.includes(usage.model)) {
           spend.models.push(usage.model);
+        }
+        // Created lazily: a step that never set an effort ran at the SDK
+        // default, and an absent list says exactly that.
+        if (usage.effort) {
+          const efforts = (spend.efforts ??= []);
+          if (!efforts.includes(usage.effort)) efforts.push(usage.effort);
         }
       }
       c.perStage[step] = spend;

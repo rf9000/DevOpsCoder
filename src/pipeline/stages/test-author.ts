@@ -21,7 +21,7 @@ import {
   defaultResetWorktree,
   STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from './_stage-helpers.ts';
-import { modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
+import { effortFor, modelFor, planMaxTurns, planModelFor } from '../../utils/model-selection.ts';
 import { renderPlanSection, runPlanStep } from './_plan.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
 import { createToolUsageTracker } from '../../utils/tool-usage-tracker.ts';
@@ -205,6 +205,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
           step: 'test-author-plan',
           label: 'test-author:plan',
           model: planModel,
+          effort: effortFor(deps.config, 'test-author-plan'),
           maxTurns: planMaxTurns(deps.config),
           prompt: buildTestAuthorUserPrompt(
             analyzer,
@@ -246,6 +247,7 @@ export function createTestAuthorStage(deps: TestAuthorStageDeps): Stage {
             label: 'test-author',
             schema: testAuthorOutputSchema,
             model: modelFor(deps.config, 'test-author'),
+            effort: effortFor(deps.config, 'test-author'),
             tools: ['Read', 'Grep', 'Glob', 'Bash', 'Skill', 'Edit', 'Write'],
             disallowedTools: ['NotebookEdit', ...STRUCTURED_OUTPUT_DENIED_TOOLS],
             cwd: worktree.path,
