@@ -201,6 +201,36 @@ describe('createContiniaCli', () => {
       expect(calls[0]!.argv).not.toContain('--unpublish-dependents');
     });
 
+    it('redeploys without --unpublish-dependents when the sweep hits a dependent that is not installed', async () => {
+      const sweepFailed = JSON.stringify({
+        success: false,
+        error: {
+          code: 'unpublish-sweep-failed',
+          message: 'Automation API dependent sweep failed: Uninstall failed for Continia Approval: The extension Continia Approval is not installed.',
+        },
+      });
+      const { cli, calls } = makeCli([
+        { exitCode: 1, stdout: sweepFailed, stderr: '' },
+        ok('[{"app":"A","compiled":true,"published":true}]'),
+      ]);
+      const result = await cli.deployApp('env-1', 'Core/Cloud', opts);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]!.argv).toContain('--unpublish-dependents');
+      expect(calls[1]!.argv).not.toContain('--unpublish-dependents');
+      expect(result).toEqual([{ app: 'A', compiled: true, published: true }]);
+    });
+
+    it('keeps any other sweep failure as the result', async () => {
+      const sweepFailed = JSON.stringify({
+        success: false,
+        error: { code: 'unpublish-sweep-failed', message: 'Uninstall failed: HTTP 500' },
+      });
+      const { cli, calls } = makeCli([{ exitCode: 1, stdout: sweepFailed, stderr: '' }]);
+      const result = await cli.deployApp('env-1', 'Core/Cloud', opts);
+      expect(calls).toHaveLength(1);
+      expect(result[0]!.code).toBe('unpublish-sweep-failed');
+    });
+
     it('passes --sync-mode only when continiaSyncMode is set', async () => {
       const { cli, calls } = makeCli(
         [ok('[{"app":"A","compiled":true,"published":true}]')],

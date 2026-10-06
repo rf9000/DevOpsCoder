@@ -182,6 +182,15 @@ export interface ContiniaCliDeps {
 export const TRANSIENT_CLI_ERROR =
   /timed out|50[234]|Service (Temporarily )?Unavailable|Bad Gateway|Gateway Time-?out|ECONNRESET|ETIMEDOUT|socket hang up/i;
 
+/**
+ * A deploy row refused because `--unpublish-dependents` tried to uninstall a
+ * dependent that is published but not installed. Nothing was compiled or
+ * published, so the deploy is safe to repeat without the sweep.
+ */
+export function isSweepNotInstalled(row: DeployAppResult): boolean {
+  return row.code === 'unpublish-sweep-failed' && /is not installed/i.test(String(row.error ?? ''));
+}
+
 /** Backoff for transient retries: long enough for a waking environment to start serving. */
 export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000, 120_000];
 
@@ -652,7 +661,7 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     },
 
     async deployApp(envId, appPathRel, opts) {
-      const deployOnce = async (): Promise<DeployAppResult[]> => {
+      const deployOnce = async (unpublishDependents: boolean): Promise<DeployAppResult[]> => {
         // Invocation contract per the current continia-deploy skill: naming one
         // app path is what scopes the run — deploy discovers siblings but only
         // builds the app named unless --with-deps is passed, which we
@@ -683,7 +692,7 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         // publishing it. The round redeploys them right after (dependency
         // order), so nothing is lost — and BC no longer recompiles a stale
         // test app against a changed signature mid-publish.
-        const unpublishArgs = config.continiaUnpublishDependents !== false ? ['--unpublish-dependents'] : [];
+        const unpublishArgs = unpublishDependents ? ['--unpublish-dependents'] : [];
         const args = ['deploy', envId, appPathAbs, ...rulesetArgs, ...syncArgs, ...unpublishArgs, '--allow-downgrade', '--json'];
 
         // The CLI exits 1 when a deploy FAILS but still writes the failure JSON
@@ -742,15 +751,32 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
       // A deploy whose only failures are symbol fetches the environment
       // answered with a transient error never compiled or published anything,
       // so repeating it is safe. Any other red row is a real result.
-      return withTransientRetry(`deploy ${appPathRel}`, opts, deployOnce, (rows) => {
-        const failed = rows.filter((r) => !(r.compiled && r.published));
-        const transient =
-          failed.length > 0 &&
-          failed.every(
-            (r) => r.code === 'symbol-fetch-failed' && TRANSIENT_CLI_ERROR.test(String(r.error ?? '')),
-          );
-        return transient ? String(failed[0]?.error ?? 'symbol-fetch-failed') : undefined;
-      });
+      const deployWithRetry = (unpublishDependents: boolean) =>
+        withTransientRetry(`deploy ${appPathRel}`, opts, () => deployOnce(unpublishDependents), (rows) => {
+          const failed = rows.filter((r) => !(r.compiled && r.published));
+          const transient =
+            failed.length > 0 &&
+            failed.every(
+              (r) => r.code === 'symbol-fetch-failed' && TRANSIENT_CLI_ERROR.test(String(r.error ?? '')),
+            );
+          return transient ? String(failed[0]?.error ?? 'symbol-fetch-failed') : undefined;
+        });
+
+      const unpublishDependents = config.continiaUnpublishDependents !== false;
+      const rows = await deployWithRetry(unpublishDependents);
+      // The dependent sweep uninstalls every workspace app that depends on this
+      // one, and the CLI aborts the whole deploy when one of them is published
+      // but not installed (seen on fresh environments: "The extension Continia
+      // Approval is not installed"). An uninstalled dependent cannot be
+      // recompiled mid-publish, so the sweep had nothing to protect against —
+      // deploy again without it.
+      if (unpublishDependents && rows.some(isSweepNotInstalled)) {
+        deps.onRetry?.(
+          `continia deploy ${appPathRel}: dependent sweep failed on an app that is not installed — redeploying without --unpublish-dependents`,
+        );
+        return deployWithRetry(false);
+      }
+      return rows;
     },
 
     async runTests(envId, codeunitId, opts) {
