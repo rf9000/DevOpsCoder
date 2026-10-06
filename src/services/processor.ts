@@ -530,7 +530,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
   // One choke point for the spend log: every terminal outcome funnels through
   // the wrapper below, so the ledger cannot drift from the outcomes the watcher
   // reports. `skipped` is excluded — nothing ran, so there is nothing to bill.
-  function recordSpend(outcome: ProcessOutcome, wiLog?: WiLog): void {
+  function recordSpend(outcome: ProcessOutcome, wiLog?: WiLog, title?: string): void {
     if (outcome.kind === 'skipped') return;
     const persisted = store.load(outcome.workItemId);
     const cost = persisted?.outputs.cost as PipelineCostInfo | undefined;
@@ -545,6 +545,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
     ledger?.record({
       at,
       workItemId: outcome.workItemId,
+      ...(title ? { title } : {}),
       outcome: outcome.kind,
       costUsd: outcome.costUsd,
       ...pr,
@@ -569,7 +570,9 @@ export function createProcessor(deps: ProcessorDeps): Processor {
   // Built per work item so that every line the pipeline logs is teed into that
   // work item's own file. Shadowing `logger` here is what threads the WI-scoped
   // logger through every call site inside without passing it by hand.
-  const makeInner = (logger: Logger) => ({
+  // `seen` carries the WI title back out for the ledger; it stays off
+  // ProcessOutcome so the outcome shape the watcher consumes is unchanged.
+  const makeInner = (logger: Logger, seen: { title?: string }) => ({
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
       if (abortFlag.aborted) {
         return { kind: 'skipped', workItemId, reason: 'aborted' };
@@ -590,7 +593,8 @@ export function createProcessor(deps: ProcessorDeps): Processor {
         return { kind: 'skipped', workItemId, reason: 'closed-state' };
       }
 
-      const title = workItem.fields['System.Title'] ?? `wi-${workItemId}`;
+      seen.title = workItem.fields['System.Title'];
+      const title = seen.title ?? `wi-${workItemId}`;
       const state =
         store.load(workItemId) ?? createInitialState(workItemId, slugify(title));
 
@@ -792,8 +796,9 @@ export function createProcessor(deps: ProcessorDeps): Processor {
   return {
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
       const wiLog = wiLogs?.open(workItemId);
-      const outcome = await makeInner(wiLog?.logger ?? logger).processWorkItem(workItemId);
-      recordSpend(outcome, wiLog);
+      const seen: { title?: string } = {};
+      const outcome = await makeInner(wiLog?.logger ?? logger, seen).processWorkItem(workItemId);
+      recordSpend(outcome, wiLog, seen.title);
       return outcome;
     },
   };

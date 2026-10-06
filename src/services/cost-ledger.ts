@@ -8,6 +8,8 @@ export interface CostRecord {
   /** ISO timestamp of when the run finished. */
   at: string;
   workItemId: number;
+  /** Work item System.Title, when it was fetched — makes the ledger readable without ADO. */
+  title?: string;
   /** completed | failed | rejected | paused — what the pipeline did with it. */
   outcome: string;
   /** Cumulative USD spent across every LLM stage of this run. */

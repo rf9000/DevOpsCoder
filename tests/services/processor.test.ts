@@ -433,6 +433,76 @@ describe('createProcessor', () => {
       expect(outcome.kind).toBe('skipped');
       expect(records).toHaveLength(0);
     });
+
+    it('records the work item title so the ledger reads without ADO', async () => {
+      const records: CostRecord[] = [];
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ workItemId: 101, title: 'Fix login', outcome: 'completed' });
+    });
+
+    it('records a paused run with its title', async () => {
+      const records: CostRecord[] = [];
+      const pauseStage: Stage = {
+        name: 'await-human',
+        canRun: () => true,
+        execute: async (state) => {
+          state.outputs.cost = { total: 1.25, perStage: { analyzer: 1.25 } };
+          state.currentStage = 'await-human';
+          throw new PipelinePauseError('waiting for human input');
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [pauseStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: 'paused', title: 'Fix login', costUsd: 1.25 });
+    });
+
+    it('records a rejected run with its title', async () => {
+      const records: CostRecord[] = [];
+      const rejectStage: Stage = {
+        name: 'analyzer',
+        canRun: () => true,
+        execute: async () => {
+          throw new PipelineRejectError({ reasons: ['no AC'], summary: 'WI is not ready' });
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [rejectStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: 'rejected', title: 'Fix login', costUsd: 0 });
+    });
   });
 
   it('suppresses ADO writes when dryRun is true', async () => {
