@@ -200,10 +200,20 @@ export const CODER_FIXABLE_DEPLOY_CODES = new Set([
  * The first deploy row that failed for a reason the coder cannot fix, if any.
  * A failed row carrying no `code` is treated as coder-fixable — that is the
  * pre-`code` shape, and a compile error is the overwhelmingly common case.
+ *
+ * A round with any coder-fixable failure returns none: the apps deployed after
+ * it then fail `unpublished-sibling` *because* it did not publish, and blaming
+ * that cascade on the environment hides the compile error from the fixer.
+ * WI 82605 lost a run this way — `base-application` failed to compile, the
+ * test app reported it unpublished, and every round was skipped as an
+ * environment problem until the final gate failed on it. A real environment
+ * fault still surfaces in the round after the compile is fixed.
  */
 export function findEnvironmentDeployFailure(
   deploy: DeployAppResult[],
 ): DeployAppResult | undefined {
+  const failed = deploy.filter((e) => !(e.compiled && e.published));
+  if (failed.some((e) => e.code === undefined || CODER_FIXABLE_DEPLOY_CODES.has(e.code))) return undefined;
   return deploy.find(
     (e) =>
       !(e.compiled && e.published) &&

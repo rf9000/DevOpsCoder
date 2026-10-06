@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
 import {
+  findEnvironmentDeployFailure,
   isSiblingRace,
   prepareVerification,
   runVerificationRound,
@@ -297,5 +298,28 @@ describe('isSiblingRace', () => {
     const row = { app: 'T', compiled: false, published: false, code: 'unpublished-sibling', error: 'Continia Software_Continia Banking - Export is not published' };
     expect(isSiblingRace([row], new Set(['Continia Software_Continia Banking']))).toBe(false);
     expect(isSiblingRace([row], new Set(['Continia Software_Continia Banking - Export']))).toBe(true);
+  });
+});
+
+describe('findEnvironmentDeployFailure', () => {
+  const sibling = {
+    app: 'Banking - Test',
+    compiled: false,
+    published: false,
+    code: 'unpublished-sibling',
+    error: 'Continia Banking is not published',
+  };
+
+  it('blames the environment when no failure is coder-fixable', () => {
+    expect(findEnvironmentDeployFailure([{ app: 'Banking', compiled: true, published: true }, sibling])).toBe(sibling);
+  });
+
+  it('returns none when a compile failure explains the unpublished sibling', () => {
+    const compileFailed = { app: 'Banking', compiled: false, published: false, code: 'compile-failed', error: 'AL0118' };
+    expect(findEnvironmentDeployFailure([compileFailed, sibling])).toBeUndefined();
+  });
+
+  it('treats a failed row without a code as coder-fixable', () => {
+    expect(findEnvironmentDeployFailure([{ app: 'Banking', compiled: false, published: false }, sibling])).toBeUndefined();
   });
 });
