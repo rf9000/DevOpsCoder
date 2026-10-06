@@ -15,6 +15,12 @@ export interface WatcherDeps {
   store: PipelineStateStore;
   processor: Processor;
   abortFlag: AbortFlag;
+  /**
+   * Runs after every poll cycle: deletes environments whose PR has closed
+   * (`sweepClosedPrEnvironments`). Absent when there is nothing to sweep
+   * (dry runs, SKIP_BUILD_TEST).
+   */
+  sweepEnvironments?: () => Promise<number>;
 }
 
 export function createAbortFlag(): AbortFlag {
@@ -117,6 +123,14 @@ export async function startWatcher(deps: WatcherDeps): Promise<void> {
       );
     } catch (err) {
       logger.error('poll cycle threw, continuing', err);
+    }
+    if (deps.sweepEnvironments && !abortFlag.aborted) {
+      try {
+        const deleted = await deps.sweepEnvironments();
+        if (deleted > 0) logger.info(`environment sweep: deleted ${deleted} environment(s) of closed PRs`);
+      } catch (err) {
+        logger.error('environment sweep threw, continuing', err);
+      }
     }
     if (abortFlag.aborted) break;
     await sleepInterruptible(config.pollIntervalMinutes * 60_000, abortFlag);

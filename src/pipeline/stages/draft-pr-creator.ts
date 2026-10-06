@@ -8,6 +8,8 @@ import type {
   TestAuthorOutput,
   WorktreeContext,
   ReviewerOutput,
+  FinalReviewOutput,
+  Finding,
 } from '../../types/index.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AdoClient } from '../../sdk/azure-devops-client.ts';
@@ -122,12 +124,44 @@ function bullet(text: string): string {
   return `- ${text.trim().replace(/^[-*]\s+/, '')}`;
 }
 
+/**
+ * The final review's blocking/critical/major findings and what became of each.
+ * Blockers the fix did not verifiably resolve are the point of the section: a
+ * human must look at them before this draft is marked ready.
+ */
+export function renderFinalReviewSection(finalReview: FinalReviewOutput | undefined): string {
+  if (!finalReview?.ran) return '';
+  const shown = finalReview.findings.filter(
+    (f) => f.severity === 'blocking' || f.severity === 'critical' || f.severity === 'major',
+  );
+  if (shown.length === 0) return '';
+  const addressed = finalReview.findingsAddressed ?? [];
+  const statusOf = (f: Finding): string => {
+    if (f.severity === 'major') return '';
+    if (finalReview.fix === 'reverted') return ' — **open** (fix attempt broke the build and was reverted)';
+    if (finalReview.fix === 'skipped') return ' — **open** (not fixed: no verification gate)';
+    const a = addressed.find((x) => x.file === f.file && (x.line === undefined || f.line === undefined || x.line === f.line));
+    if (finalReview.fix === 'verified' && a?.action === 'fixed') return ' — fixed by the agent, gate green';
+    if (a?.action === 'declined') return ` — **open** (agent declined: ${a.reason})`;
+    return ' — **open**';
+  };
+  const list = shown
+    .map((f) => {
+      const loc = f.line !== undefined ? `${f.file}:${f.line}` : f.file;
+      return `- ${f.severity} — ${loc}: ${f.title}${statusOf(f)}`;
+    })
+    .join('\n');
+  return `\n**Final review** (whole diff, after tests)\n\n${list}\n`;
+}
+
 export function buildPrDescription(args: {
   wiCtx: WorkItemContext;
   analyzer: AnalyzerOutput;
   coder: CoderOutput;
   testAuthor: TestAuthorOutput | undefined;
   reviewer: ReviewerOutput | undefined;
+  /** The final full-diff review, when it ran. */
+  finalReview?: FinalReviewOutput;
   worktree: WorktreeContext;
   /**
    * Bullets from the `pr-message` step, written from the branch diff. The
@@ -192,6 +226,7 @@ export function buildPrDescription(args: {
       .join('\n');
     reviewerSection = `\n${heading}\n\n${list}\n`;
   }
+  reviewerSection += renderFinalReviewSection(args.finalReview);
 
   // Test-environment block in the exact shape the `fw-create-pr` skill defines,
   // so a DevopsCoder PR reads like a hand-made one. Username and password are
@@ -211,7 +246,11 @@ export function buildPrDescription(args: {
       }
     }
     lines.push('');
-    lines.push('_The environment auto-deletes ~10 days after creation._');
+    lines.push(
+      config.deleteEnvOnPrClose
+        ? '_The environment is deleted when this PR is completed or abandoned._'
+        : '_The environment auto-deletes ~14 days after creation._',
+    );
     testEnvironmentSection = lines.join('\n');
   }
 
@@ -336,6 +375,9 @@ export function createDraftPrCreatorStage(deps: DraftPrCreatorStageDeps): Stage 
         worktree,
         environment,
         ...(prMessage ? { prMessage } : {}),
+        ...(state.outputs.finalReview
+          ? { finalReview: state.outputs.finalReview as FinalReviewOutput }
+          : {}),
         ...(environmentUser ? { environmentUser } : {}),
         template: deps.prDescriptionTemplate,
         config: deps.config,

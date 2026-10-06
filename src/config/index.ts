@@ -150,6 +150,16 @@ const envSchema = z.object({
   // test app during the base app's publish, which fails and rolls the publish
   // back — WI 82605 lost two ~$30 runs to it at the final gate.
   CONTINIA_UNPUBLISH_DEPENDENTS: boolFlag(true),
+  // One fresh six-axis review of the final diff before the draft PR. On WI
+  // 82605 a replay referee found three blocking/critical bugs the in-loop
+  // reviewer had approved; small WIs never showed anything above minor, so it
+  // runs only above a diff size.
+  FINAL_REVIEW: boolFlag(true),
+  FINAL_REVIEW_MIN_LINES: z.coerce.number().int().nonnegative().default(300),
+  STAGE_TIMEOUT_MS_FINAL_REVIEW: z.coerce.number().int().positive().optional(),
+  // Delete a WI's environment once its PR is completed or abandoned. The
+  // account has a 50-environment quota and DemoPortal's expiry is ~14 days.
+  DELETE_ENV_ON_PR_CLOSE: boolFlag(true),
   CONTINIA_SYNC_MODE: z
     .string()
     .optional()
@@ -315,6 +325,18 @@ export function loadConfig(
         (p.MAX_TEST_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
           p.MAX_TEST_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER,
       'test-author': p.STAGE_TIMEOUT_MS_TEST_AUTHOR + testPlanBudget,
+      // One review, at most one fix call, and up to two gate runs (the re-check
+      // after the fix, and the restore after a revert).
+      'final-review':
+        p.STAGE_TIMEOUT_MS_FINAL_REVIEW ??
+        p.STAGE_TIMEOUT_MS_REVIEWER +
+          fixFindingsBudget +
+          (p.SKIP_BUILD_TEST
+            ? 0
+            : 2 *
+              (p.STAGE_TIMEOUT_MS_BUILD_AND_TEST ??
+                (p.MAX_TEST_FIX_ATTEMPTS + 1) * p.STAGE_TIMEOUT_MS_VERIFY_PASS +
+                  p.MAX_TEST_FIX_ATTEMPTS * p.STAGE_TIMEOUT_MS_CODER)),
       'draft-pr-creator': p.STAGE_TIMEOUT_MS_DRAFT_PR_CREATOR,
       'worktree-teardown': p.STAGE_TIMEOUT_MS_WORKTREE_TEARDOWN,
     },
@@ -349,6 +371,8 @@ export function loadConfig(
     ...(model(p.CONTINIA_RULESET) !== undefined ? { continiaRuleset: model(p.CONTINIA_RULESET) } : {}),
     ...(p.CONTINIA_SYNC_MODE !== undefined ? { continiaSyncMode: p.CONTINIA_SYNC_MODE } : {}),
     continiaUnpublishDependents: p.CONTINIA_UNPUBLISH_DEPENDENTS,
+    ...(p.FINAL_REVIEW ? { finalReviewMinLines: p.FINAL_REVIEW_MIN_LINES } : {}),
+    deleteEnvOnPrClose: p.DELETE_ENV_ON_PR_CLOSE,
     claudeCodeExecutablePath: p.CLAUDE_CODE_EXECUTABLE_PATH,
     skipBuildTest: p.SKIP_BUILD_TEST,
     testSelection: p.TEST_SELECTION,

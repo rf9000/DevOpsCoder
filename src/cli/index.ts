@@ -7,6 +7,8 @@ import { createProcessor } from '../services/processor.ts';
 import { createWiLogFactory } from '../services/wi-log.ts';
 import { createCostLedger } from '../services/cost-ledger.ts';
 import { createWorktreeManager } from '../services/worktree-manager.ts';
+import { createContiniaCli } from '../services/continia-cli.ts';
+import { sweepClosedPrEnvironments } from '../services/env-cleanup.ts';
 import {
   createAbortFlag,
   runPollCycle,
@@ -86,7 +88,20 @@ function buildDeps() {
     ...(ledger ? { ledger } : {}),
     ...(wiLogs ? { wiLogs } : {}),
   });
-  return { config, logger, ado, store, processor, abortFlag };
+  // Deleting environments is a write: never in a dry run, and there are none
+  // to delete when the verification gate is off.
+  const sweepEnvironments =
+    config.dryRun || config.skipBuildTest || !config.deleteEnvOnPrClose
+      ? undefined
+      : () =>
+          sweepClosedPrEnvironments({
+            config,
+            logger,
+            ado,
+            store,
+            continiaCli: createContiniaCli({ config, onRetry: (message) => logger.warn(message) }),
+          });
+  return { config, logger, ado, store, processor, abortFlag, ...(sweepEnvironments ? { sweepEnvironments } : {}) };
 }
 
 async function main(): Promise<void> {
@@ -114,7 +129,8 @@ async function main(): Promise<void> {
     case 'run-once': {
       const deps = buildDeps();
       const stats = await runPollCycle(deps);
-      console.log(JSON.stringify(stats, null, 2));
+      const environmentsDeleted = deps.sweepEnvironments ? await deps.sweepEnvironments() : 0;
+      console.log(JSON.stringify({ ...stats, environmentsDeleted }, null, 2));
       return;
     }
 

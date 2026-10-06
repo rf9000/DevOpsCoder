@@ -30,6 +30,7 @@ import { createTestAuthorStage } from '../pipeline/stages/test-author.ts';
 import { createReviewerStage, REVIEW_AXES } from '../pipeline/stages/reviewer.ts';
 import { revisionLoop } from '../pipeline/revision-loop.ts';
 import { createDraftPrCreatorStage } from '../pipeline/stages/draft-pr-creator.ts';
+import { createFinalReviewStage } from '../pipeline/stages/final-review.ts';
 import { createWorktreeTeardownStage } from '../pipeline/stages/worktree-teardown.ts';
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
@@ -112,6 +113,7 @@ export function createDefaultReviewerStage(deps: {
   runner: AgentRunner;
   sharedPromptTemplate?: string;
   axisPromptTemplates?: Record<typeof REVIEW_AXES[number], string>;
+  label?: 'reviewer' | 'final-review';
 }): Stage {
   // Object.fromEntries types as Record<string, string>; cast is safe because
   // the source array is REVIEW_AXES — the same union the cast widens to.
@@ -127,12 +129,13 @@ export function createDefaultReviewerStage(deps: {
     sharedPromptTemplate:
       deps.sharedPromptTemplate ?? readFileSync(REVIEWER_SHARED_PROMPT_PATH, 'utf-8'),
     axisPromptTemplates,
+    ...(deps.label ? { label: deps.label } : {}),
   });
 }
 
 /**
  * Builds the full Plan 5 stage chain:
- *   [analyzer, worktree-setup, revisionLoop(coder | fix-findings, verify, reviewer, onExhausted), test-author, draft-pr-creator, worktree-teardown]
+ *   [analyzer, worktree-setup, env-provision, revisionLoop(coder | fix-findings, verify, reviewer, onExhausted), test-author, build-and-test, final-review, draft-pr-creator, worktree-teardown]
  *
  * On exhaustion of the revision loop (reviewer rejected `maxRevisions` times),
  * onExhausted throws, the orchestrator records a terminalError, and the
@@ -235,6 +238,39 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       : {}),
   });
 
+  const buildAndTest = deps.config.skipBuildTest
+    ? undefined
+    : createBuildAndTestStage({
+        config: deps.config,
+        continiaCli,
+        runner,
+        logger: deps.logger,
+        fixerPromptTemplate: testFixerPromptTemplate,
+        discoveredSkills,
+        getCurrentHeadSha: deps.getCurrentHeadSha,
+        resetWorktree: deps.resetWorktree,
+        discoverTestCodeunits: deps.discoverTestCodeunits,
+      });
+
+  const finalReview = createFinalReviewStage({
+    config: deps.config,
+    reviewer: createDefaultReviewerStage({
+      config: deps.config,
+      runner,
+      label: 'final-review',
+      ...(deps.reviewerSharedPromptTemplate !== undefined
+        ? { sharedPromptTemplate: deps.reviewerSharedPromptTemplate }
+        : {}),
+      ...(deps.reviewerAxisPromptTemplates !== undefined
+        ? { axisPromptTemplates: deps.reviewerAxisPromptTemplates }
+        : {}),
+    }),
+    fixFindings,
+    ...(buildAndTest ? { buildAndTest } : {}),
+    ...(deps.getCurrentHeadSha ? { getCurrentHeadSha: deps.getCurrentHeadSha } : {}),
+    ...(deps.resetWorktree ? { resetWorktree: deps.resetWorktree } : {}),
+  });
+
   return [
     createAnalyzerStage({
       config: deps.config,
@@ -281,21 +317,9 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       getCurrentHeadSha: deps.getCurrentHeadSha,
       resetWorktree: deps.resetWorktree,
     }),
-    ...(deps.config.skipBuildTest
-      ? []
-      : [
-          createBuildAndTestStage({
-            config: deps.config,
-            continiaCli,
-            runner,
-            logger: deps.logger,
-            fixerPromptTemplate: testFixerPromptTemplate,
-            discoveredSkills,
-            getCurrentHeadSha: deps.getCurrentHeadSha,
-            resetWorktree: deps.resetWorktree,
-            discoverTestCodeunits: deps.discoverTestCodeunits,
-          }),
-        ]),
+    ...(buildAndTest ? [buildAndTest] : []),
+    // Disabled (config.finalReviewMinLines unset) it records a skip and costs nothing.
+    finalReview,
     createDraftPrCreatorStage({
       config: deps.config,
       ado: deps.ado,

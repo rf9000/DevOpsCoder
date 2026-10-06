@@ -3,6 +3,7 @@ import type {
   CreatePullRequestArgs,
   CreatePullRequestThreadArgs,
   PullRequest,
+  PullRequestStatus,
   WiqlQueryResponse,
   WorkItem,
   WorkItemComment,
@@ -32,6 +33,12 @@ export interface AdoClient {
     args: CreatePullRequestThreadArgs,
     opts?: { signal?: AbortSignal },
   ): Promise<void>;
+  /** `status` of one pull request: active, completed or abandoned. */
+  getPullRequestStatus(
+    repositoryName: string,
+    pullRequestId: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<PullRequestStatus>;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000];
@@ -260,6 +267,19 @@ export function createAdoClient(
           signal: opts.signal,
         },
       );
+    },
+
+    async getPullRequestStatus(
+      repositoryName: string,
+      pullRequestId: number,
+      opts: { signal?: AbortSignal } = {},
+    ): Promise<PullRequestStatus> {
+      const response = await adoFetchWithRetry<{ status?: string }>(
+        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(repositoryName)}/pullrequests/${pullRequestId}?api-version=7.1`,
+        opts.signal !== undefined ? { signal: opts.signal } : undefined,
+      );
+      const status = response.status;
+      return status === 'active' || status === 'completed' || status === 'abandoned' ? status : 'notSet';
     },
   };
 }

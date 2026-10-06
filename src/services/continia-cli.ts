@@ -139,7 +139,7 @@ export interface ContiniaCli {
   /** Profiles published for one BC version, one per localization. */
   listProfiles(bcVersion: string, opts: ContiniaCallOpts): Promise<EnvProfile[]>;
   startEnvironment(envId: string, opts: ContiniaCallOpts): Promise<void>;
-  /** `continia env delete <id>`. Used only by the experiment harness — production never deletes. */
+  /** `continia env delete <id>`. Used by the experiment harness and by the closed-PR sweep (`env-cleanup.ts`). */
   deleteEnvironment(envId: string, opts: ContiniaCallOpts): Promise<void>;
   getEnvironment(envId: string, opts: ContiniaCallOpts): Promise<EnvironmentInfo>;
   waitForRunning(

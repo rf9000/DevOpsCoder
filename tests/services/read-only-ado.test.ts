@@ -16,6 +16,7 @@ describe('createReadOnlyAdoClient', () => {
     addWorkItemComment: mock(async () => {}),
     createPullRequest: mock(async () => ({})),
     createPullRequestThread: mock(async () => {}),
+    getPullRequestStatus: async () => 'active' as const,
   };
   const ado = createReadOnlyAdoClient(inner as unknown as AdoClient);
 

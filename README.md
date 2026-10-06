@@ -22,7 +22,7 @@ Plan 7 makes per-WI cost operationally visible: every non-skipped watcher outcom
 
 Plan 8 adds per-WI tool usage to the same log lines: each non-skipped outcome also reports the tools the agents invoked, e.g. `WI 123: completed (cost: $0.42, tools: Edit×5, Bash×2)`. Usage is tallied per stage (the 6 reviewer axes are merged) and persisted in `state.outputs.toolUsage`.
 
-Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are never torn down — they auto-delete after ~10 days). After the test-author, a `build-and-test` stage deploys the apps this change actually needs (derived per WI from the changed files and the selected tests) and runs the test codeunits `TEST_SELECTION` picks — not the whole suite, which on a real AL repo is hundreds of sequential runs. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_API_TOKEN` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without it otherwise. `CONTINIA_APP_PATHS` is optional; leave it unset to let the deploy set be derived per work item.**
+Plan 10 adds the **verification gate**: a per-WI Business Central environment is created via `continia.exe` right after worktree setup (it boots while the coder works; environments are deleted when the WI's PR is completed or abandoned, see `DELETE_ENV_ON_PR_CLOSE`). After the test-author, a `build-and-test` stage deploys the apps this change actually needs (derived per WI from the changed files and the selected tests) and runs the test codeunits `TEST_SELECTION` picks — not the whole suite, which on a real AL repo is hundreds of sequential runs. Red compile or test results are fed back to a coder fix loop (up to `MAX_TEST_FIX_ATTEMPTS`); if still red, the pipeline fails with a WI comment listing the compile errors / failing tests and no PR is created. On green, the draft-PR description includes the environment link for manual testing. **Deployments must set `CONTINIA_API_TOKEN` (see `.env.example`) unless `SKIP_BUILD_TEST=true` (Plan 11) — config validation fails fast without it otherwise. `CONTINIA_APP_PATHS` is optional; leave it unset to let the deploy set be derived per work item.**
 
 The BC version is derived per work item from the worktree's `app.json` `application`/`platform` fields: `env-provision` picks the lowest published DemoPortal profile that satisfies it, in the `CONTINIA_ENV_LOCALIZATION` localization. A mismatch fails at `env-provision`, before the revision loop spends anything.
 
@@ -137,6 +137,47 @@ docs/
 1. Copy `.env.example` to `.env` and fill in the Azure DevOps PAT, org, project, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH` / `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` (required — no default; operator must consciously set this).
 2. `bun install`
 3. `bun test`
+
+### Running the full pipeline locally (Windows)
+
+The Docker image exists because the VM is Linux. Running against a local checkout
+is faster to iterate on — no commit/push/`docker compose build` cycle per change —
+and Bun loads `.env` automatically, so no wrapper script is needed:
+
+```
+bun run src/cli/index.ts reset-state <id>
+bun run src/cli/index.ts run-wi <id>
+```
+
+A `.env` for this, on top of the values `## Local setup` already lists:
+
+```dotenv
+TARGET_REPO_PATH=C:\path\to\target-repo
+WORKTREE_BASE=C:\path\without\spaces\.worktrees
+CONTINIA_CLI_PATH=.tools\continia.exe
+CONTINIA_API_TOKEN=<token>
+```
+
+**Three Docker settings must NOT be copied here.** Each is a Linux workaround, and
+copying it breaks the local run:
+
+| Setting | Locally | Why Docker sets it |
+|---|---|---|
+| `CLAUDE_CODE_EXECUTABLE_PATH` | leave unset | Bun's libc detection picks the `*-linux-x64-musl` build on the glibc image, so the SDK cannot find its native binary. Native Windows Claude Code resolves on its own — and leaving this unset is what makes the run use the locally authenticated session |
+| `CONTINIA_AUTO_INSTALL_ALC` | leave unset | Docker forces `0` because the CLI's *Linux* alc auto-install is broken, and bind-mounts `/opt/al/bin` instead. On Windows the auto-install is the supported path; the first run is slow while it downloads alc |
+| `CONTINIA_ALC_PATH` | leave unset | Only meaningful alongside that bind mount |
+
+**Spaces in `TARGET_REPO_PATH` are safe** — `worktree-manager` and `continia-cli`
+both spawn array-form (`Bun.spawn(['git', …])`), so no shell parses them. Keep
+`WORKTREE_BASE` space-free anyway: the coder's own Bash commands run inside the
+worktree and are the one layer that would have to quote them.
+
+**A local run hits real systems.** `--dry-run` suppresses only the processor's
+work-item comments and tag writes — it does not stop the pipeline creating a real
+DemoPortal environment, pushing a branch, or opening a draft PR against the target
+repo. Set `MAX_COST_USD_PER_WI` above any spend already banked in
+`.state/<id>.json`, or the orchestrator's pre-stage gate wedges the work item
+before the first stage runs.
 
 ## VM Deployment (Docker)
 
@@ -265,6 +306,10 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | `CLAUDE_EFFORT` | no | SDK default (`high`) | Global reasoning effort: `low`, `medium`, `high`, `xhigh` or `max` |
 | `CLAUDE_EFFORT_<STEP>` | no | `CLAUDE_EFFORT` | Per-step effort, same step names as the model vars (`ANALYZER`, `CODER_PLAN`, `CODER`, `FIX_FINDINGS`, `REVIEWER`, `TEST_AUTHOR_PLAN`, `TEST_AUTHOR`, `TEST_FIXER`, `PR_MESSAGE`). `CLAUDE_EFFORT_PLANNING` covers both plan steps, and `CLAUDE_EFFORT_REVIEWER_<AXIS>` covers one axis |
 | `WORKTREE_OVERLAY_DIR` | no | — | Directory copied into every worktree, keeping relative paths. Comma-separated for several, applied in order. The `experiment` command also appends `config/worktree-overlay-experiment` and deploys with its `.cli-ruleset.experiment.json`. Use it for build files the repo doesn't track, such as `config/worktree-overlay/` with the Banking `.cli-ruleset.json`. Tracked files are refused, and copied paths are added to the clone's `info/exclude` |
+| `FINAL_REVIEW` | no | true | Run one fresh six-axis review of the whole final diff before the draft PR, with one verified fix round for blocking/critical findings |
+| `FINAL_REVIEW_MIN_LINES` | no | 300 | Smallest diff (insertions + deletions) that gets the final review. 0 reviews every WI |
+| `STAGE_TIMEOUT_MS_FINAL_REVIEW` | no | reviewer + fix + 2 × build-and-test | Wall-clock budget for the `final-review` stage |
+| `DELETE_ENV_ON_PR_CLOSE` | no | true | Delete a WI's BC environment once its draft PR is completed or abandoned (checked after every poll cycle) |
 | `CONTINIA_UNPUBLISH_DEPENDENTS` | no | true | Pass `--unpublish-dependents` to every deploy, so a changed signature never makes BC recompile a stale installed test app mid-publish |
 | `CONTINIA_RULESET` | no | — | Path, relative to the worktree, passed to every `continia deploy` as `--ruleset`, e.g. `Banking Rulesets/.cli-ruleset.json` |
 | `WORKTREE_BASE_REF` | no | `origin/main` | Ref or sha the worktree branches from. Set by the experiment harness. Leave unset in production |

@@ -97,6 +97,13 @@ export interface AppConfig {
   continiaSyncMode?: 'Synchronize' | 'ForceSync' | 'Recreate';
   /** `continia deploy --unpublish-dependents`. Unset is treated as true. */
   continiaUnpublishDependents?: boolean;
+  /**
+   * Smallest final diff (insertions + deletions) that gets a final review.
+   * 0 reviews every WI; undefined disables the stage (`FINAL_REVIEW=false`).
+   */
+  finalReviewMinLines?: number;
+  /** Delete a WI's BC environment once its draft PR is completed or abandoned. Unset → false. */
+  deleteEnvOnPrClose?: boolean;
   /** Absolute path to the Claude Code executable, forwarded to the Agent SDK as
    * `pathToClaudeCodeExecutable`. Unset → the SDK probes for its own bundled
    * native binary. Under Bun on a glibc image that probe picks the *-musl
@@ -622,6 +629,45 @@ export interface ReviewerOutput {
    */
   byAxis?: Record<string, Finding[]>;
 }
+
+/**
+ * One revision-loop review round, kept in `state.outputs.reviewHistory`.
+ * `outputs.reviewer` holds only the latest round, so without this nothing
+ * records which findings held the loop for rounds 2 and 3.
+ */
+export interface ReviewRoundRecord {
+  round: number;
+  approved: boolean;
+  counts: Record<FindingSeverity, number>;
+  /** The blocking/critical findings — the ones that decided the round. */
+  blockers: Array<Pick<Finding, 'severity' | 'axis' | 'file' | 'line' | 'title'>>;
+}
+
+/**
+ * Outcome of the `final-review` stage: one fresh six-axis review of the whole
+ * final diff, after the tests exist and the gate is green.
+ *
+ * `fix`:
+ * - `none`: nothing blocking or critical was found.
+ * - `verified`: fix-findings ran on the blockers and the gate went green again.
+ * - `reverted`: the fix broke the gate (or threw), so the branch was reset to
+ *   the last verified commit. The findings stand and go to the PR.
+ * - `skipped`: blockers found, but no verification gate is configured
+ *   (SKIP_BUILD_TEST), so no unverified fix is attempted.
+ */
+export interface FinalReviewOutput {
+  ran: boolean;
+  skipReason?: string;
+  diffLines: number;
+  findings: Finding[];
+  fix: 'none' | 'verified' | 'reverted' | 'skipped';
+  /** The fixer's self-report on each blocker, when a fix ran. */
+  findingsAddressed?: FindingAddressed[];
+  /** Why a fix was reverted. */
+  fixError?: string;
+}
+
+export type PullRequestStatus = 'active' | 'completed' | 'abandoned' | 'notSet';
 
 export interface DraftPrOutput {
   id: number;

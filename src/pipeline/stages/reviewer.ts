@@ -8,6 +8,7 @@ import type {
   FindingAddressed,
   FindingSeverity,
   ReviewerOutput,
+  ReviewRoundRecord,
   TestAuthorOutput,
   WorktreeContext,
 } from '../../types/index.ts';
@@ -143,6 +144,44 @@ export interface ReviewerStageDeps {
   axisPromptTemplates: Record<ReviewAxis, string>;
   /** Optional override for the number of turns each axis gets. Default 30. */
   maxTurnsPerAxis?: number;
+  /**
+   * Cost key prefix, log label and stage name. `reviewer` (default) is the
+   * revision loop's review and records each round in `outputs.reviewHistory`;
+   * `final-review` bills to `final-review:<axis>` and records no history.
+   * Both resolve their model and effort as the `reviewer` step.
+   */
+  label?: 'reviewer' | 'final-review';
+}
+
+const SEVERITIES: FindingSeverity[] = ['blocking', 'critical', 'major', 'minor', 'nit'];
+
+/**
+ * One line per round naming what decided it. Without it the WI log shows six
+ * reviewer cost lines and then a second round, and nothing says why.
+ */
+export function summarizeReviewRound(round: number, findings: Finding[], approved: boolean): ReviewRoundRecord {
+  const counts = Object.fromEntries(SEVERITIES.map((s) => [s, 0])) as Record<FindingSeverity, number>;
+  for (const f of findings) counts[f.severity] += 1;
+  const blockers = findings
+    .filter((f) => f.severity === 'blocking' || f.severity === 'critical')
+    .map((f) => ({
+      severity: f.severity,
+      axis: f.axis,
+      file: f.file,
+      ...(f.line !== undefined ? { line: f.line } : {}),
+      title: f.title,
+    }));
+  return { round, approved, counts, blockers };
+}
+
+export function formatReviewRound(label: string, r: ReviewRoundRecord): string {
+  const counts = SEVERITIES.map((s) => `${r.counts[s]} ${s}`).join(', ');
+  const head = `${label} round ${r.round}: ${r.approved ? 'approved' : 'rejected'} (${counts})`;
+  if (r.blockers.length === 0) return head;
+  const lines = r.blockers.map(
+    (b) => `  ${b.severity} [${b.axis}] ${b.line !== undefined ? `${b.file}:${b.line}` : b.file} — ${b.title}`,
+  );
+  return [head, ...lines].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -286,8 +325,9 @@ export function buildReviewerUserPrompt(args: {
  * directly to the orchestrator's terminal-failure branch.
  */
 export function createReviewerStage(deps: ReviewerStageDeps): Stage {
+  const label = deps.label ?? 'reviewer';
   return {
-    name: 'reviewer',
+    name: label,
     canRun: () => true,
     async execute(state, ctx) {
       const wiCtx = state.outputs.wiContext as WorkItemContext | undefined;
@@ -361,7 +401,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
             () =>
               deps.runner.run<{ findings: Finding[] }>({
                 prompt: promptFor(axis),
-                label: `reviewer:${axis}`,
+                label: `${label}:${axis}`,
                 schema: axisOutputSchema,
                 model: modelFor(deps.config, 'reviewer', axis),
                 effort: effortFor(deps.config, 'reviewer', axis),
@@ -384,8 +424,8 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
             // failure mode — three full reviews of the same diff.
             (err) => {
               if (err instanceof AgentOutputParseError && err.spend) {
-                costTracker.add(`reviewer:${axis}`, err.spend.costUsd, err.spend.usage);
-                toolUsageTracker.add('reviewer', err.spend.toolUsage);
+                costTracker.add(`${label}:${axis}`, err.spend.costUsd, err.spend.usage);
+                toolUsageTracker.add(label, err.spend.toolUsage);
               }
             },
           )
@@ -394,7 +434,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
               // only once all six have resolved is spend discarded the moment
               // any one of them throws — including axes that finished
               // successfully minutes before the failure.
-              costTracker.add(`reviewer:${axis}`, result.costUsd, result.usage);
+              costTracker.add(`${label}:${axis}`, result.costUsd, result.usage);
               return result;
             })
             .catch((err: unknown) => {
@@ -417,7 +457,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       );
 
       const mergedToolUsage = mergeToolUsage(axisResults.map((r) => r.toolUsage));
-      toolUsageTracker.add('reviewer', mergedToolUsage);
+      toolUsageTracker.add(label, mergedToolUsage);
 
       // Clamp per axis BEFORE aggregating: the merge promotes a group to its
       // highest member, so a ceiling applied afterwards could be re-breached by
@@ -440,7 +480,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
           const severity = clampSeverity(f.severity, ceiling);
           if (severity !== f.severity) {
             ctx.logger.info(
-              `reviewer:${axis}: ${f.severity} -> ${severity} (axis ceiling) — ${f.file}: ${f.title}`,
+              `${label}:${axis}: ${f.severity} -> ${severity} (axis ceiling) — ${f.file}: ${f.title}`,
             );
           }
           return { ...f, severity };
@@ -461,6 +501,14 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
 
       const output: ReviewerOutput = { approved, findings, attempts, byAxis };
       state.outputs.reviewer = output;
+
+      const record = summarizeReviewRound(attempts, findings, approved);
+      ctx.logger.info(formatReviewRound(label, record));
+      if (label === 'reviewer') {
+        const history = (state.outputs.reviewHistory as ReviewRoundRecord[] | undefined) ?? [];
+        // A resumed round re-runs: replace its record rather than append twice.
+        state.outputs.reviewHistory = [...history.filter((h) => h.round !== attempts), record];
+      }
       return state;
     },
   };

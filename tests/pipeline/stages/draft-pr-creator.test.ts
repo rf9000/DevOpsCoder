@@ -15,6 +15,7 @@ import {
   buildPrDescription,
   capPrDescription,
   MAX_PR_DESCRIPTION_LENGTH,
+  renderFinalReviewSection,
 } from '../../../src/pipeline/stages/draft-pr-creator.ts';
 import { AzureDevOpsError } from '../../../src/sdk/azure-devops-client.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
@@ -159,6 +160,7 @@ function makeAdoClient(overrides: Partial<AdoClient> = {}): AdoClient {
     getWorkItemComments: mock(async () => []),
     getWorkItemUpdates: mock(async () => []),
     createPullRequestThread: mock(async () => {}),
+    getPullRequestStatus: async () => 'active' as const,
     addTagToWorkItem: mock(async () => {}),
     removeTagFromWorkItem: mock(async () => {}),
     addWorkItemComment: mock(async () => {}),
@@ -893,5 +895,44 @@ describe('draft-pr-creator: the pr-message step', () => {
 
     expect(captured).toContain(sampleCoder.summary);
     expect(result.outputs.prMessage).toBeUndefined();
+  });
+});
+
+
+describe('renderFinalReviewSection', () => {
+  const blocking = {
+    severity: 'blocking' as const, file: 'Auth.al', line: 199, title: 'Wipes shared storage', description: 'd', axis: 'safety-correctness',
+  };
+  const major = { severity: 'major' as const, file: 'B.al', title: 'Re-reads record', description: 'd', axis: 'performance' };
+  const minor = { severity: 'minor' as const, file: 'C.al', title: 'Name', description: 'd', axis: 'naming-style' };
+
+  it('renders nothing when the review did not run or found nothing above minor', () => {
+    expect(renderFinalReviewSection(undefined)).toBe('');
+    expect(renderFinalReviewSection({ ran: false, diffLines: 10, findings: [], fix: 'none' })).toBe('');
+    expect(renderFinalReviewSection({ ran: true, diffLines: 400, findings: [minor], fix: 'none' })).toBe('');
+  });
+
+  it('marks a verified fix and lists majors without a status', () => {
+    const text = renderFinalReviewSection({
+      ran: true, diffLines: 400, findings: [blocking, major, minor], fix: 'verified',
+      findingsAddressed: [{ file: 'Auth.al', line: 199, action: 'fixed', reason: 'r' }],
+    });
+    expect(text).toContain('**Final review**');
+    expect(text).toContain('- blocking — Auth.al:199: Wipes shared storage — fixed by the agent, gate green');
+    expect(text).toContain('- major — B.al: Re-reads record\n');
+    expect(text).not.toContain('C.al');
+  });
+
+  it('marks blockers open when the fix was reverted, skipped or declined', () => {
+    expect(renderFinalReviewSection({ ran: true, diffLines: 400, findings: [blocking], fix: 'reverted' }))
+      .toContain('**open** (fix attempt broke the build and was reverted)');
+    expect(renderFinalReviewSection({ ran: true, diffLines: 400, findings: [blocking], fix: 'skipped' }))
+      .toContain('**open** (not fixed: no verification gate)');
+    expect(
+      renderFinalReviewSection({
+        ran: true, diffLines: 400, findings: [blocking], fix: 'verified',
+        findingsAddressed: [{ file: 'Auth.al', line: 199, action: 'declined', reason: 'by design' }],
+      }),
+    ).toContain('**open** (agent declined: by design)');
   });
 });

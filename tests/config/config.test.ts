@@ -577,3 +577,23 @@ describe('per-step effort and per-axis reviewer overrides', () => {
     expect(loadConfig({ ...validEnv, WORKTREE_BASE_REF: ' abc123 ' }).worktreeBaseRef).toBe('abc123');
   });
 });
+
+
+describe('final review and environment cleanup config', () => {
+  it('enables the final review above 300 lines and the closed-PR sweep by default', () => {
+    const config = loadConfig(validEnv);
+    expect(config.finalReviewMinLines).toBe(300);
+    expect(config.deleteEnvOnPrClose).toBe(true);
+    expect(config.stageTimeoutMs['final-review']).toBeGreaterThan(config.stageTimeoutMs['build-and-test']!);
+  });
+
+  it('FINAL_REVIEW=false disables the stage; FINAL_REVIEW_MIN_LINES=0 reviews every WI', () => {
+    expect(loadConfig({ ...validEnv, FINAL_REVIEW: 'false' }).finalReviewMinLines).toBeUndefined();
+    expect(loadConfig({ ...validEnv, FINAL_REVIEW_MIN_LINES: '0' }).finalReviewMinLines).toBe(0);
+    expect(loadConfig({ ...validEnv, DELETE_ENV_ON_PR_CLOSE: 'false' }).deleteEnvOnPrClose).toBe(false);
+  });
+
+  it('pins the final-review timeout with STAGE_TIMEOUT_MS_FINAL_REVIEW', () => {
+    expect(loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_FINAL_REVIEW: '1234' }).stageTimeoutMs['final-review']).toBe(1234);
+  });
+});

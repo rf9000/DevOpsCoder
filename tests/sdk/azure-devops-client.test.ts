@@ -61,6 +61,21 @@ describe('createAdoClient', () => {
     return fetchMock as unknown as typeof globalThis.fetch;
   }
 
+  describe('getPullRequestStatus', () => {
+    it('reads the PR status and maps unknown values to notSet', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(200, { pullRequestId: 7, status: 'completed' }),
+        jsonResponse(200, { pullRequestId: 8, status: 'weird' }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      expect(await client.getPullRequestStatus('My Repo', 7)).toBe('completed');
+      expect(calls[0]!.url).toBe(
+        'https://dev.azure.com/my-org/my-project/_apis/git/repositories/My%20Repo/pullrequests/7?api-version=7.1',
+      );
+      expect(await client.getPullRequestStatus('My Repo', 8)).toBe('notSet');
+    });
+  });
+
   describe('queryWorkItemsByTag', () => {
     it('POSTs WIQL with the trigger tag and returns work item IDs', async () => {
       const fetchImpl = setupFetch([

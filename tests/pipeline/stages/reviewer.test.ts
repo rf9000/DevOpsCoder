@@ -24,6 +24,8 @@ import { describe, it, expect, mock } from 'bun:test';
 import {
   createReviewerStage,
   buildReviewerUserPrompt,
+  formatReviewRound,
+  summarizeReviewRound,
   REVIEW_AXES,
 } from '../../../src/pipeline/stages/reviewer.ts';
 import { createLogger } from '../../../src/utils/logger.ts';
@@ -39,6 +41,7 @@ import type {
   PipelineCostInfo,
   PipelineState,
   ReviewerOutput,
+  ReviewRoundRecord,
   TestAuthorOutput,
   WorktreeContext,
 } from '../../../src/types/index.ts';
@@ -936,5 +939,49 @@ describe('reviewer finding carry-forward', () => {
     expect(byAxis['naming-style']).toHaveLength(1);
     // Ceiling for naming-style is 'minor' — the raw claim was 'critical'.
     expect(byAxis['naming-style']![0]!.severity).toBe('minor');
+  });
+});
+
+
+describe('review round history', () => {
+  const blocking: Finding = {
+    severity: 'blocking', file: 'A.al', line: 7, title: 'Data loss', description: 'd', axis: 'safety-correctness',
+  };
+
+  it('summarizes counts and keeps only blocking/critical findings as blockers', () => {
+    const minor: Finding = { severity: 'minor', file: 'B.al', title: 'n', description: 'd', axis: 'naming-style' };
+    const r = summarizeReviewRound(2, [blocking, minor], false);
+    expect(r.counts).toEqual({ blocking: 1, critical: 0, major: 0, minor: 1, nit: 0 });
+    expect(r.blockers).toEqual([
+      { severity: 'blocking', axis: 'safety-correctness', file: 'A.al', line: 7, title: 'Data loss' },
+    ]);
+    const text = formatReviewRound('reviewer', r);
+    expect(text).toContain('reviewer round 2: rejected (1 blocking, 0 critical, 0 major, 1 minor, 0 nit)');
+    expect(text).toContain('blocking [safety-correctness] A.al:7 — Data loss');
+  });
+
+  it('appends one record per round to outputs.reviewHistory, replacing a re-run round', async () => {
+    const runner = makeRunner((args) =>
+      Promise.resolve(args.label === 'reviewer:safety-correctness' ? { findings: [blocking] } : { findings: [] }),
+    );
+    const stage = createReviewerStage(makeDeps(runner));
+    const s = await stage.execute(makeState(), makeCtx());
+    expect(s.outputs.reviewHistory as ReviewRoundRecord[]).toHaveLength(1);
+    // Re-running round 2 twice (a resume) keeps one record for it.
+    await stage.execute(s, makeCtx());
+    (s.outputs.reviewer as ReviewerOutput).attempts = 1;
+    await stage.execute(s, makeCtx());
+    const history = s.outputs.reviewHistory as ReviewRoundRecord[];
+    expect(history.map((h) => h.round)).toEqual([1, 2]);
+    expect(history[0]!.approved).toBe(false);
+  });
+
+  it('final-review bills to its own keys and records no history', async () => {
+    const stage = createReviewerStage({ ...makeDeps(makeRunner()), label: 'final-review' });
+    expect(stage.name).toBe('final-review');
+    const s = await stage.execute(makeState(), makeCtx());
+    const keys = Object.keys((s.outputs.cost as PipelineCostInfo).perStage);
+    expect(keys.every((k) => k.startsWith('final-review:'))).toBe(true);
+    expect(s.outputs.reviewHistory).toBeUndefined();
   });
 });
