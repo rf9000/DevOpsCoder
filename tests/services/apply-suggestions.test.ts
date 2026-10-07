@@ -47,7 +47,7 @@ describe('applySuggestions', () => {
     const { git, outcome } = run(happy);
     expect(await outcome).toEqual({
       ok: true, branch: 'refs/heads/mutant/pr-12345-abc1234', pushedCommit: 'c0ffee',
-      pullRequestId: 12399, appliedIds: ['F001'], skippedIds: ['F002'], error: null,
+      pullRequestId: 12399, appliedIds: ['F001'], skippedIds: ['F002'], error: null, costUsd: 0,
     });
     expect(git.removed).toEqual([WT]);
   });
@@ -96,6 +96,20 @@ describe('applySuggestions', () => {
     ], { abortFlag });
     expect(await outcome).toMatchObject({ ok: false, error: 'cancelled', pushedCommit: null });
     expect(git.removed).toEqual([WT]);
+  });
+
+  it('reports the pipeline cost on success and on failure', async () => {
+    const ok = run([happy[0]!, stage('apply-fixes', (o) => { o.appliedIds = ['F001']; o.cost = { total: 1.25, perStage: {} }; }), happy[2]!, happy[3]!]);
+    expect((await ok.outcome).costUsd).toBe(1.25);
+    const failed = run([
+      happy[0]!,
+      { name: 'apply-fixes', canRun: () => true, execute: async (s) => { s.outputs.cost = { total: 0.5, perStage: {} }; throw new Error('boom'); } },
+    ]);
+    expect(await failed.outcome).toMatchObject({ ok: false, costUsd: 0.5 });
+    const none = run([
+      { name: 'suggestion-worktree', canRun: () => true, execute: async () => { throw new HeadMovedError('feature/foo', 'a', 'b'); } },
+    ], { mode: 'push' });
+    expect((await none.outcome).costUsd).toBe(0);
   });
 
   it('dry run keeps the worktree and reports no pushed commit', async () => {

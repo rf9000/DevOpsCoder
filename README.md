@@ -121,7 +121,7 @@ What it does:
 - `--dry-run`: applies and commits, but does not push or open a PR, and keeps the worktree for inspection.
 - Each fix gets its own agent budget (the `fix-findings` stage timeout). A fix that times out, fails, or that the agent reports as `declined` is reset and skipped.
 - On SIGTERM or SIGINT it stops, removes its worktree and reports `cancelled`.
-- The last stdout line is the JSON outcome. Expected failures (`invalid-input: ...`, `head-moved`, `nothing-applied`, `cancelled`, `<stage>: <message>`) print `ok: false` and exit 0. A non-zero exit means a crash, such as a missing variable.
+- The last stdout line is the JSON outcome. Expected failures (`invalid-input: ...`, `head-moved`, `nothing-applied`, `cancelled`, `<stage>: <message>`) print `ok: false` and exit 0. A non-zero exit means a crash, such as a missing variable. Every outcome carries `costUsd`, the agent spend of the run (0 when no agent ran). The cost cap (`MAX_COST_USD_PER_WI`) is checked after each fix; mutant-fixer sets it to what is left of its own job budget.
 
 Variables it needs: `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, `BOT_GIT_NAME`, `BOT_GIT_EMAIL`. Optional: `STATE_DIR`, and `MAX_COST_USD_PER_WI` (default 20 USD for this command). It ignores `ADO_REPOSITORY_NAME`, which comes from the input, and forces `SKIP_BUILD_TEST` on: al-mutation already verified the fixes on a BC environment.
 

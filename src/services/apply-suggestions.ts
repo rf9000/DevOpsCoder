@@ -5,7 +5,7 @@ import { FIX_BUDGET_FALLBACK_MS, NothingAppliedError } from '../pipeline/stages/
 import type { PipelineStateStore } from '../state/state-store.ts';
 import { mutantBranchName, sha7, type SuggestionInput } from '../suggestions/input.ts';
 import { HeadMovedError, type SuggestionGit } from '../suggestions/suggestion-git.ts';
-import type { AppConfig, WorktreeContext } from '../types/index.ts';
+import type { AppConfig, PipelineCostInfo, WorktreeContext } from '../types/index.ts';
 import { redactPat } from '../utils/git-auth.ts';
 import type { Logger } from '../utils/logger.ts';
 
@@ -18,13 +18,15 @@ export interface SuggestionOutcome {
   appliedIds: string[];
   skippedIds: string[];
   error: string | null;
+  /** Agent spend of this run in USD (the pipeline's cost total); 0 when nothing ran. */
+  costUsd: number;
 }
 
 /** One fix costs a single fix-findings call; 20 USD covers a large run. */
 export const DEFAULT_SUGGESTION_COST_CAP_USD = 20;
 
 export function failureOutcome(error: string, partial: Partial<SuggestionOutcome> = {}): SuggestionOutcome {
-  return { ok: false, branch: null, pushedCommit: null, pullRequestId: null, appliedIds: [], skippedIds: [], ...partial, error };
+  return { ok: false, branch: null, pushedCommit: null, pullRequestId: null, appliedIds: [], skippedIds: [], costUsd: 0, ...partial, error };
 }
 
 /**
@@ -78,6 +80,7 @@ export async function applySuggestions(deps: ApplySuggestionsDeps): Promise<Sugg
   const ids = () => ({
     appliedIds: (state.outputs.appliedIds as string[] | undefined) ?? [],
     skippedIds: (state.outputs.skippedIds as string[] | undefined) ?? [],
+    costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
   });
   try {
     await runPipeline({
@@ -97,7 +100,7 @@ export async function applySuggestions(deps: ApplySuggestionsDeps): Promise<Sugg
       error: null,
     };
   } catch (err) {
-    if (err instanceof HeadMovedError) return failureOutcome('head-moved');
+    if (err instanceof HeadMovedError) return failureOutcome('head-moved', { costUsd: ids().costUsd });
     if (err instanceof NothingAppliedError) return failureOutcome('nothing-applied', ids());
     const stage = state.terminalError?.stage ?? 'apply-suggestions';
     const message = redactPat(err instanceof Error ? err.message : String(err), config.pat);
