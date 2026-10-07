@@ -187,20 +187,11 @@ git commit -m "feat: bot git identity config and PR reviewers"
 
 - [ ] **Step 1: Write the failing tests**
 
-`tests/suggestions/input.test.ts`:
+`tests/helpers/suggestion-input.ts`. It lives in a helper module, not in a test file: importing a test file would register its tests again in every importer.
 ```ts
-import { describe, it, expect } from 'bun:test';
-import {
-  buildStackedPrDescription,
-  commitMessage,
-  mutantBranchName,
-  parseSuggestionInput,
-  stackedPrTitle,
-  suggestionToFinding,
-  type SuggestionInput,
-} from '../../src/suggestions/input.ts';
+import type { SuggestionInput } from '../../src/suggestions/input.ts';
 
-const HEAD = 'abc1234def5678abc1234def5678abc1234def56';
+export const HEAD = 'abc1234def5678abc1234def5678abc1234def56';
 
 export function makeInput(overrides: Partial<SuggestionInput> = {}): SuggestionInput {
   return {
@@ -226,6 +217,20 @@ export function makeInput(overrides: Partial<SuggestionInput> = {}): SuggestionI
     ...overrides,
   };
 }
+```
+
+`tests/suggestions/input.test.ts`:
+```ts
+import { describe, it, expect } from 'bun:test';
+import {
+  buildStackedPrDescription,
+  commitMessage,
+  mutantBranchName,
+  parseSuggestionInput,
+  stackedPrTitle,
+  suggestionToFinding,
+} from '../../src/suggestions/input.ts';
+import { HEAD, makeInput } from '../helpers/suggestion-input.ts';
 
 describe('parseSuggestionInput', () => {
   it('accepts the contract example', () => {
