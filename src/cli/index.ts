@@ -2,7 +2,10 @@ import { loadConfig } from '../config/index.ts';
 import { createLogger } from '../utils/logger.ts';
 import { createAdoClient } from '../sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../state/state-store.ts';
-import { buildPipeline } from '../services/pipeline-builder.ts';
+import { buildPipeline, buildSuggestionPipeline } from '../services/pipeline-builder.ts';
+import { applySuggestions, failureOutcome, loadSuggestionConfig } from '../services/apply-suggestions.ts';
+import { parseSuggestionInput } from '../suggestions/input.ts';
+import { createSuggestionGit } from '../suggestions/suggestion-git.ts';
 import { createProcessor } from '../services/processor.ts';
 import { createWiLogFactory } from '../services/wi-log.ts';
 import { createCostLedger } from '../services/cost-ledger.ts';
@@ -16,7 +19,7 @@ import {
 } from '../services/watcher.ts';
 import type { WorktreeContext } from '../types/index.ts';
 import { slugify } from '../utils/slug.ts';
-import { existsSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   assertIsolatedTargetRepo,
@@ -37,6 +40,9 @@ Usage:
   bun run start                       Start the watcher (long-running)
   bun run once                        Run a single poll cycle and exit
   bun run src/cli/index.ts run-wi <id>      Process one work item by ID
+  bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]
+                                      Apply mutant-fixer's verified test fixes to a PR
+                                      (last stdout line: JSON outcome)
   bun run src/cli/index.ts reset-state <id> Delete state + remove worktree + delete branch
   bun run src/cli/index.ts debug-tags       List WIs tagged with TRIGGER_TAG
   bun run src/cli/index.ts debug-pr <id>    Print the draft-PR record for a work item
@@ -230,6 +236,11 @@ async function main(): Promise<void> {
       return;
     }
 
+    case 'apply-suggestions': {
+      await runApplySuggestionsCommand();
+      return;
+    }
+
     case 'experiment': {
       await runExperimentCommand();
       return;
@@ -245,6 +256,40 @@ async function main(): Promise<void> {
 function flagValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+/**
+ * mutant-fixer's handover. Expected failures print an ok:false outcome and
+ * exit 0; only a crash (bad config, unreadable file) exits non-zero. The JSON
+ * is printed last, after every log line, because the logger writes to stdout.
+ */
+async function runApplySuggestionsCommand(): Promise<void> {
+  const inputPath = flagValue('--input');
+  if (!inputPath) {
+    console.error('apply-suggestions requires --input <file>');
+    process.exitCode = 1;
+    return;
+  }
+  const parsed = parseSuggestionInput(readFileSync(inputPath, 'utf-8'));
+  if (!parsed.ok) {
+    console.log(JSON.stringify(failureOutcome(parsed.error)));
+    return;
+  }
+  const input = parsed.input;
+  const config = loadSuggestionConfig(process.env, input);
+  if (process.argv.includes('--dry-run')) config.dryRun = true;
+  const logger = createLogger('apply-suggestions');
+  const ado = createAdoClient(config);
+  const git = createSuggestionGit({ config });
+  const outcome = await applySuggestions({
+    config,
+    logger,
+    input,
+    git,
+    stages: buildSuggestionPipeline({ config, logger, ado, git }, input.mode),
+    store: new PipelineStateStore(join(config.stateDir, 'suggestions')),
+  });
+  console.log(JSON.stringify(outcome));
 }
 
 async function runExperimentCommand(): Promise<void> {
