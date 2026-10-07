@@ -22,13 +22,14 @@ function stage(name: string, fn: (o: Record<string, unknown>) => void): Stage {
   return { name, canRun: () => true, async execute(s) { fn(s.outputs); return s; } };
 }
 
-function run(stages: Stage[], opts: { dryRun?: boolean; mode?: 'pr' | 'push' } = {}) {
+function run(stages: Stage[], opts: { dryRun?: boolean; mode?: 'pr' | 'push'; abortFlag?: { aborted: boolean } } = {}) {
   const git = gitSpy();
   const config = makeTestConfig({ STATE_DIR: mkdtempSync(join(tmpdir(), 'sugg-')) }, { dryRun: opts.dryRun ?? false });
   return {
     git,
     outcome: applySuggestions({
       config, logger, input: makeInput({ mode: opts.mode ?? 'pr' }), git, stages,
+      ...(opts.abortFlag ? { abortFlag: opts.abortFlag } : {}),
       store: new PipelineStateStore(join(config.stateDir, 'suggestions')),
     }),
   };
@@ -87,6 +88,16 @@ describe('applySuggestions', () => {
     expect(git.removed).toEqual([WT]);
   });
 
+  it('external abort (SIGTERM): ok false, error cancelled, worktree removed', async () => {
+    const abortFlag = { aborted: false };
+    const { git, outcome } = run([
+      stage('suggestion-worktree', (o) => { o.worktree = WT; abortFlag.aborted = true; }),
+      stage('apply-fixes', (o) => { o.appliedIds = ['F001']; }),
+    ], { abortFlag });
+    expect(await outcome).toMatchObject({ ok: false, error: 'cancelled', pushedCommit: null });
+    expect(git.removed).toEqual([WT]);
+  });
+
   it('dry run keeps the worktree and reports no pushed commit', async () => {
     const { git, outcome } = run(happy, { dryRun: true });
     const o = await outcome;
@@ -116,7 +127,7 @@ describe('loadSuggestionConfig', () => {
     const input = makeInput();
     input.suggestions.push({ ...input.suggestions[0]!, id: 'F002' });
     const c = loadSuggestionConfig(env, input);
-    expect(c.stageTimeoutMs['apply-fixes']).toBe(2 * c.stageTimeoutMs['fix-findings']!);
+    expect(c.stageTimeoutMs['apply-fixes']).toBe(2 * c.stageTimeoutMs['fix-findings']! + 300_000);
   });
 
   it('requires BOT_GIT_NAME and BOT_GIT_EMAIL', () => {

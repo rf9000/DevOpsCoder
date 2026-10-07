@@ -112,6 +112,41 @@ describe('apply-fixes', () => {
     expect(s.outputs.skippedIds).toEqual(['F001']);
   });
 
+  it('a fix that hangs past its own budget is skipped and reset, the next one still applies', async () => {
+    const git = fakeGit();
+    let i = 0;
+    const fixFindings: Stage = {
+      name: 'fix-findings', canRun: () => true,
+      async execute(state, c) {
+        if (i++ > 0) return state;
+        await new Promise((_resolve, reject) => c.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+        return state;
+      },
+    };
+    const c = { ...ctx(), config: makeTestConfig({}, { stageTimeoutMs: { 'fix-findings': 50 } }) };
+    const s = stateFor(twoFixInput());
+    await createApplyFixesStage({ git, fixFindings }).execute(s, c);
+    expect(git.calls[0]).toBe('reset sha0');
+    expect(s.outputs.appliedIds).toEqual(['F002']);
+    expect(s.outputs.skippedIds).toEqual(['F001']);
+  });
+
+  it('a fix the agent declines is reset and skipped, even when it left edits', async () => {
+    const git = fakeGit();
+    const fixFindings: Stage = {
+      name: 'fix-findings', canRun: () => true,
+      async execute(state) {
+        state.outputs.findingsAddressed = [{ file: 'x.al', action: 'declined', reason: 'does not fit' }];
+        return state;
+      },
+    };
+    const s = stateFor();
+    await createApplyFixesStage({ git, fixFindings }).execute(s, ctx());
+    expect(git.calls).toEqual(['reset sha0']);
+    expect(s.outputs.appliedIds).toEqual([]);
+    expect(s.outputs.skippedIds).toEqual(['F001']);
+  });
+
   it('a fix that changes nothing is skipped', async () => {
     const git = fakeGit({ commitFix: async () => null });
     const fixFindings: Stage = { name: 'fix-findings', canRun: () => true, execute: async (st) => st };

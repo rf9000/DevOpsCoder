@@ -1,7 +1,7 @@
 import { loadConfig } from '../config/index.ts';
 import { createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
 import type { Stage } from '../pipeline/stage.ts';
-import { NothingAppliedError } from '../pipeline/stages/suggestions.ts';
+import { FIX_BUDGET_FALLBACK_MS, NothingAppliedError } from '../pipeline/stages/suggestions.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
 import { mutantBranchName, sha7, type SuggestionInput } from '../suggestions/input.ts';
 import { HeadMovedError, type SuggestionGit } from '../suggestions/suggestion-git.ts';
@@ -46,11 +46,12 @@ export function loadSuggestionConfig(env: Record<string, string | undefined>, in
   if (missing.length > 0) {
     throw new Error(`Invalid configuration:\n${missing.map((k) => `  - ${k}: required for apply-suggestions`).join('\n')}`);
   }
-  const fixBudget = config.stageTimeoutMs['fix-findings'] ?? 1_800_000;
+  const fixBudget = config.stageTimeoutMs['fix-findings'] ?? FIX_BUDGET_FALLBACK_MS;
   config.stageTimeoutMs = {
     ...config.stageTimeoutMs,
     'suggestion-worktree': 300_000,
-    'apply-fixes': input.suggestions.length * fixBudget,
+    // Each fix is capped at fixBudget inside the stage; the slack covers git.
+    'apply-fixes': input.suggestions.length * fixBudget + 300_000,
     'push-suggestions': 300_000,
     'create-stacked-pr': 120_000,
   };
@@ -65,6 +66,8 @@ export interface ApplySuggestionsDeps {
   stages: Stage[];
   store: PipelineStateStore;
   now?: () => Date;
+  /** Set by the CLI's SIGTERM/SIGINT handler: stop, then remove the worktree. */
+  abortFlag?: { aborted: boolean };
 }
 
 export async function applySuggestions(deps: ApplySuggestionsDeps): Promise<SuggestionOutcome> {
@@ -80,9 +83,10 @@ export async function applySuggestions(deps: ApplySuggestionsDeps): Promise<Sugg
     await runPipeline({
       stages: deps.stages,
       state,
-      context: { config, logger: deps.logger, abortFlag: { aborted: false }, signal: new AbortController().signal, now },
+      context: { config, logger: deps.logger, abortFlag: deps.abortFlag ?? { aborted: false }, signal: new AbortController().signal, now },
       store: deps.store,
     });
+    if (state.cancelled) return failureOutcome('cancelled', ids());
     const pr = state.outputs.suggestionPr as { id: number } | undefined;
     return {
       ok: true,

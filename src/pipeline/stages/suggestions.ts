@@ -22,6 +22,15 @@ export class NothingAppliedError extends Error {
   }
 }
 
+/** Per-fix agent budget when STAGE_TIMEOUT for fix-findings is not set. */
+export const FIX_BUDGET_FALLBACK_MS = 1_800_000;
+
+/** The agent reported the fix but did not apply it; its edits may be partial. */
+function declined(findingsAddressed: unknown): boolean {
+  if (!Array.isArray(findingsAddressed) || findingsAddressed.length === 0) return false;
+  return !findingsAddressed.some((f: { action?: string }) => f.action === 'fixed');
+}
+
 function inputOf(state: { outputs: Record<string, unknown> }): SuggestionInput {
   const input = state.outputs.suggestionInput as SuggestionInput | undefined;
   if (!input) throw new Error('suggestion stages require state.outputs.suggestionInput');
@@ -75,17 +84,34 @@ export function createApplyFixesStage(deps: { git: SuggestionGit; fixFindings: S
       const wt = worktreeOf(state);
       const applied: string[] = [];
       const skipped: string[] = [];
+      // Each fix gets its own share of the stage budget, so one hung agent
+      // cannot use up the time of the fixes after it.
+      const fixBudgetMs = ctx.config.stageTimeoutMs['fix-findings'] ?? FIX_BUDGET_FALLBACK_MS;
       for (const s of input.suggestions) {
         const baseline = await deps.git.headSha(wt.path);
         state.outputs.reviewer = { approved: false, findings: [suggestionToFinding(s)], attempts: 0 } satisfies ReviewerOutput;
+        delete state.outputs.findingsAddressed;
+        const fixCtrl = new AbortController();
+        const onOuterAbort = () => fixCtrl.abort(ctx.signal.reason);
+        ctx.signal.addEventListener('abort', onOuterAbort);
+        const timer = setTimeout(() => fixCtrl.abort('fix-timeout'), fixBudgetMs);
         let sha: string | null = null;
         try {
-          await deps.fixFindings.execute(state, ctx);
-          sha = await deps.git.commitFix({ path: wt.path, baselineSha: baseline, message: commitMessage(input, s) });
+          await deps.fixFindings.execute(state, { ...ctx, signal: fixCtrl.signal });
+          if (declined(state.outputs.findingsAddressed)) {
+            ctx.logger.warn(`apply-suggestions: ${s.id} declined by the agent, skipping`);
+            await deps.git.resetHard(wt.path, baseline);
+          } else {
+            sha = await deps.git.commitFix({ path: wt.path, baselineSha: baseline, message: commitMessage(input, s) });
+          }
         } catch (err) {
           if (ctx.signal.aborted || err instanceof CostExceededError) throw err;
-          ctx.logger.warn(`apply-suggestions: ${s.id} failed, skipping :: ${err instanceof Error ? err.message : String(err)}`);
+          const why = fixCtrl.signal.aborted ? `timed out after ${fixBudgetMs} ms` : err instanceof Error ? err.message : String(err);
+          ctx.logger.warn(`apply-suggestions: ${s.id} failed, skipping :: ${why}`);
           await deps.git.resetHard(wt.path, baseline);
+        } finally {
+          clearTimeout(timer);
+          ctx.signal.removeEventListener('abort', onOuterAbort);
         }
         (sha ? applied : skipped).push(s.id);
         assertWithinCostCap(state, ctx.config.maxCostUsdPerWi, 'apply-fixes');

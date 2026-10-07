@@ -281,6 +281,16 @@ async function runApplySuggestionsCommand(): Promise<void> {
   const logger = createLogger('apply-suggestions');
   const ado = createAdoClient(config);
   const git = createSuggestionGit({ config });
+  // mutant-fixer's timeout sends SIGTERM to the process group, then SIGKILL
+  // 5s later. Abort so the runner's finally removes the locked worktree,
+  // which nothing else would ever clean up.
+  const abortFlag = { aborted: false };
+  const onSignal = (sig: string) => {
+    logger.warn(`apply-suggestions: ${sig}, stopping and removing the worktree`);
+    abortFlag.aborted = true;
+  };
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
   const outcome = await applySuggestions({
     config,
     logger,
@@ -288,6 +298,7 @@ async function runApplySuggestionsCommand(): Promise<void> {
     git,
     stages: buildSuggestionPipeline({ config, logger, ado, git }, input.mode),
     store: new PipelineStateStore(join(config.stateDir, 'suggestions')),
+    abortFlag,
   });
   console.log(JSON.stringify(outcome));
 }
