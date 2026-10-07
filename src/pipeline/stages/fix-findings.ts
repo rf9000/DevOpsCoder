@@ -171,6 +171,8 @@ export interface FixFindingsStageDeps {
   getCurrentHeadSha?: (worktreePath: string) => Promise<string>;
   resetWorktree?: (worktreePath: string, baselineSha: string) => Promise<void>;
   getDiff?: (worktreePath: string, baseSha: string) => Promise<string>;
+  /** Prompt builder override. apply-suggestions uses its own; default buildFixFindingsPrompt. */
+  buildPrompt?: (args: BuildFixFindingsPromptArgs) => string;
 }
 
 /**
@@ -236,7 +238,7 @@ export function createFixFindingsStage(deps: FixFindingsStageDeps): Stage {
       }
 
       const baselineSha = await getHead(worktree.path);
-      const prompt = buildFixFindingsPrompt({
+      const prompt = (deps.buildPrompt ?? buildFixFindingsPrompt)({
         findings: reviewer.findings,
         diff: await diffOf(worktree.path, worktree.baseSha),
         worktree,

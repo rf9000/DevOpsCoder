@@ -254,6 +254,22 @@ describe('createFixFindingsStage', () => {
     expect(captured.prompt).toContain('THE DIFF');
   });
 
+  it('uses the injected prompt builder when given', async () => {
+    const captured: { prompt?: string } = {};
+    const stage = createFixFindingsStage({
+      config: mockContext().config,
+      runner: okRunner(captured),
+      promptTemplate: 'SYSTEM',
+      discoveredSkills: [],
+      getCurrentHeadSha: async () => 'head1',
+      resetWorktree: async () => {},
+      getDiff: async () => 'THE DIFF',
+      buildPrompt: () => 'CUSTOM PROMPT',
+    });
+    await stage.execute(stateWithFindings(), mockContext());
+    expect(captured.prompt).toBe('CUSTOM PROMPT');
+  });
+
   it('uses the fix-findings model and turn budget', async () => {
     const captured: { model?: string; maxTurns?: number } = {};
     const ctx = mockContext();
