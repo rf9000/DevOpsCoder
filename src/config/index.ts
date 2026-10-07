@@ -167,6 +167,10 @@ const envSchema = z.object({
     .pipe(z.enum(['Synchronize', 'ForceSync', 'Recreate']).optional()),
   CLAUDE_CODE_EXECUTABLE_PATH: z.string().optional(),
   COST_LOG_PATH: z.string().optional(),
+  // Commit identity for apply-suggestions. mutant-fixer lists the email in its
+  // BOT_IDENTITIES so it skips the commits this command pushes.
+  BOT_GIT_NAME: z.string().optional(),
+  BOT_GIT_EMAIL: z.string().optional(),
 });
 
 export function loadConfig(
@@ -374,6 +378,8 @@ export function loadConfig(
     ...(p.FINAL_REVIEW ? { finalReviewMinLines: p.FINAL_REVIEW_MIN_LINES } : {}),
     deleteEnvOnPrClose: p.DELETE_ENV_ON_PR_CLOSE,
     claudeCodeExecutablePath: p.CLAUDE_CODE_EXECUTABLE_PATH,
+    ...(model(p.BOT_GIT_NAME) !== undefined ? { botGitName: model(p.BOT_GIT_NAME) } : {}),
+    ...(model(p.BOT_GIT_EMAIL) !== undefined ? { botGitEmail: model(p.BOT_GIT_EMAIL) } : {}),
     skipBuildTest: p.SKIP_BUILD_TEST,
     testSelection: p.TEST_SELECTION,
     maxTestCodeunits: p.CONTINIA_MAX_TEST_CODEUNITS,

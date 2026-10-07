@@ -110,6 +110,10 @@ export interface AppConfig {
    * package and fails, so the Docker image pins this to the natively-installed
    * CLI at /home/claude/.local/bin/claude. */
   claudeCodeExecutablePath?: string;
+  /** Commit author for apply-suggestions (BOT_GIT_NAME). */
+  botGitName?: string;
+  /** Commit author email for apply-suggestions (BOT_GIT_EMAIL). */
+  botGitEmail?: string;
   /** Append-only JSONL spend log: one record per finished work item. */
   costLogPath: string;
   /** Skip env-provision + build-and-test (harness smoke tests). */
@@ -695,6 +699,8 @@ export interface CreatePullRequestArgs {
   isDraft: boolean;
   /** WI to link via workItemRefs — ADO then shows the PR on the work item. */
   workItemId?: number;
+  /** Required reviewers by identity id (ADO `reviewers[].id`). */
+  reviewers?: { id: string }[];
 }
 
 export interface CreatePullRequestThreadArgs {

@@ -263,6 +263,24 @@ describe('createAdoClient', () => {
   });
 
   describe('createPullRequest', () => {
+    it('sends reviewers when given, and omits the field otherwise', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(201, { pullRequestId: 1, url: 'u', sourceRefName: 's', targetRefName: 't' }),
+        jsonResponse(201, { pullRequestId: 2, url: 'u', sourceRefName: 's', targetRefName: 't' }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      const base = {
+        repositoryName: 'test-repo', sourceRefName: 'refs/heads/mutant/pr-1-abc1234',
+        targetRefName: 'refs/heads/feature/foo', title: 't', description: 'd', isDraft: false,
+      };
+      await client.createPullRequest({ ...base, reviewers: [{ id: 'guid-1' }] });
+      await client.createPullRequest(base);
+      const first = JSON.parse(calls[0]!.init?.body as string) as Record<string, unknown>;
+      const second = JSON.parse(calls[1]!.init?.body as string) as Record<string, unknown>;
+      expect(first.reviewers).toEqual([{ id: 'guid-1' }]);
+      expect('reviewers' in second).toBe(false);
+    });
+
     it('POSTs to the right URL with isDraft: true and returns the PR', async () => {
       const fetchImpl = setupFetch([
         jsonResponse(201, {

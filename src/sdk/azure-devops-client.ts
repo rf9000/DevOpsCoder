@@ -234,6 +234,7 @@ export function createAdoClient(
             title: args.title,
             description: args.description,
             isDraft: args.isDraft,
+            ...(args.reviewers && args.reviewers.length > 0 ? { reviewers: args.reviewers } : {}),
             ...(args.workItemId !== undefined
               ? { workItemRefs: [{ id: String(args.workItemId) }] }
               : {}),

@@ -8,6 +8,7 @@ import {
   planMaxTurns,
   planModelFor,
 } from '../../src/utils/model-selection.ts';
+import { makeTestConfig } from '../helpers/app-config.ts';
 
 const validEnv: Record<string, string> = {
   AZURE_DEVOPS_PAT: 'test-pat',
@@ -595,5 +596,19 @@ describe('final review and environment cleanup config', () => {
 
   it('pins the final-review timeout with STAGE_TIMEOUT_MS_FINAL_REVIEW', () => {
     expect(loadConfig({ ...validEnv, STAGE_TIMEOUT_MS_FINAL_REVIEW: '1234' }).stageTimeoutMs['final-review']).toBe(1234);
+  });
+});
+
+describe('bot git identity', () => {
+  it('reads BOT_GIT_NAME and BOT_GIT_EMAIL', () => {
+    const c = makeTestConfig({ BOT_GIT_NAME: 'Mutant Bot', BOT_GIT_EMAIL: 'bot@example.com' });
+    expect(c.botGitName).toBe('Mutant Bot');
+    expect(c.botGitEmail).toBe('bot@example.com');
+  });
+
+  it('treats blank values as unset', () => {
+    const c = makeTestConfig({ BOT_GIT_NAME: ' ', BOT_GIT_EMAIL: '' });
+    expect(c.botGitName).toBeUndefined();
+    expect(c.botGitEmail).toBeUndefined();
   });
 });
