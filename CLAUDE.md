@@ -127,6 +127,7 @@ Local runs use the operator's subscription: the CLI deletes `ANTHROPIC_API_KEY` 
 - `bun run start` — start the long-running watcher
 - `bun run once` — single poll cycle, prints cycle stats as JSON
 - `bun run src/cli/index.ts run-wi <id>` — process one work item by ID
+- `bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]` — apply mutant-fixer's verified test fixes to a PR; the last stdout line is the JSON outcome (see README "apply-suggestions")
 - `bun run src/cli/index.ts reset-state <id>` — delete `.state/{id}.json`
 - `bun run src/cli/index.ts debug-tags` — list WI IDs tagged with `TRIGGER_TAG`
 - `bun run src/cli/index.ts debug-pr <id>` — print the draft-PR record stored in state for a WI

@@ -107,6 +107,23 @@ like any other:
 | `bun run src/cli/index.ts debug-tags` | List work item IDs tagged TRIGGER_TAG |
 | `bun run src/cli/index.ts debug-pr <id>` | Print the draft-PR record stored in state for a work item |
 | `bun run src/cli/index.ts experiment --corpus <f> --variants <f>` | Replay corpus WIs under each model/effort variant and write a cost-vs-quality report — see [Model/effort experiments](#modeleffort-experiments) |
+| `bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]` | Apply mutant-fixer's verified test fixes to a PR — see [apply-suggestions](#apply-suggestions) |
+
+## apply-suggestions
+
+mutant-fixer runs AI mutation testing on draft PRs and hands the verified high-confidence test fixes to this command. The input file and the JSON outcome are defined in mutant-fixer's [`docs/handover/devopscoder-apply-suggestions.md`](../mutant-fixer/docs/handover/devopscoder-apply-suggestions.md); change both together.
+
+What it does:
+- Creates a locked worktree at the PR head commit and applies each fix through the fix-findings agent with its own prompt (`src/prompts/apply-suggestions.md`).
+- Makes exactly one commit per fix id, authored by `BOT_GIT_NAME` / `BOT_GIT_EMAIL`, with the message `test: <id> kill mutants <ids> (mutant-fixer run <runNo>)`. A fix the agent fails on or leaves unchanged is skipped (`skippedIds`).
+- `pr` mode: force-pushes `mutant/pr-<id>-<sha7>` and opens a non-draft PR into the developer's branch with the PR creator as reviewer.
+- `push` mode: pushes to the developer's branch with `--force-with-lease` against the head commit. Returns `error: "head-moved"` when the branch moved.
+- `--dry-run`: applies and commits, but does not push or open a PR, and keeps the worktree for inspection.
+- The last stdout line is the JSON outcome. Expected failures (`invalid-input: ...`, `head-moved`, `nothing-applied`, `<stage>: <message>`) print `ok: false` and exit 0. A non-zero exit means a crash, such as a missing variable.
+
+Variables it needs: `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, `BOT_GIT_NAME`, `BOT_GIT_EMAIL`. Optional: `STATE_DIR`, and `MAX_COST_USD_PER_WI` (default 20 USD for this command). It ignores `ADO_REPOSITORY_NAME`, which comes from the input, and forces `SKIP_BUILD_TEST` on: al-mutation already verified the fixes on a BC environment.
+
+State goes to `STATE_DIR/suggestions/<prId>.json` and every run starts fresh. The command never runs `git worktree prune`, because the clone is shared with other containers whose worktree paths do not exist here. It removes only its own worktree.
 
 ## Layout
 
