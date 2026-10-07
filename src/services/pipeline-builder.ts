@@ -32,6 +32,15 @@ import { revisionLoop } from '../pipeline/revision-loop.ts';
 import { createDraftPrCreatorStage } from '../pipeline/stages/draft-pr-creator.ts';
 import { createFinalReviewStage } from '../pipeline/stages/final-review.ts';
 import { createWorktreeTeardownStage } from '../pipeline/stages/worktree-teardown.ts';
+import type { SuggestionGit } from '../suggestions/suggestion-git.ts';
+import type { SuggestionMode } from '../suggestions/input.ts';
+import { buildApplySuggestionPrompt } from '../suggestions/prompt.ts';
+import {
+  createApplyFixesStage,
+  createPushSuggestionsStage,
+  createStackedPrStage,
+  createSuggestionWorktreeStage,
+} from '../pipeline/stages/suggestions.ts';
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
 const CODER_PROMPT_PATH = `${import.meta.dir}/../prompts/coder.md`;
@@ -43,6 +52,7 @@ const FIX_FINDINGS_PROMPT_PATH = `${import.meta.dir}/../prompts/fix-findings.md`
 const REVIEWER_SHARED_PROMPT_PATH = `${import.meta.dir}/../prompts/reviewer-shared.md`;
 const DRAFT_PR_DESCRIPTION_PROMPT_PATH = `${import.meta.dir}/../prompts/draft-pr-description.md`;
 const PR_MESSAGE_PROMPT_PATH = `${import.meta.dir}/../prompts/pr-message.md`;
+const APPLY_SUGGESTIONS_PROMPT_PATH = `${import.meta.dir}/../prompts/apply-suggestions.md`;
 const REVIEWER_AXIS_PROMPT_PATHS: Record<typeof REVIEW_AXES[number], string> = {
   'safety-correctness': `${import.meta.dir}/../prompts/reviewers/safety-correctness.md`,
   'performance': `${import.meta.dir}/../prompts/reviewers/performance.md`,
@@ -337,5 +347,42 @@ export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
       worktreeManager,
       logger: deps.logger,
     }),
+  ];
+}
+
+export interface SuggestionPipelineDeps {
+  config: AppConfig;
+  logger: Logger;
+  ado: AdoClient;
+  git: SuggestionGit;
+  runner?: AgentRunner;
+  discoveredSkills?: DiscoveredSkill[];
+  /** System-prompt append override. Default reads src/prompts/apply-suggestions.md. */
+  promptTemplate?: string;
+}
+
+/**
+ * apply-suggestions: [suggestion-worktree, apply-fixes, push-suggestions,
+ * (pr) create-stacked-pr]. The fixes were verified by al-mutation on a BC
+ * environment, so there is no analyzer, reviewer, test-author or
+ * build-and-test. Worktree removal runs in the caller's finally, because the
+ * orchestrator stops at the first failing stage.
+ */
+export function buildSuggestionPipeline(deps: SuggestionPipelineDeps, mode: SuggestionMode): Stage[] {
+  const runner = deps.runner ?? createClaudeAgentRunner({ config: deps.config, logger: deps.logger });
+  const fixFindings = createFixFindingsStage({
+    config: deps.config,
+    runner,
+    promptTemplate: deps.promptTemplate ?? readFileSync(APPLY_SUGGESTIONS_PROMPT_PATH, 'utf-8'),
+    discoveredSkills: deps.discoveredSkills ?? discoverTargetRepoSkills(deps.config.targetRepoPath),
+    buildPrompt: buildApplySuggestionPrompt,
+    getCurrentHeadSha: (p) => deps.git.headSha(p),
+    resetWorktree: (p, sha) => deps.git.resetHard(p, sha),
+  });
+  return [
+    createSuggestionWorktreeStage({ git: deps.git }),
+    createApplyFixesStage({ git: deps.git, fixFindings }),
+    createPushSuggestionsStage({ git: deps.git }),
+    ...(mode === 'pr' ? [createStackedPrStage({ ado: deps.ado })] : []),
   ];
 }

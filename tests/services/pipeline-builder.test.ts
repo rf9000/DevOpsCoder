@@ -1,5 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { buildPipeline, type PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
+import { buildSuggestionPipeline } from '../../src/services/pipeline-builder.ts';
+import { makeTestConfig } from '../helpers/app-config.ts';
 import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
@@ -549,6 +551,30 @@ describe('buildPipeline (Task 8 — wire fix-findings + verify into revision-loo
     expect(stages.map((s) => s.name)).toEqual([
       'analyzer', 'worktree-setup', 'env-provision', 'revision-loop', 'test-author',
       'build-and-test', 'final-review', 'draft-pr-creator', 'worktree-teardown',
+    ]);
+  });
+});
+
+describe('buildSuggestionPipeline', () => {
+  const deps = () => ({
+    config: makeTestConfig(),
+    logger: { info() {}, warn() {}, error() {} },
+    ado: {} as never,
+    git: {} as never,
+    runner: {} as never,
+    discoveredSkills: [],
+    promptTemplate: 'x',
+  });
+
+  it('pr mode: worktree, apply, push, stacked PR', () => {
+    expect(buildSuggestionPipeline(deps(), 'pr').map((s) => s.name)).toEqual([
+      'suggestion-worktree', 'apply-fixes', 'push-suggestions', 'create-stacked-pr',
+    ]);
+  });
+
+  it('push mode: no PR stage', () => {
+    expect(buildSuggestionPipeline(deps(), 'push').map((s) => s.name)).toEqual([
+      'suggestion-worktree', 'apply-fixes', 'push-suggestions',
     ]);
   });
 });
