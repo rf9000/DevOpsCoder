@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Finding } from '../types/index.ts';
-import { capPrDescription } from '../pipeline/stages/draft-pr-creator.ts';
+import { capPrDescription, MAX_PR_DESCRIPTION_LENGTH } from '../pipeline/stages/draft-pr-creator.ts';
 
 /**
  * mutant-fixer's handover file. The contract lives in mutant-fixer's
@@ -104,17 +104,33 @@ export function stackedPrTitle(input: SuggestionInput): string {
   return `Mutation fixes for !${input.pullRequestId} (run ${input.runNo})`;
 }
 
+/** One short line per fix; the rationale is in the parent PR's comment. */
+function fixBullet(s: Suggestion): string {
+  const title = s.title.startsWith(`${s.id}: `) ? s.title.slice(s.id.length + 2) : s.title;
+  const ids = killedMutants(s.description);
+  return `- **${s.id}** ${title}${ids ? ` (kills mutants ${ids})` : ''}`;
+}
+
 export function buildStackedPrDescription(input: SuggestionInput, appliedIds: string[]): string {
   const applied = new Set(appliedIds);
-  const bullets = input.suggestions
-    .filter((s) => applied.has(s.id))
-    .map((s) => `- **${s.id}** ${s.title}: ${(s.description.split('\n')[0] ?? '').trim()}`);
-  return capPrDescription(
-    [
-      `Mutation-test fixes for [!${input.pullRequestId}](${input.parentPullRequestUrl}), from mutant-fixer run ${input.runNo}.`,
-      'Each commit adds one fix that was verified on a BC environment: it compiles, passes on the PR code and kills the listed mutants.',
-      '',
-      ...bullets,
-    ].join('\n'),
-  );
+  const bullets = input.suggestions.filter((s) => applied.has(s.id)).map(fixBullet);
+  const head = [
+    `Mutation-test fixes for [!${input.pullRequestId}](${input.parentPullRequestUrl}), from mutant-fixer run ${input.runNo}.`,
+    'Each commit adds one fix that was verified on a BC environment: it compiles, passes on the PR code and kills the listed mutants.',
+    '',
+  ].join('\n');
+  // Drop whole bullets rather than cut mid-line; the commits list every fix.
+  const kept: string[] = [];
+  let length = head.length;
+  for (const [i, b] of bullets.entries()) {
+    const rest = bullets.length - i - 1;
+    const more = rest > 0 ? `\n…and ${rest} more fixes; see the commits.`.length : 0;
+    if (length + 1 + b.length + more > MAX_PR_DESCRIPTION_LENGTH) {
+      kept.push(`…and ${bullets.length - i} more fixes; see the commits.`);
+      break;
+    }
+    kept.push(b);
+    length += 1 + b.length;
+  }
+  return capPrDescription([head, ...kept].join('\n'));
 }

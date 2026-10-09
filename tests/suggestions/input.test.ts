@@ -95,7 +95,34 @@ describe('mapping', () => {
     expect(stackedPrTitle(input)).toBe('Mutation fixes for !12345 (run 1003)');
     const d = buildStackedPrDescription(input, ['F001']);
     expect(d).toContain(`[!12345](${input.parentPullRequestUrl})`);
-    expect(d).toContain('- **F001** F001: add-assert in SomeTest: Assert the target is empty.');
+    expect(d).toContain('- **F001** add-assert in SomeTest (kills mutants 140, 141)');
+    expect(d).not.toContain('Assert the target is empty');
     expect(d).not.toContain('Expected effect');
+  });
+
+  it('keeps a title that does not start with the id, and leaves out a missing mutant list', () => {
+    const input = makeInput();
+    input.suggestions[0]!.title = 'new-test in OtherTest';
+    input.suggestions[0]!.description = 'no list';
+    expect(buildStackedPrDescription(input, ['F001'])).toEndWith('\n- **F001** new-test in OtherTest');
+  });
+
+  it('drops whole bullets over the 4000-char limit and says how many are left out', () => {
+    const input = makeInput();
+    const base = input.suggestions[0]!;
+    input.suggestions = Array.from({ length: 60 }, (_, i) => ({
+      ...base,
+      id: `F${String(i + 1).padStart(3, '0')}`,
+      title: `F${String(i + 1).padStart(3, '0')}: new-test in ${'Test_'.padEnd(80, 'x')}`,
+    }));
+    const d = buildStackedPrDescription(input, input.suggestions.map((s) => s.id));
+    expect(d.length).toBeLessThanOrEqual(4000);
+    const lines = d.split('\n');
+    const bullets = lines.filter((l) => l.startsWith('- **F'));
+    expect(bullets.length).toBeGreaterThan(0);
+    expect(bullets.length).toBeLessThan(60);
+    for (const b of bullets) expect(b).toEndWith('(kills mutants 140, 141)');
+    expect(lines.at(-1)).toBe(`…and ${60 - bullets.length} more fixes; see the commits.`);
+    expect(d).not.toContain('truncated');
   });
 });
