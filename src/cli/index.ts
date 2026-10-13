@@ -280,7 +280,7 @@ async function runApplySuggestionsCommand(): Promise<void> {
   if (process.argv.includes('--dry-run')) config.dryRun = true;
   const logger = createLogger('apply-suggestions');
   const ado = createAdoClient(config);
-  const git = createSuggestionGit({ config });
+  const git = createSuggestionGit({ config, logger });
   // mutant-fixer's timeout sends SIGTERM to the process group, then SIGKILL
   // 5s later. Abort so the runner's finally removes the locked worktree,
   // which nothing else would ever clean up.

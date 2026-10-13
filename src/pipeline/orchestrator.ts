@@ -89,16 +89,6 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       return state;
     }
 
-    // Pre-stage gate 2: cost cap accumulated from prior stages.
-    const cost = state.outputs.cost as PipelineCostInfo | undefined;
-    const totalCost = cost?.total ?? 0;
-    if (totalCost > context.config.maxCostUsdPerWi) {
-      const stageName = state.currentStage;
-      const costErr = new CostExceededError(totalCost, context.config.maxCostUsdPerWi, stageName);
-      const costNow = context.now().toISOString();
-      recordTerminalAndThrow(state, store, stageName, costErr, costNow, costNow);
-    }
-
     const idx = findStageIndex(stages, state.currentStage);
     if (idx < 0) {
       throw new StageNotFoundError(
@@ -106,6 +96,17 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       );
     }
     const stage = stages[idx]!;
+
+    // Pre-stage gate 2: cost cap accumulated from prior stages. A costFree
+    // stage spends nothing, so it may run past the cap.
+    const cost = state.outputs.cost as PipelineCostInfo | undefined;
+    const totalCost = cost?.total ?? 0;
+    if (!stage.costFree && totalCost > context.config.maxCostUsdPerWi) {
+      const stageName = state.currentStage;
+      const costErr = new CostExceededError(totalCost, context.config.maxCostUsdPerWi, stageName);
+      const costNow = context.now().toISOString();
+      recordTerminalAndThrow(state, store, stageName, costErr, costNow, costNow);
+    }
     const startedAt = context.now().toISOString();
 
     if (!stage.canRun(state)) {

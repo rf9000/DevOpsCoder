@@ -46,6 +46,36 @@ describe('parseSuggestionInput', () => {
     expect(parseSuggestionInput(JSON.stringify(input)).ok).toBe(false);
   });
 
+  it('has no patchDirectory, patch or maxCostUsd when the input leaves them out', () => {
+    const r = parseSuggestionInput(JSON.stringify(makeInput()));
+    expect(r.ok && r.input.patchDirectory).toBeUndefined();
+    expect(r.ok && r.input.maxCostUsd).toBeUndefined();
+    expect(r.ok && r.input.suggestions[0]!.patch).toBeUndefined();
+  });
+
+  it('keeps patchDirectory and a CRLF patch byte-exact', () => {
+    const patch = 'diff --git a/T.al b/T.al\n--- a/T.al\n+++ b/T.al\n@@ -1 +1,2 @@\n line1\r\n+line2\r\n';
+    const input = makeInput({ patchDirectory: 'src/base-application-test' });
+    input.suggestions[0]!.patch = patch;
+    const r = parseSuggestionInput(JSON.stringify(input));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.input.patchDirectory).toBe('src/base-application-test');
+      expect(r.input.suggestions[0]!.patch).toBe(patch);
+    }
+  });
+
+  it.each(['../outside', '/abs', 'a\\b', 'C:/x', ''])('rejects patchDirectory %s', (patchDirectory) => {
+    expect(parseSuggestionInput(JSON.stringify(makeInput({ patchDirectory }))).ok).toBe(false);
+  });
+
+  it('accepts a positive maxCostUsd and rejects zero or a negative one', () => {
+    const r = parseSuggestionInput(JSON.stringify(makeInput({ maxCostUsd: 3.5 })));
+    expect(r.ok && r.input.maxCostUsd).toBe(3.5);
+    expect(parseSuggestionInput(JSON.stringify(makeInput({ maxCostUsd: 0 }))).ok).toBe(false);
+    expect(parseSuggestionInput(JSON.stringify(makeInput({ maxCostUsd: -1 }))).ok).toBe(false);
+  });
+
   it('rejects text that is not JSON', () => {
     const r = parseSuggestionInput('{nope');
     expect(r.ok).toBe(false);
@@ -105,6 +135,29 @@ describe('mapping', () => {
     input.suggestions[0]!.title = 'new-test in OtherTest';
     input.suggestions[0]!.description = 'no list';
     expect(buildStackedPrDescription(input, ['F001'])).toEndWith('\n- **F001** new-test in OtherTest');
+  });
+
+  it('names the skipped fixes, and the cost cap when it was reached', () => {
+    const input = makeInput();
+    expect(buildStackedPrDescription(input, ['F001'], { skippedIds: [] })).not.toContain('not applied');
+    expect(buildStackedPrDescription(input, ['F001'], { skippedIds: ['F002'] })).toContain('\n1 fix was not applied (F002).\n');
+    const capped = buildStackedPrDescription(input, ['F001'], { skippedIds: ['F002', 'F003'], capReached: true });
+    expect(capped).toContain('2 fixes were not applied (F002, F003). The agent cost cap was reached.');
+  });
+
+  it('stays within 4000 chars with many skipped fixes', () => {
+    const input = makeInput();
+    const base = input.suggestions[0]!;
+    input.suggestions = Array.from({ length: 60 }, (_, i) => ({
+      ...base,
+      id: `F${String(i + 1).padStart(3, '0')}`,
+      title: `F${String(i + 1).padStart(3, '0')}: new-test in ${'Test_'.padEnd(80, 'x')}`,
+    }));
+    const ids = input.suggestions.map((s) => s.id);
+    const d = buildStackedPrDescription(input, ids.slice(0, 50), { skippedIds: ids.slice(50).concat(ids.slice(0, 40)), capReached: true });
+    expect(d.length).toBeLessThanOrEqual(4000);
+    expect(d).toContain('50 fixes were not applied (F051');
+    expect(d).toContain(', …). The agent cost cap was reached.');
   });
 
   it('drops whole bullets over the 4000-char limit and says how many are left out', () => {

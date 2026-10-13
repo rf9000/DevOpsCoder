@@ -6,19 +6,29 @@ import { capPrDescription, MAX_PR_DESCRIPTION_LENGTH } from '../pipeline/stages/
  * mutant-fixer's handover file. The contract lives in mutant-fixer's
  * docs/handover/devopscoder-apply-suggestions.md; change both together.
  */
-const suggestionSchema = z.object({
-  id: z.string().regex(/^[A-Za-z0-9_-]+$/, 'id must be letters, digits, - or _'),
-  file: z
+function repoRelativePath(name: string) {
+  return z
     .string()
     .min(1)
-    .refine((f) => !f.includes('\\'), 'file must use forward slashes')
-    .refine((f) => !f.startsWith('/') && !/^[A-Za-z]:/.test(f), 'file must be relative to the repo root')
-    .refine((f) => !f.split('/').includes('..'), 'file must stay inside the repo'),
+    .refine((f) => !f.includes('\\'), `${name} must use forward slashes`)
+    .refine((f) => !f.startsWith('/') && !/^[A-Za-z]:/.test(f), `${name} must be relative to the repo root`)
+    .refine((f) => !f.split('/').includes('..'), `${name} must stay inside the repo`);
+}
+
+const suggestionSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_-]+$/, 'id must be letters, digits, - or _'),
+  file: repoRelativePath('file'),
   line: z.number().int().positive().optional(),
   title: z.string().min(1),
   description: z.string(),
   code: z.string().min(1),
   confidence: z.string(),
+  /**
+   * Unified diff (git format) of this fix, paths relative to patchDirectory.
+   * Patches are cumulative: each applies on top of the ones before it.
+   * Kept byte-exact (content lines may end in CRLF).
+   */
+  patch: z.string().optional(),
 });
 
 const inputSchema = z
@@ -31,6 +41,10 @@ const inputSchema = z
     sourceRefName: z.string().startsWith('refs/heads/'),
     headCommit: z.string().regex(/^[0-9a-f]{40}$/, 'headCommit must be a full 40-char sha'),
     runNo: z.number().int().nonnegative(),
+    /** Repo-relative folder the suggestion patches are rooted at (the test app folder). */
+    patchDirectory: repoRelativePath('patchDirectory').optional(),
+    /** The caller's ceiling in USD; the run's cap is the lower of this and MAX_COST_USD_PER_WI. */
+    maxCostUsd: z.number().positive().optional(),
     suggestions: z.array(suggestionSchema).min(1),
   })
   .superRefine((v, ctx) => {
@@ -111,12 +125,28 @@ function fixBullet(s: Suggestion): string {
   return `- **${s.id}** ${title}${ids ? ` (kills mutants ${ids})` : ''}`;
 }
 
-export function buildStackedPrDescription(input: SuggestionInput, appliedIds: string[]): string {
+/** At most this many skipped ids are named; the rest are counted. */
+const MAX_NAMED_SKIPPED = 40;
+
+function skippedLine(skippedIds: string[], capReached: boolean): string {
+  const n = skippedIds.length;
+  const named = skippedIds.slice(0, MAX_NAMED_SKIPPED).join(', ') + (n > MAX_NAMED_SKIPPED ? ', …' : '');
+  const why = capReached ? ' The agent cost cap was reached.' : '';
+  return `${n} ${n === 1 ? 'fix was' : 'fixes were'} not applied (${named}).${why}`;
+}
+
+export function buildStackedPrDescription(
+  input: SuggestionInput,
+  appliedIds: string[],
+  opts: { skippedIds?: string[]; capReached?: boolean } = {},
+): string {
   const applied = new Set(appliedIds);
   const bullets = input.suggestions.filter((s) => applied.has(s.id)).map(fixBullet);
+  const skipped = opts.skippedIds ?? [];
   const head = [
     `Mutation-test fixes for [!${input.pullRequestId}](${input.parentPullRequestUrl}), from mutant-fixer run ${input.runNo}.`,
     'Each commit adds one fix that was verified on a BC environment: it compiles, passes on the PR code and kills the listed mutants.',
+    ...(skipped.length > 0 ? [skippedLine(skipped, opts.capReached ?? false)] : []),
     '',
   ].join('\n');
   // Drop whole bullets rather than cut mid-line; the commits list every fix.

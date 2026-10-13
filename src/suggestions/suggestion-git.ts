@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, rmSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 import type { AppConfig, WorktreeContext } from '../types/index.ts';
 import { buildGitAuthArgs, redactPat } from '../utils/git-auth.ts';
+import type { Logger } from '../utils/logger.ts';
 import { mutantBranchName, sha7 } from './input.ts';
 
 /** push mode: origin/<branch> is no longer the commit the fixes were computed against. */
@@ -28,6 +30,13 @@ export interface SuggestionGit {
   headSha(path: string): Promise<string>;
   resetHard(path: string, sha: string): Promise<void>;
   commitFix(a: { path: string; baselineSha: string; message: string }): Promise<string | null>;
+  /**
+   * `git apply -p1` the unified diff in the worktree, paths rooted at
+   * `directory` (repo-relative). New files are marked intent-to-add so
+   * commitFix's `add -u` picks them up. False when git refuses the patch;
+   * the worktree is then unchanged.
+   */
+  applyPatch(a: { path: string; patch: string; directory?: string }): Promise<boolean>;
   push(a: { path: string; mode: 'pr' | 'push'; remoteBranch: string; headCommit: string }): Promise<void>;
   removeWorktree(wt: WorktreeContext): Promise<void>;
 }
@@ -39,7 +48,7 @@ export interface SuggestionGit {
  * registrations, so nothing here prunes. Worktrees are added `--lock`ed, which
  * is why removal and re-adding pass `--force` twice.
  */
-export function createSuggestionGit(deps: { config: AppConfig }): SuggestionGit {
+export function createSuggestionGit(deps: { config: AppConfig; logger?: Logger }): SuggestionGit {
   const repo = deps.config.targetRepoPath;
   const pat = deps.config.pat;
 
@@ -132,6 +141,28 @@ export function createSuggestionGit(deps: { config: AppConfig }): SuggestionGit 
       if (exitCode === 0) return null;
       await runGit(['-c', `user.name=${name}`, '-c', `user.email=${email}`, 'commit', '--no-verify', '-m', a.message], a.path);
       return (await runGit(['rev-parse', 'HEAD'], a.path)).stdout.trim();
+    },
+
+    async applyPatch(a) {
+      // Outside the worktree, so a failed apply leaves nothing to clean up.
+      // A Buffer keeps the bytes exact: CRLF content lines must match the file.
+      const dir = mkdtempSync(join(tmpdir(), 'mutant-patch-'));
+      const file = join(dir, 'fix.patch');
+      try {
+        writeFileSync(file, Buffer.from(a.patch, 'utf8'));
+        const args = ['apply', '-p1', '--whitespace=nowarn', '--intent-to-add'];
+        if (a.directory) args.push(`--directory=${a.directory}`);
+        args.push(file);
+        try {
+          await runGit(args, a.path);
+          return true;
+        } catch (err) {
+          deps.logger?.warn(`apply-suggestions: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     },
 
     async push(a) {

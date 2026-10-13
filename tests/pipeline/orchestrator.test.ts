@@ -422,6 +422,26 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     expect(stage2Called).toBe(false);
   });
 
+  it('over cost cap: costFree stages still run, the gate stops at the next paid stage', async () => {
+    const store = makeMockStore();
+    const state = createInitialState(101, 'wi');
+    state.outputs.cost = { total: 6.00, perStage: {} };
+    const ran: string[] = [];
+    const free = (name: string): Stage => ({ ...makeStage(name, async (s) => { ran.push(name); return s; }), costFree: true });
+    const stages: Stage[] = [
+      free('push'),
+      free('pr'),
+      makeStage('paid', async (s) => { ran.push('paid'); return s; }),
+    ];
+    let caught: unknown;
+    try {
+      await runPipeline({ stages, state, context: makeContext(), store });
+    } catch (e) { caught = e; }
+    expect(ran).toEqual(['push', 'pr']);
+    expect(caught).toBeInstanceOf(CostExceededError);
+    expect(state.terminalError?.stage).toBe('paid');
+  });
+
   // T4: Within timeout passes through
   it('within timeout: stage completes normally before timer fires', async () => {
     const store = makeMockStore();

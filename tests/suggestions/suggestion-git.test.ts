@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFile } from 'child_process';
@@ -168,6 +168,61 @@ describe('commitFix', () => {
     const wt = await g.createPrWorktree(args());
     expect(await g.commitFix({ path: wt.path, baselineSha: head, message: 'm' })).toBeNull();
     expect((await runGit(['rev-parse', 'HEAD'], wt.path)).trim()).toBe(head);
+  });
+});
+
+describe('applyPatch', () => {
+  // Byte-exact checks: no line-ending conversion on checkout, as on the VM.
+  async function crlfWorktree(g: ReturnType<typeof git>) {
+    await runGit(['config', 'core.autocrlf', 'false'], repo.targetRepoPath);
+    const dev = join(repo.root, 'dev');
+    await runGit(['config', 'core.autocrlf', 'false'], dev);
+    mkdirSync(join(dev, 'app-test'), { recursive: true });
+    writeFileSync(join(dev, 'app-test', 'T.al'), Buffer.from('line1\r\nline2\r\n'));
+    await runGit(['add', 'app-test/T.al'], dev);
+    await runGit(['commit', '-m', 'crlf test file'], dev);
+    await runGit(['push', 'origin', 'feature/foo'], dev);
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    return g.createPrWorktree(args());
+  }
+
+  const CRLF_PATCH =
+    'diff --git a/T.al b/T.al\n' +
+    '--- a/T.al\n' +
+    '+++ b/T.al\n' +
+    '@@ -1,2 +1,3 @@\n' +
+    ' line1\r\n' +
+    ' line2\r\n' +
+    '+assert\r\n' +
+    'diff --git a/New.al b/New.al\n' +
+    'new file mode 100644\n' +
+    '--- /dev/null\n' +
+    '+++ b/New.al\n' +
+    '@@ -0,0 +1 @@\n' +
+    '+new\r\n';
+
+  it('applies a CRLF patch under the directory byte-exact, and commitFix includes the new file', async () => {
+    const g = git();
+    const wt = await crlfWorktree(g);
+    expect(await g.applyPatch({ path: wt.path, patch: CRLF_PATCH, directory: 'app-test' })).toBe(true);
+    expect(readFileSync(join(wt.path, 'app-test', 'T.al')).toString('binary')).toBe('line1\r\nline2\r\nassert\r\n');
+    expect(readFileSync(join(wt.path, 'app-test', 'New.al')).toString('binary')).toBe('new\r\n');
+    expect(await g.commitFix({ path: wt.path, baselineSha: head, message: 'm' })).not.toBeNull();
+    expect((await runGit(['show', '--name-only', '--format=', 'HEAD'], wt.path)).trim().split('\n').sort()).toEqual(['app-test/New.al', 'app-test/T.al']);
+    expect((await runGit(['status', '--porcelain'], wt.path)).trim()).toBe('');
+  });
+
+  it('returns false, logs the git error and leaves the worktree unchanged when the patch does not fit', async () => {
+    const warnings: string[] = [];
+    const g = createSuggestionGit({
+      config: makeTestConfig({ TARGET_REPO_PATH: repo.targetRepoPath, WORKTREE_BASE: repo.worktreeBase, BOT_GIT_NAME: 'B', BOT_GIT_EMAIL: 'b@x' }),
+      logger: { info() {}, warn: (m: string) => { warnings.push(m); }, error() {} },
+    });
+    const wt = await crlfWorktree(g);
+    const lf = CRLF_PATCH.replace(/\r\n/g, '\n');
+    expect(await g.applyPatch({ path: wt.path, patch: lf, directory: 'app-test' })).toBe(false);
+    expect(warnings.join('\n')).toContain('git apply');
+    expect((await runGit(['status', '--porcelain'], wt.path)).trim()).toBe('');
   });
 });
 

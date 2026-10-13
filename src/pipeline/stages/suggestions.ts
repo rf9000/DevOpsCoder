@@ -1,5 +1,5 @@
 import type { Stage } from '../stage.ts';
-import type { ReviewerOutput, WorktreeContext } from '../../types/index.ts';
+import type { PipelineCostInfo, ReviewerOutput, WorktreeContext } from '../../types/index.ts';
 import { CostExceededError } from '../../types/index.ts';
 import type { AdoClient } from '../../sdk/azure-devops-client.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
@@ -12,7 +12,6 @@ import {
   suggestionToFinding,
   type SuggestionInput,
 } from '../../suggestions/input.ts';
-import { assertWithinCostCap } from '../../utils/cost-tracker.ts';
 
 /** No fix produced a change: nothing to push. Reported as ok:false, not a crash. */
 export class NothingAppliedError extends Error {
@@ -70,10 +69,16 @@ export function createSuggestionWorktreeStage(deps: { git: SuggestionGit }): Sta
 }
 
 /**
- * One fix-findings run per fix id, then one commit per fix: the contract asks
- * for a commit per id with a fixed message, and the agent's own commits carry
- * neither. A fix the agent fails on or leaves unchanged is skipped and the
- * worktree reset, so one bad fix does not cost the others.
+ * One commit per fix id, in input order: the contract asks for a commit per id
+ * with a fixed message. A fix with a `patch` is applied with `git apply` and
+ * costs nothing; when the patch does not apply (or has none), one
+ * fix-findings run applies it. A fix the agent fails on or leaves unchanged is
+ * skipped and the worktree reset, so one bad fix does not cost the others.
+ *
+ * The cost cap does not throw away finished work: once the run's spend is over
+ * MAX_COST_USD_PER_WI no further agent starts and those fixes are skipped
+ * (`state.outputs.capReached`), but patch fixes still apply and the commits
+ * made so far are pushed.
  */
 export function createApplyFixesStage(deps: { git: SuggestionGit; fixFindings: Stage }): Stage {
   return {
@@ -84,11 +89,44 @@ export function createApplyFixesStage(deps: { git: SuggestionGit; fixFindings: S
       const wt = worktreeOf(state);
       const applied: string[] = [];
       const skipped: string[] = [];
+      let capReached = false;
+      const overCap = () => ((state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0) > ctx.config.maxCostUsdPerWi;
       // Each fix gets its own share of the stage budget, so one hung agent
       // cannot use up the time of the fixes after it.
       const fixBudgetMs = ctx.config.stageTimeoutMs['fix-findings'] ?? FIX_BUDGET_FALLBACK_MS;
       for (const s of input.suggestions) {
+        if (ctx.signal.aborted) throw new Error(`apply-fixes aborted: ${String(ctx.signal.reason)}`);
         const baseline = await deps.git.headSha(wt.path);
+        const message = commitMessage(input, s);
+
+        if (s.patch) {
+          let sha: string | null = null;
+          try {
+            const ok = await deps.git.applyPatch({
+              path: wt.path,
+              patch: s.patch,
+              ...(input.patchDirectory ? { directory: input.patchDirectory } : {}),
+            });
+            if (ok) sha = await deps.git.commitFix({ path: wt.path, baselineSha: baseline, message });
+          } catch (err) {
+            ctx.logger.warn(`apply-suggestions: ${s.id} patch failed :: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (sha) {
+            ctx.logger.info(`apply-suggestions: ${s.id} applied from patch`);
+            applied.push(s.id);
+            continue;
+          }
+          await deps.git.resetHard(wt.path, baseline);
+          ctx.logger.warn(`apply-suggestions: ${s.id} patch did not apply, using the agent`);
+        }
+
+        if (capReached || overCap()) {
+          capReached = true;
+          ctx.logger.warn(`apply-suggestions: ${s.id} skipped, the cost cap of $${ctx.config.maxCostUsdPerWi} is reached`);
+          skipped.push(s.id);
+          continue;
+        }
+
         state.outputs.reviewer = { approved: false, findings: [suggestionToFinding(s)], attempts: 0 } satisfies ReviewerOutput;
         delete state.outputs.findingsAddressed;
         const fixCtrl = new AbortController();
@@ -102,23 +140,30 @@ export function createApplyFixesStage(deps: { git: SuggestionGit; fixFindings: S
             ctx.logger.warn(`apply-suggestions: ${s.id} declined by the agent, skipping`);
             await deps.git.resetHard(wt.path, baseline);
           } else {
-            sha = await deps.git.commitFix({ path: wt.path, baselineSha: baseline, message: commitMessage(input, s) });
+            sha = await deps.git.commitFix({ path: wt.path, baselineSha: baseline, message });
           }
         } catch (err) {
-          if (ctx.signal.aborted || err instanceof CostExceededError) throw err;
-          const why = fixCtrl.signal.aborted ? `timed out after ${fixBudgetMs} ms` : err instanceof Error ? err.message : String(err);
-          ctx.logger.warn(`apply-suggestions: ${s.id} failed, skipping :: ${why}`);
+          if (ctx.signal.aborted) throw err;
+          if (err instanceof CostExceededError) {
+            capReached = true;
+            ctx.logger.warn(`apply-suggestions: ${s.id} skipped :: ${err.message}`);
+          } else {
+            const why = fixCtrl.signal.aborted ? `timed out after ${fixBudgetMs} ms` : err instanceof Error ? err.message : String(err);
+            ctx.logger.warn(`apply-suggestions: ${s.id} failed, skipping :: ${why}`);
+          }
           await deps.git.resetHard(wt.path, baseline);
         } finally {
           clearTimeout(timer);
           ctx.signal.removeEventListener('abort', onOuterAbort);
         }
         (sha ? applied : skipped).push(s.id);
-        assertWithinCostCap(state, ctx.config.maxCostUsdPerWi, 'apply-fixes');
+        // The fix is paid for, so its commit stays; later agents do not start.
+        if (overCap()) capReached = true;
       }
       delete state.outputs.reviewer;
       state.outputs.appliedIds = applied;
       state.outputs.skippedIds = skipped;
+      if (capReached) state.outputs.capReached = true;
       return state;
     },
   };
@@ -127,6 +172,7 @@ export function createApplyFixesStage(deps: { git: SuggestionGit; fixFindings: S
 export function createPushSuggestionsStage(deps: { git: SuggestionGit }): Stage {
   return {
     name: 'push-suggestions',
+    costFree: true,
     canRun: () => true,
     async execute(state, ctx) {
       const input = inputOf(state);
@@ -148,6 +194,7 @@ export function createPushSuggestionsStage(deps: { git: SuggestionGit }): Stage 
 export function createStackedPrStage(deps: { ado: AdoClient }): Stage {
   return {
     name: 'create-stacked-pr',
+    costFree: true,
     canRun: () => true,
     async execute(state, ctx) {
       if (ctx.config.dryRun) return state;
@@ -159,7 +206,10 @@ export function createStackedPrStage(deps: { ado: AdoClient }): Stage {
           sourceRefName: `refs/heads/${mutantBranchName(input.pullRequestId, input.headCommit)}`,
           targetRefName: input.sourceRefName,
           title: stackedPrTitle(input),
-          description: buildStackedPrDescription(input, applied),
+          description: buildStackedPrDescription(input, applied, {
+            skippedIds: (state.outputs.skippedIds as string[] | undefined) ?? [],
+            capReached: state.outputs.capReached === true,
+          }),
           isDraft: false,
           reviewers: [{ id: input.reviewerId }],
         },

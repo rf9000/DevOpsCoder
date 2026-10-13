@@ -20,19 +20,27 @@ export interface SuggestionOutcome {
   error: string | null;
   /** Agent spend of this run in USD (the pipeline's cost total); 0 when nothing ran. */
   costUsd: number;
+  /** The cost cap stopped agent fixes; those are in skippedIds. Applied fixes are still pushed. */
+  capReached: boolean;
 }
 
-/** One fix costs a single fix-findings call; 20 USD covers a large run. */
+/**
+ * The per-run cap when DevOpsCoder's .env sets no MAX_COST_USD_PER_WI. An
+ * agent fix costs a single fix-findings call and a patch fix nothing, so 20 USD
+ * covers a large run. The input's maxCostUsd can only lower it.
+ */
 export const DEFAULT_SUGGESTION_COST_CAP_USD = 20;
 
 export function failureOutcome(error: string, partial: Partial<SuggestionOutcome> = {}): SuggestionOutcome {
-  return { ok: false, branch: null, pushedCommit: null, pullRequestId: null, appliedIds: [], skippedIds: [], costUsd: 0, ...partial, error };
+  return { ok: false, branch: null, pushedCommit: null, pullRequestId: null, appliedIds: [], skippedIds: [], costUsd: 0, capReached: false, ...partial, error };
 }
 
 /**
  * The full pipeline's config with the watcher-only parts filled in: the
  * repository comes from the input, build-and-test is off (al-mutation already
- * verified the fixes on BC), and the cost cap has a default.
+ * verified the fixes on BC), and the cost cap is DevOpsCoder's own
+ * MAX_COST_USD_PER_WI (default DEFAULT_SUGGESTION_COST_CAP_USD), lowered to the
+ * input's maxCostUsd when the caller sends one.
  */
 export function loadSuggestionConfig(env: Record<string, string | undefined>, input: SuggestionInput): AppConfig {
   const config = loadConfig({
@@ -48,6 +56,7 @@ export function loadSuggestionConfig(env: Record<string, string | undefined>, in
   if (missing.length > 0) {
     throw new Error(`Invalid configuration:\n${missing.map((k) => `  - ${k}: required for apply-suggestions`).join('\n')}`);
   }
+  if (input.maxCostUsd !== undefined) config.maxCostUsdPerWi = Math.min(config.maxCostUsdPerWi, input.maxCostUsd);
   const fixBudget = config.stageTimeoutMs['fix-findings'] ?? FIX_BUDGET_FALLBACK_MS;
   config.stageTimeoutMs = {
     ...config.stageTimeoutMs,
@@ -81,6 +90,7 @@ export async function applySuggestions(deps: ApplySuggestionsDeps): Promise<Sugg
     appliedIds: (state.outputs.appliedIds as string[] | undefined) ?? [],
     skippedIds: (state.outputs.skippedIds as string[] | undefined) ?? [],
     costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+    capReached: state.outputs.capReached === true,
   });
   try {
     await runPipeline({

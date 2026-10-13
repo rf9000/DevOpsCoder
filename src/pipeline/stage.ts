@@ -21,6 +21,12 @@ export interface PipelineContext {
 
 export interface Stage {
   readonly name: string;
+  /**
+   * The stage spends no agent money, so the pre-stage cost gate does not
+   * block it: work already paid for (commits made before the cap was hit)
+   * can still be pushed.
+   */
+  readonly costFree?: boolean;
   canRun(state: PipelineState): boolean;
   execute(state: PipelineState, context: PipelineContext): Promise<PipelineState>;
 }
