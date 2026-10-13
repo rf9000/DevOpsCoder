@@ -381,6 +381,10 @@ docker compose build --no-cache devops-coder
 docker compose up -d devops-coder
 ```
 
+Where mutant-fixer runs beside it (continia-banking), its image embeds a snapshot of this repo for
+`apply-suggestions`. Deploy with `bash mutant-fixer/scripts/redeploy.sh` from the compose directory
+instead: it rebuilds both services and restarts them once mutant-fixer runs no job.
+
 ### Deploying alongside read-only siblings
 
 DevopsCoder is just an additional service block in the same `~/teams/<team-name>/docker-compose.yml` as the existing read-only agents (Investigate, CodeReviewer, etc.). They share the same `~/.claude` bind-mount for OAuth, so authenticating once on the host covers all services. Each service gets its own `.env.<service>` file and its own named state volume so there is no cross-service conflict.
