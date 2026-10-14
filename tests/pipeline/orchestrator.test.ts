@@ -607,3 +607,46 @@ describe('runPipeline (Plan 6 safety rails)', () => {
     expect(failureEntries.length).toBe(0);
   });
 });
+
+describe('runPipeline dashboard progress', () => {
+  it('saves stageSince at stage entry and clears progress fields when the stage ends', async () => {
+    const store = makeMockStore();
+    const seen: PipelineState[] = [];
+    store.save.mockImplementation((s: PipelineState) => { seen.push(structuredClone(s)); });
+    const state = createInitialState(1, 'wi-1', FIXED_NOW);
+    await runPipeline({ stages: [makeStage('a')], state, context: makeContext(), store });
+    expect(seen[0]?.currentStage).toBe('a');
+    expect(seen[0]?.stageSince).toBe(FIXED_NOW.toISOString());
+    const last = seen[seen.length - 1]!;
+    expect(last.stageSince).toBeUndefined();
+    expect(last.stageDetail).toBeUndefined();
+  });
+
+  it('saves the entry state plus the detail on each changed progress report', async () => {
+    const store = makeMockStore();
+    const seen: PipelineState[] = [];
+    store.save.mockImplementation((s: PipelineState) => { seen.push(structuredClone(s)); });
+    const stage = makeStage('a', async (s, c) => {
+      s.outputs.partial = 'half-done';
+      c.reportProgress?.('round 1/3 · coding');
+      c.reportProgress?.('round 1/3 · coding');
+      c.reportProgress?.('round 1/3 · review');
+      return s;
+    });
+    await runPipeline({ stages: [stage], state: createInitialState(1, 'wi-1', FIXED_NOW), context: makeContext(), store });
+    const progress = seen.filter((s) => s.stageDetail !== undefined);
+    expect(progress.map((s) => s.stageDetail)).toEqual(['round 1/3 · coding', 'round 1/3 · review']);
+    // Resume safety: a progress save never carries half-finished outputs.
+    expect(progress.every((s) => s.outputs.partial === undefined)).toBe(true);
+  });
+
+  it('ignores a progress report that arrives after the stage ended', async () => {
+    const store = makeMockStore();
+    let late: ((d: string) => void) | undefined;
+    const stage = makeStage('a', async (s, c) => { late = c.reportProgress; return s; });
+    await runPipeline({ stages: [stage], state: createInitialState(1, 'wi-1', FIXED_NOW), context: makeContext(), store });
+    const saves = store.save.mock.calls.length;
+    late?.('too late');
+    expect(store.save.mock.calls.length).toBe(saves);
+  });
+});

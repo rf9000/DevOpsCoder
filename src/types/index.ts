@@ -170,6 +170,13 @@ export interface PipelineState {
   rejection?: PipelineRejection;
   rejectCount?: number;
   currentStage: string | null;
+  /**
+   * When the running stage started. Set on stage entry, cleared when it ends.
+   * Dashboard-only (monitor-the-situation's stage timer); the pipeline never reads it.
+   */
+  stageSince?: string;
+  /** What the running stage is doing now, e.g. `round 2/3 · review`. Dashboard-only, like `stageSince`. */
+  stageDetail?: string;
   history: StageHistoryEntry[];
   /**
    * Per-stage outputs keyed by `Stage.name`. Reserved keys: `cost` carries

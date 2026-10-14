@@ -17,6 +17,12 @@ export interface PipelineContext {
    */
   signal: AbortSignal;
   now: () => Date;
+  /**
+   * Tell the dashboard what the running stage is doing (e.g. `round 2/3 · review`).
+   * The orchestrator supplies it; contexts built elsewhere may not, so call it
+   * as `ctx.reportProgress?.(...)`.
+   */
+  reportProgress?: (detail: string) => void;
 }
 
 export interface Stage {

@@ -44,8 +44,14 @@ function findStageIndex(stages: Stage[], name: string | null): number {
   return stages.findIndex((s) => s.name === name);
 }
 
+/**
+ * Every stage end appends history, so this is also where the dashboard's
+ * progress fields clear.
+ */
 function appendHistory(state: PipelineState, entry: StageHistoryEntry): void {
   state.history.push(entry);
+  delete state.stageSince;
+  delete state.stageDetail;
 }
 
 /**
@@ -121,6 +127,21 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       continue;
     }
 
+    // Dashboard progress. The stage timer starts now. A progress report saves
+    // the state as it was at stage entry plus the detail, never the live state:
+    // a crash mid-stage must resume exactly as it did before progress existed,
+    // without half-finished stage outputs on disk. Reports after the stage
+    // ended are dropped so they cannot overwrite its end-of-stage save.
+    state.stageSince = startedAt;
+    store.save(state);
+    const entry = structuredClone(state);
+    let live = true;
+    const reportProgress = (detail: string): void => {
+      if (!live || entry.stageDetail === detail) return;
+      entry.stageDetail = detail;
+      store.save(entry);
+    };
+
     // Per-stage AbortController: external abort + per-stage timeout.
     const ctrl = new AbortController();
     const timeoutMs = context.config.stageTimeoutMs[stage.name] ?? DEFAULT_STAGE_TIMEOUT_MS;
@@ -135,7 +156,7 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       if (!ctrl.signal.aborted) ctrl.abort('timeout');
     }, timeoutMs);
 
-    const stageCtx: PipelineContext = { ...context, signal: ctrl.signal };
+    const stageCtx: PipelineContext = { ...context, signal: ctrl.signal, reportProgress };
 
     try {
       state = await stage.execute(state, stageCtx);
@@ -201,6 +222,7 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       const errAsError = err instanceof Error ? err : new Error(String(err));
       recordTerminalAndThrow(state, store, stage.name, errAsError, startedAt, endedAt);
     } finally {
+      live = false;
       clearTimeout(timer);
       clearInterval(abortFlagWatcher);
     }
