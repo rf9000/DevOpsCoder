@@ -113,6 +113,7 @@ export function createFinalReviewStage(deps: FinalReviewStageDeps): Stage {
       try {
         delete state.outputs.reviewer;
         delete state.outputs.findingsAddressed;
+        ctx.reportProgress?.('review');
         await deps.reviewer.execute(state, ctx);
         review = state.outputs.reviewer as ReviewerOutput;
       } catch (err) {
@@ -140,6 +141,7 @@ export function createFinalReviewStage(deps: FinalReviewStageDeps): Stage {
       const verifiedCoder = state.outputs.coder;
       const verifiedVerification = state.outputs.verification;
       ctx.logger.info(`final-review: ${blockers.length} blocking/critical finding(s) — one fix round`);
+      ctx.reportProgress?.(`fixing ${blockers.length} blocker(s)`);
       try {
         state.outputs.reviewer = {
           approved: false,

@@ -98,6 +98,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
 
       state.outputs.verificationSetup ??= {};
       const cache = state.outputs.verificationSetup as VerificationSetupCache;
+      ctx.reportProgress?.('waiting for environment');
       const setup = await prepareVerification({
         config,
         continiaCli: deps.continiaCli,
@@ -127,6 +128,7 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
           // session, and the orchestrator's cost gate does not run again until
           // this stage returns.
           assertWithinCostCap(state, config.maxCostUsdPerWi, 'build-and-test');
+          ctx.reportProgress?.(`fix ${attempt}/${config.maxTestFixAttempts}`);
           await runTestFixCall({
             runner: deps.runner,
             config,
@@ -145,6 +147,9 @@ export function createBuildAndTestStage(deps: BuildAndTestDeps): Stage {
           });
         }
 
+        ctx.reportProgress?.(
+          attempt === 0 ? 'build + tests' : `build + tests after fix ${attempt}/${config.maxTestFixAttempts}`,
+        );
         const round = await runVerificationRound({
           logger: deps.logger,
           continiaCli: deps.continiaCli,

@@ -287,3 +287,24 @@ describe('revisionLoop producers and verify', () => {
     expect(calls).toEqual(['coder', 'verify', 'reviewer']);
   });
 });
+
+describe('revisionLoop progress', () => {
+  it('reports round and part of round to the dashboard', async () => {
+    const details: string[] = [];
+    let reviews = 0;
+    const stage = revisionLoop({
+      name: 'revision-loop',
+      initialProducer: makeStage('coder', async (s) => s),
+      reviseProducer: makeStage('fix-findings', async (s) => s),
+      verify: makeStage('verify', async (s) => s),
+      reviewer: makeStage('reviewer', async (s) => { reviews++; return s; }),
+      maxAttempts: 3,
+      isApproved: () => reviews >= 2,
+    });
+    await stage.execute(mockState(), mockContext({ reportProgress: (d) => details.push(d) }));
+    expect(details).toEqual([
+      'round 1/3 · coding', 'round 1/3 · build + tests', 'round 1/3 · review',
+      'round 2/3 · fixing findings', 'round 2/3 · build + tests', 'round 2/3 · review',
+    ]);
+  });
+});

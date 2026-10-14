@@ -37,17 +37,22 @@ export function revisionLoop(cfg: RevisionLoopConfig): Stage {
         // their own, and the orchestrator's gate does not run again until this
         // whole stage returns.
         assertWithinCostCap(current, ctx.config.maxCostUsdPerWi, cfg.name);
-        const producer = attempt === 1 ? cfg.initialProducer : (cfg.reviseProducer ?? cfg.initialProducer);
+        const revising = attempt > 1 && cfg.reviseProducer !== undefined;
+        const producer = revising ? cfg.reviseProducer! : cfg.initialProducer;
+        const round = `round ${attempt}/${cfg.maxAttempts}`;
+        ctx.reportProgress?.(`${round} · ${revising ? 'fixing findings' : 'coding'}`);
         current = await producer.execute(current, ctx);
         if (ctx.abortFlag.aborted) return current;
 
         if (cfg.verify) {
           assertWithinCostCap(current, ctx.config.maxCostUsdPerWi, cfg.name);
+          ctx.reportProgress?.(`${round} · build + tests`);
           current = await cfg.verify.execute(current, ctx);
           if (ctx.abortFlag.aborted) return current;
         }
 
         assertWithinCostCap(current, ctx.config.maxCostUsdPerWi, cfg.name);
+        ctx.reportProgress?.(`${round} · review`);
         current = await cfg.reviewer.execute(current, ctx);
         if (cfg.isApproved(current)) return current;
       }
