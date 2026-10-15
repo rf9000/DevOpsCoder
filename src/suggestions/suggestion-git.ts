@@ -6,6 +6,9 @@ import { buildGitAuthArgs, redactPat } from '../utils/git-auth.ts';
 import type { Logger } from '../utils/logger.ts';
 import { mutantBranchName, sha7 } from './input.ts';
 
+/** commitFix refuses a commit that deletes more files than this. */
+export const MAX_DELETED_FILES = 5;
+
 /** push mode: origin/<branch> is no longer the commit the fixes were computed against. */
 export class HeadMovedError extends Error {
   override readonly name = 'HeadMovedError';
@@ -32,9 +35,8 @@ export interface SuggestionGit {
   commitFix(a: { path: string; baselineSha: string; message: string }): Promise<string | null>;
   /**
    * `git apply -p1` the unified diff in the worktree, paths rooted at
-   * `directory` (repo-relative). New files are marked intent-to-add so
-   * commitFix's `add -u` picks them up. False when git refuses the patch;
-   * the worktree is then unchanged.
+   * `directory` (repo-relative), and stage it (`--index`), new files too.
+   * False when git refuses the patch; the worktree is then unchanged.
    */
   applyPatch(a: { path: string; patch: string; directory?: string }): Promise<boolean>;
   push(a: { path: string; mode: 'pr' | 'push'; remoteBranch: string; headCommit: string }): Promise<void>;
@@ -139,6 +141,14 @@ export function createSuggestionGit(deps: { config: AppConfig; logger?: Logger }
       await runGit(['add', '-u'], a.path);
       const { exitCode } = await runGit(['diff', '--cached', '--quiet'], a.path, { allowExit: [1] });
       if (exitCode === 0) return null;
+      // A test fix never deletes files wholesale. mutant-fixer run 1042: an index that had lost
+      // every file but one became a commit deleting 4019 files.
+      const deleted = (await runGit(['diff', '--cached', '--name-only', '--diff-filter=D'], a.path)).stdout
+        .split('\n')
+        .filter(Boolean);
+      if (deleted.length > MAX_DELETED_FILES) {
+        throw new Error(`commitFix: the commit would delete ${deleted.length} files (at most ${MAX_DELETED_FILES} allowed), e.g. ${deleted.slice(0, 3).join(', ')}; not committing`);
+      }
       await runGit(['-c', `user.name=${name}`, '-c', `user.email=${email}`, 'commit', '--no-verify', '-m', a.message], a.path);
       return (await runGit(['rev-parse', 'HEAD'], a.path)).stdout.trim();
     },
@@ -150,7 +160,9 @@ export function createSuggestionGit(deps: { config: AppConfig; logger?: Logger }
       const file = join(dir, 'fix.patch');
       try {
         writeFileSync(file, Buffer.from(a.patch, 'utf8'));
-        const args = ['apply', '-p1', '--whitespace=nowarn', '--intent-to-add'];
+        // --index, not --intent-to-add: on git 2.47.3 (the VM's), --intent-to-add without --index
+        // left only the patched file in the index (mutant-fixer run 1042).
+        const args = ['apply', '-p1', '--whitespace=nowarn', '--index'];
         if (a.directory) args.push(`--directory=${a.directory}`);
         args.push(file);
         try {

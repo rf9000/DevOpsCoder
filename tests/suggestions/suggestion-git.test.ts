@@ -163,6 +163,25 @@ describe('commitFix', () => {
     expect(await g.commitFix({ path: wt.path, baselineSha: head, message: 'm' })).not.toBeNull();
   });
 
+  // mutant-fixer run 1042: an index that had lost every file but one became a commit deleting 4019
+  // files. A test fix never deletes files wholesale, so commitFix refuses and commits nothing.
+  it('refuses to commit a change that deletes more files than MAX_DELETED_FILES', async () => {
+    const g = git();
+    const dev = join(repo.root, 'dev');
+    for (let i = 0; i < 8; i++) writeFileSync(join(dev, `F${i}.al`), `${i}\n`, 'utf-8');
+    await runGit(['add', '-A'], dev);
+    await runGit(['commit', '-m', 'more files'], dev);
+    await runGit(['push', 'origin', 'feature/foo'], dev);
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    const wt = await g.createPrWorktree(args());
+    // The index the VM's git left behind: only the patched file.
+    await runGit(['read-tree', '--empty'], wt.path);
+    writeFileSync(join(wt.path, 'Test.al'), 'line1\nline2\nassert\n', 'utf-8');
+    await runGit(['add', 'Test.al'], wt.path);
+    await expect(g.commitFix({ path: wt.path, baselineSha: head, message: 'm' })).rejects.toThrow(/would delete \d+ files/);
+    expect((await runGit(['rev-parse', 'HEAD'], wt.path)).trim()).toBe(head);
+  });
+
   it('returns null and commits nothing when there is no change', async () => {
     const g = git();
     const wt = await g.createPrWorktree(args());
@@ -210,6 +229,18 @@ describe('applyPatch', () => {
     expect(await g.commitFix({ path: wt.path, baselineSha: head, message: 'm' })).not.toBeNull();
     expect((await runGit(['show', '--name-only', '--format=', 'HEAD'], wt.path)).trim().split('\n').sort()).toEqual(['app-test/New.al', 'app-test/T.al']);
     expect((await runGit(['status', '--porcelain'], wt.path)).trim()).toBe('');
+  });
+
+  // mutant-fixer run 1042: on the VM's git 2.47.3, `git apply --intent-to-add` without --index left
+  // only the patched file in the index, and commitFix's `add -u` then committed the deletion of
+  // every other file (4019). The patch goes into the index with --index; every file stays tracked.
+  it('stages the patch in the index and keeps every other file tracked', async () => {
+    const g = git();
+    const wt = await crlfWorktree(g);
+    const tracked = (await runGit(['ls-files'], wt.path)).trim().split('\n').sort();
+    expect(await g.applyPatch({ path: wt.path, patch: CRLF_PATCH, directory: 'app-test' })).toBe(true);
+    expect((await runGit(['diff', '--cached', '--name-only'], wt.path)).trim().split('\n').sort()).toEqual(['app-test/New.al', 'app-test/T.al']);
+    expect((await runGit(['ls-files'], wt.path)).trim().split('\n').sort()).toEqual([...tracked, 'app-test/New.al'].sort());
   });
 
   it('returns false, logs the git error and leaves the worktree unchanged when the patch does not fit', async () => {
