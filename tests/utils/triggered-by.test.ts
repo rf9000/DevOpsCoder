@@ -44,4 +44,11 @@ describe('lookupTriggeredBy', () => {
     expect(by).toBe('unknown');
     expect(warns).toHaveLength(1);
   });
+
+  it('returns unknown and warns once when the fetch never resolves', async () => {
+    const warns: string[] = [];
+    const by = await lookupTriggeredBy(() => new Promise(() => {}), ['agent'], (m) => warns.push(m), 20);
+    expect(by).toBe('unknown');
+    expect(warns).toHaveLength(1);
+  });
 });

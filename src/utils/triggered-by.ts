@@ -18,16 +18,27 @@ export function triggeredByFrom(updates: WorkItemUpdate[], tags: string[]): stri
   return UNKNOWN;
 }
 
-/** Never throws: fetch errors → warn once + UNKNOWN. */
+/**
+ * Never throws: fetch errors or a fetch slower than `timeoutMs` → warn once + UNKNOWN.
+ * The timeout matters because the ADO client retries with sleeps, and a run must
+ * never wait on a failed lookup.
+ */
 export async function lookupTriggeredBy(
   fetchUpdates: () => Promise<WorkItemUpdate[]>,
   tags: string[],
   warn: (msg: string) => void,
+  timeoutMs = 10_000,
 ): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return triggeredByFrom(await fetchUpdates(), tags);
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    return triggeredByFrom(await Promise.race([fetchUpdates(), timeout]), tags);
   } catch (err) {
     warn(`triggeredBy lookup failed :: ${err instanceof Error ? err.message : String(err)}`);
     return UNKNOWN;
+  } finally {
+    clearTimeout(timer);
   }
 }
