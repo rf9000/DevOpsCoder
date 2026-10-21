@@ -17,6 +17,8 @@ export interface CostRecord {
   /** Draft PR id, when one was opened. */
   prId?: number;
   prUrl?: string;
+  /** Lowercased email of whoever added the trigger tag; "automatic" or "unknown" otherwise. */
+  triggeredBy?: string;
   /**
    * Per-step breakdown — USD, call count, model and tokens — so a spend spike
    * can be attributed without opening the work item's state file.

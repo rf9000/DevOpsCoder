@@ -21,6 +21,7 @@ import { DEFAULT_STAGE_TIMEOUT_MS, createInitialState, runPipeline } from '../pi
 import { slugify } from '../utils/slug.ts';
 import { normalizePerStage } from '../utils/cost-tracker.ts';
 import { findTagAdder, formatAdoMention } from '../utils/tag-history.ts';
+import { lookupTriggeredBy } from '../utils/triggered-by.ts';
 import type { CostLedger } from './cost-ledger.ts';
 import type { WiLog, WiLogFactory } from './wi-log.ts';
 import { renderCostReport } from '../utils/cost-report.ts';
@@ -530,7 +531,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
   // One choke point for the spend log: every terminal outcome funnels through
   // the wrapper below, so the ledger cannot drift from the outcomes the watcher
   // reports. `skipped` is excluded — nothing ran, so there is nothing to bill.
-  function recordSpend(outcome: ProcessOutcome, wiLog?: WiLog, title?: string): void {
+  async function recordSpend(outcome: ProcessOutcome, wiLog?: WiLog, title?: string): Promise<void> {
     if (outcome.kind === 'skipped') return;
     const persisted = store.load(outcome.workItemId);
     const cost = persisted?.outputs.cost as PipelineCostInfo | undefined;
@@ -541,6 +542,14 @@ export function createProcessor(deps: ProcessorDeps): Processor {
     const perStage = normalizePerStage(cost?.perStage);
     const at = new Date().toISOString();
     const pr = draftPr ? { prId: draftPr.id, prUrl: draftPr.url } : {};
+    // Only worth an ADO round-trip when a line will actually be written.
+    const triggeredBy = ledger
+      ? await lookupTriggeredBy(
+          () => ado.getWorkItemUpdates(outcome.workItemId),
+          [config.triggerTag],
+          (msg) => logger.warn(`WI ${outcome.workItemId}: ${msg}`),
+        )
+      : undefined;
 
     ledger?.record({
       at,
@@ -549,6 +558,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       outcome: outcome.kind,
       costUsd: outcome.costUsd,
       ...pr,
+      ...(triggeredBy ? { triggeredBy } : {}),
       ...(cost?.perStage ? { perStage } : {}),
     });
 
@@ -798,7 +808,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       const wiLog = wiLogs?.open(workItemId);
       const seen: { title?: string } = {};
       const outcome = await makeInner(wiLog?.logger ?? logger, seen).processWorkItem(workItemId);
-      recordSpend(outcome, wiLog, seen.title);
+      await recordSpend(outcome, wiLog, seen.title);
       return outcome;
     },
   };

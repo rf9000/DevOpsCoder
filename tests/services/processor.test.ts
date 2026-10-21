@@ -503,6 +503,50 @@ describe('createProcessor', () => {
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({ outcome: 'rejected', title: 'Fix login', costUsd: 0 });
     });
+
+    const okStage: Stage = { name: 'analyzer', canRun: () => true, execute: async (state) => state };
+
+    it('records who added the trigger tag as triggeredBy', async () => {
+      const records: CostRecord[] = [];
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo({
+          getWorkItemUpdates: mock(async () => [
+            {
+              revisedBy: { uniqueName: 'Ann@X.com' },
+              fields: { 'System.Tags': { oldValue: 'bug', newValue: 'bug; agent implement' } },
+            },
+          ]),
+        }),
+        store,
+        buildPipeline: () => [okStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records[0]?.triggeredBy).toBe('ann@x.com');
+    });
+
+    it('records triggeredBy unknown when the lookup fails, outcome unchanged', async () => {
+      const records: CostRecord[] = [];
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo({ getWorkItemUpdates: mock(async () => { throw new Error('ado down'); }) }),
+        store,
+        buildPipeline: () => [okStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+      });
+
+      const outcome = await proc.processWorkItem(101);
+
+      expect(outcome.kind).toBe('completed');
+      expect(records[0]).toMatchObject({ outcome: 'completed', triggeredBy: 'unknown' });
+    });
   });
 
   it('suppresses ADO writes when dryRun is true', async () => {
