@@ -4,6 +4,9 @@ import {
   createContiniaCli,
   ContiniaCliError,
   CONTINIA_TOKEN_ENV_VAR,
+  CONTINIA_AUTH_METHOD_ENV_VAR,
+  AUTH_FAILURE,
+  continiaProcessEnv,
   DEFAULT_TEST_RUN_TIMEOUT_S,
   ACTIVATION_APP_ID,
   pickAdminUser,
@@ -24,7 +27,7 @@ const baseConfig: AppConfig = {
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
   continiaEnvLocalization: 'base',
-  continiaApiToken: 'secret-token',
+  continiaApiToken: 'secret-token', continiaAuthMethod: 'api-token',
   continiaAppPaths: ['Core/Cloud'],
   continiaTestAppPaths: ['Core/Cloud'],
   maxTestFixAttempts: 2,
@@ -90,6 +93,39 @@ describe('createContiniaCli', () => {
     const { cli, calls } = makeCli([ok('{"id":"env-1","status":"Draft"}')]);
     await cli.createEnvironment('n', 'p', opts);
     expect(calls[0]?.env[CONTINIA_TOKEN_ENV_VAR]).toBe('secret-token');
+    expect(calls[0]?.env[CONTINIA_AUTH_METHOD_ENV_VAR]).toBe('api-token');
+  });
+
+  it('azure-ad mode sets the method and sends no token, even a leftover one', async () => {
+    const { cli, calls } = makeCli(
+      [ok('{"id":"env-1","status":"Draft"}')],
+      { ...baseConfig, continiaAuthMethod: 'azure-ad' },
+    );
+    await cli.createEnvironment('n', 'p', opts);
+    expect(calls[0]?.env[CONTINIA_AUTH_METHOD_ENV_VAR]).toBe('azure-ad');
+    expect(CONTINIA_TOKEN_ENV_VAR in (calls[0]?.env ?? {})).toBe(false);
+  });
+
+  it('continiaProcessEnv drops a token inherited from the base env in azure-ad mode', () => {
+    const env = continiaProcessEnv(
+      { continiaApiToken: 'x', continiaAuthMethod: 'azure-ad' },
+      { PATH: '/bin', [CONTINIA_TOKEN_ENV_VAR]: 'stale' },
+    );
+    expect(env).toEqual({ PATH: '/bin', [CONTINIA_AUTH_METHOD_ENV_VAR]: 'azure-ad' });
+  });
+
+  it('appends a renew hint naming the credential on a 401', async () => {
+    const { cli } = makeCli(
+      [{ exitCode: 1, stdout: '', stderr: 'Response status code does not indicate success: 401 (Unauthorized).' }],
+      { ...baseConfig, continiaAuthMethod: 'azure-ad' },
+    );
+    await expect(cli.createEnvironment('n', 'p', opts)).rejects.toThrow(/continia auth login/);
+  });
+
+  it('AUTH_FAILURE ignores an alc line number of 401', () => {
+    expect(AUTH_FAILURE.test('src/Foo.al(401,5): error AL0118')).toBe(false);
+    expect(AUTH_FAILURE.test('HTTP 401')).toBe(true);
+    expect(AUTH_FAILURE.test('status code 401')).toBe(true);
   });
 
   it('createEnvironment builds the right argv and parses id/name/status', async () => {

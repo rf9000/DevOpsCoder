@@ -68,7 +68,7 @@ const baseConfig = {
   claudeModel: 'claude-opus-4-7',
   stateDir: '.state', logDir: 'logs',
   assignedToFilter: [],
-  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaEnvLocalization: 'base', continiaApiToken: 'tok', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
+  continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: 'prof-1', continiaEnvLocalization: 'base', continiaApiToken: 'tok', continiaAuthMethod: 'api-token', continiaAppPaths: ['App'], continiaTestAppPaths: ['App'], maxTestFixAttempts: 2, continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all', maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
 } satisfies AppConfig;
 
 const deps = { config: baseConfig, logger: createLogger() };
@@ -134,6 +134,22 @@ describe('buildQueryOptions', () => {
       config: { ...baseConfig, claudeCodeExecutablePath: '/home/claude/.local/bin/claude' },
     });
     expect(opts.pathToClaudeCodeExecutable).toBe('/home/claude/.local/bin/claude');
+  });
+
+  it('gives the session the Continia auth method, and no token in azure-ad mode', () => {
+    // Skills such as continia-deploy run the CLI from inside the session.
+    const tokenOpts = buildQueryOptions(minimalArgs, deps);
+    const tokenEnv = tokenOpts.env as Record<string, string | undefined>;
+    expect(tokenEnv.CONTINIA_AUTH_METHOD).toBe('api-token');
+    expect(tokenEnv.CONTINIA_API_TOKEN).toBe('tok');
+
+    const adOpts = buildQueryOptions(minimalArgs, {
+      ...deps,
+      config: { ...baseConfig, continiaAuthMethod: 'azure-ad' },
+    });
+    const adEnv = adOpts.env as Record<string, string | undefined>;
+    expect(adEnv.CONTINIA_AUTH_METHOD).toBe('azure-ad');
+    expect('CONTINIA_API_TOKEN' in adEnv).toBe(false);
   });
 
   it('label is not forwarded to the SDK — it is only for the cost log line', () => {

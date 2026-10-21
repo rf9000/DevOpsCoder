@@ -17,7 +17,7 @@ const baseConfig: AppConfig = {
   continiaCliPath: '.tools/continia.exe',
   continiaEnvProfileId: 'prof-1',
   continiaEnvLocalization: 'base',
-  continiaApiToken: 'tok',
+  continiaApiToken: 'tok', continiaAuthMethod: 'api-token',
   continiaAppPaths: ['App'],
   continiaTestAppPaths: ['App'],
   maxTestFixAttempts: 2,

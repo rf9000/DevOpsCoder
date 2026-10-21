@@ -281,14 +281,31 @@ describe('loadConfig', () => {
   });
 
   describe('Plan 10 — verification gate config', () => {
-    it('throws when CONTINIA_API_TOKEN is missing', () => {
+    it('throws when CONTINIA_API_TOKEN is missing in api-token mode', () => {
       // CONTINIA_APP_PATHS is deliberately NOT in this list: the deploy set is
       // derived per work item from the changed files and the selected tests.
       // CONTINIA_ENV_PROFILE_ID is deliberately NOT in this list either: the
       // profile is derived, not pinned, so it is optional.
-      const env = { ...validEnv };
+      const env: Record<string, string> = { ...validEnv, CONTINIA_AUTH_METHOD: 'api-token' };
       delete env.CONTINIA_API_TOKEN;
       expect(() => loadConfig(env)).toThrow(/CONTINIA_API_TOKEN/);
+    });
+
+    it('CONTINIA_AUTH_METHOD defaults to api-token when a token is set, else azure-ad', () => {
+      expect(loadConfig(validEnv).continiaAuthMethod).toBe('api-token');
+      const env = { ...validEnv };
+      delete env.CONTINIA_API_TOKEN;
+      expect(loadConfig(env).continiaAuthMethod).toBe('azure-ad');
+      expect(loadConfig({ ...validEnv, CONTINIA_API_TOKEN: '  ' }).continiaAuthMethod).toBe('azure-ad');
+    });
+
+    it('explicit CONTINIA_AUTH_METHOD=azure-ad wins over a leftover token', () => {
+      expect(loadConfig({ ...validEnv, CONTINIA_AUTH_METHOD: 'Azure-AD' }).continiaAuthMethod).toBe('azure-ad');
+    });
+
+    it('blank CONTINIA_AUTH_METHOD reads as unset; an unknown method is rejected', () => {
+      expect(loadConfig({ ...validEnv, CONTINIA_AUTH_METHOD: ' ' }).continiaAuthMethod).toBe('api-token');
+      expect(() => loadConfig({ ...validEnv, CONTINIA_AUTH_METHOD: 'oauth' })).toThrow(/CONTINIA_AUTH_METHOD/);
     });
 
     it('CONTINIA_ENV_PROFILE_ID is optional — the profile is derived, not pinned', () => {
@@ -300,8 +317,8 @@ describe('loadConfig', () => {
       expect(config.continiaEnvProfileId).toBe('');
     });
 
-    it('still requires CONTINIA_API_TOKEN when the verification gate runs', () => {
-      const env = { ...validEnv };
+    it('still requires CONTINIA_API_TOKEN when the verification gate runs in api-token mode', () => {
+      const env: Record<string, string> = { ...validEnv, CONTINIA_AUTH_METHOD: 'api-token' };
       delete env.CONTINIA_API_TOKEN;
 
       expect(() => loadConfig(env)).toThrow(/CONTINIA_API_TOKEN.*SKIP_BUILD_TEST/s);
@@ -410,7 +427,7 @@ describe('loadConfig', () => {
   describe('SKIP_BUILD_TEST', () => {
     it('defaults to false and CONTINIA_* stay required', () => {
       expect(loadConfig(validEnv).skipBuildTest).toBe(false);
-      const env = { ...validEnv };
+      const env: Record<string, string> = { ...validEnv, CONTINIA_AUTH_METHOD: 'api-token' };
       delete env.CONTINIA_API_TOKEN;
       expect(() => loadConfig(env)).toThrow(/CONTINIA_API_TOKEN/);
     });

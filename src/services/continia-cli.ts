@@ -10,6 +10,45 @@ import type { AppConfig, DeployAppResult, TestCaseResult } from '../types/index.
  */
 export const CONTINIA_TOKEN_ENV_VAR = 'CONTINIA_API_TOKEN';
 
+/**
+ * Env-var that picks the CLI's auth method. It outranks a token in the CLI's
+ * own precedence, so setting it is equivalent to `--auth-method` on every call
+ * and also reaches the CLI calls agent sessions make through skills.
+ */
+export const CONTINIA_AUTH_METHOD_ENV_VAR = 'CONTINIA_AUTH_METHOD';
+
+/**
+ * The environment for anything that may run the Continia CLI: the CLI itself,
+ * and every agent session (skills such as continia-deploy call it). In
+ * azure-ad mode the token is removed, so a leftover token in the operator's
+ * environment never reaches a call.
+ */
+export function continiaProcessEnv(
+  config: Pick<AppConfig, 'continiaApiToken' | 'continiaAuthMethod'>,
+  base: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
+    ...base,
+    [CONTINIA_AUTH_METHOD_ENV_VAR]: config.continiaAuthMethod,
+  };
+  if (config.continiaAuthMethod === 'api-token') env[CONTINIA_TOKEN_ENV_VAR] = config.continiaApiToken;
+  else delete env[CONTINIA_TOKEN_ENV_VAR];
+  return env;
+}
+
+/**
+ * Matches CLI output for a rejected credential. A bare `401` is not enough:
+ * alc diagnostics carry line numbers, and `(401,5)` is not an auth failure.
+ */
+export const AUTH_FAILURE = /\bunauthori[sz]ed\b|\b(?:HTTP|status(?:\s+code)?)\s*:?\s*401\b/i;
+
+/** Names the credential to renew, so a 401 does not read as a code fault. */
+export function authFailureHint(method: AppConfig['continiaAuthMethod']): string {
+  return method === 'azure-ad'
+    ? 'Continia CLI rejected the Azure AD sign-in. Run `continia auth login` in the container as the claude user, then check `continia auth status`.'
+    : 'Continia CLI rejected the API token. Renew CONTINIA_API_TOKEN, or switch to CONTINIA_AUTH_METHOD=azure-ad.';
+}
+
 /** Per-`test run` --timeout (seconds). The stage wall-clock is the real backstop. */
 export const DEFAULT_TEST_RUN_TIMEOUT_S = 600;
 
@@ -422,7 +461,7 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
     try {
       const result = await exec(argv, {
         cwd: cwd ?? opts.worktreePath,
-        env: { ...process.env, [CONTINIA_TOKEN_ENV_VAR]: config.continiaApiToken },
+        env: continiaProcessEnv(config),
         signal: opts.signal,
       });
       return { ...result, argv };
@@ -447,8 +486,9 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         .filter((s) => s.length > 0)
         .join('\n')
         .slice(0, 4000);
+      const hint = AUTH_FAILURE.test(detail) ? `\n${authFailureHint(config.continiaAuthMethod)}` : '';
       throw new ContiniaCliError(
-        `continia ${args.join(' ')} failed (exit ${result.exitCode}): ${detail}`,
+        `continia ${args.join(' ')} failed (exit ${result.exitCode}): ${detail}${hint}`,
         result.argv,
         result.exitCode,
         result.stdout,

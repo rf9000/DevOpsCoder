@@ -255,7 +255,16 @@ Per-work-item logs are a bind mount rather than a named volume like `.state`, be
    ```
    Inside the REPL, type `/login`, copy the URL it shows and open it in your local browser, authorize, then paste the code back into the VM terminal. Exit with `/exit`.
 
-6. Configure `.env.devops-coder` from `.env.example`. At minimum fill in `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` — this last variable is **required with no default**; the pipeline will refuse to start without it. The verification gate additionally requires `CONTINIA_API_TOKEN` (not `CONTINIA_ENV_PROFILE_ID` — the profile is derived per work item from `app.json`, and not `CONTINIA_APP_PATHS` — that is derived per work item too) — or set `SKIP_BUILD_TEST=true` to skip `env-provision` + `build-and-test` entirely for a first smoke bring-up (see step 10 below).
+6. Configure `.env.devops-coder` from `.env.example`. At minimum fill in `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, `ADO_REPOSITORY_NAME`, `TARGET_REPO_PATH`, `WORKTREE_BASE`, and `MAX_COST_USD_PER_WI` — this last variable is **required with no default**; the pipeline will refuse to start without it. The verification gate additionally requires Continia CLI credentials: `CONTINIA_API_TOKEN`, or `CONTINIA_AUTH_METHOD=azure-ad` plus a one-time sign-in (see *Continia sign-in (Azure AD)* below) (not `CONTINIA_ENV_PROFILE_ID` — the profile is derived per work item from `app.json`, and not `CONTINIA_APP_PATHS` — that is derived per work item too) — or set `SKIP_BUILD_TEST=true` to skip `env-provision` + `build-and-test` entirely for a first smoke bring-up (see step 10 below).
+
+**Continia sign-in (Azure AD).** To use an Azure AD account instead of an API token:
+
+1. In `.env.devops-coder`, set `CONTINIA_AUTH_METHOD=azure-ad` and empty or remove `CONTINIA_API_TOKEN`.
+2. Recreate the container: `docker compose up -d --build devops-coder`.
+3. Sign in once: `docker compose exec -u claude devops-coder continia auth login`. Open the URL, enter the code, and sign in.
+4. Check it: `docker compose exec -u claude devops-coder continia auth status`, then a read call such as `continia env profiles versions --json`.
+
+The session lives in `~/.continia/auth.json`. The entrypoint links `/home/claude/.continia` to `/app/.state/continia`, so it survives rebuilds. Each container keeps its own sign-in unless they share that volume. New environments belong to the signed-in Azure AD user, not the token owner. After a long idle period or a password/policy change, `auth status` shows the session invalid and CLI calls fail with a hint to run `continia auth login` again.
 
 7. Copy `docker-compose.example.yml` from this repo into `~/teams/<team-name>/docker-compose.yml` and replace the `<target-repo>` placeholder with the real repo name:
    ```bash
@@ -295,7 +304,8 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
 | `MAX_COST_USD_PER_WI` | **yes** | **none** | Pipeline refuses to start without this; set it consciously |
-| `CONTINIA_API_TOKEN` | **yes\*** | **none** | Forwarded into the spawned continia.exe |
+| `CONTINIA_AUTH_METHOD` | no | `api-token` if a token is set, else `azure-ad` | How the Continia CLI authenticates. Set as `CONTINIA_AUTH_METHOD` on every CLI call and in every agent session; `azure-ad` uses the session from `continia auth login` and sends no token |
+| `CONTINIA_API_TOKEN` | **yes\*** | **none** | Forwarded into the spawned CLI and agent sessions in `api-token` mode only. Not needed with `CONTINIA_AUTH_METHOD=azure-ad` |
 | `CONTINIA_ENV_PROFILE_ID` | no | **none** | Pins the DemoPortal profile, overriding derivation. Leave unset. |
 | `CONTINIA_ENV_LOCALIZATION` | no | `base` | Localization of the derived profile (`base`, `dk`, `nl`, ...) |
 | `CONTINIA_APP_PATHS` | no | derived | Pins the deploy set. Normally leave unset — build-and-test derives it per WI from the changed files plus the apps owning the selected tests, expanded over `app.json` dependencies and ordered dependency-first |

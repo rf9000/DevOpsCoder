@@ -79,6 +79,13 @@ const envSchema = z.object({
   CONTINIA_ENV_PROFILE_ID: z.string().default(''),
   CONTINIA_ENV_LOCALIZATION: z.string().default('base'),
   CONTINIA_API_TOKEN: z.string().default(''),
+  // Unset → api-token when a token is set, else azure-ad (the session saved by
+  // `continia auth login`). Blank reads as unset.
+  CONTINIA_AUTH_METHOD: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? undefined : v.trim().toLowerCase()))
+    .pipe(z.enum(['api-token', 'azure-ad']).optional()),
   CONTINIA_APP_PATHS: z.string().default(''),
   CONTINIA_TEST_APP_PATHS: z.string().optional(),
   SKIP_BUILD_TEST: boolFlag(false),
@@ -185,18 +192,22 @@ export function loadConfig(
   }
   const p = result.data;
 
+  const continiaAuthMethod =
+    p.CONTINIA_AUTH_METHOD ?? (p.CONTINIA_API_TOKEN.trim() !== '' ? 'api-token' : 'azure-ad');
+
   // A harness smoke test should not need a DemoPortal token — the Continia
   // config is only required when the verification gate actually runs.
   // CONTINIA_ENV_PROFILE_ID is deliberately NOT here: the profile is derived
   // from the worktree's app.json versions, and the pin is only an override.
-  if (!p.SKIP_BUILD_TEST) {
+  // azure-ad needs no token: the CLI reads its saved sign-in instead.
+  if (!p.SKIP_BUILD_TEST && continiaAuthMethod === 'api-token') {
     const missing = ([['CONTINIA_API_TOKEN', p.CONTINIA_API_TOKEN]] as const).filter(
       ([, v]) => v.trim() === '',
     );
     if (missing.length > 0) {
       throw new Error(
         `Invalid configuration:\n${missing
-          .map(([k]) => `  - ${k}: required unless SKIP_BUILD_TEST=true (the verification gate uses the Continia CLI)`)
+          .map(([k]) => `  - ${k}: required unless SKIP_BUILD_TEST=true or CONTINIA_AUTH_METHOD=azure-ad (the verification gate uses the Continia CLI)`)
           .join('\n')}`,
       );
     }
@@ -363,6 +374,7 @@ export function loadConfig(
     // env-provision as "no enabled '' profile".
     continiaEnvLocalization: p.CONTINIA_ENV_LOCALIZATION.trim() || 'base',
     continiaApiToken: p.CONTINIA_API_TOKEN,
+    continiaAuthMethod,
     continiaAppPaths,
     continiaTestAppPaths,
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,

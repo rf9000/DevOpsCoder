@@ -5,6 +5,9 @@ export type { TestSelectionMode };
 /** The Agent SDK's reasoning-effort level (`Options.effort`). */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
+/** `continia --auth-method`. */
+export type ContiniaAuthMethod = 'api-token' | 'azure-ad';
+
 export interface AppConfig {
   orgUrl: string;
   project: string;
@@ -65,8 +68,13 @@ export interface AppConfig {
   continiaEnvProfileId: string;
   /** DemoPortal profile localization ("base", "dk", "nl", ...) used when deriving a profile. */
   continiaEnvLocalization: string;
-  /** DemoPortal API token, forwarded into the spawned CLI's environment. */
+  /** DemoPortal API token, forwarded into the spawned CLI's environment in api-token mode only. */
   continiaApiToken: string;
+  /**
+   * How the Continia CLI authenticates: an API token, or the Azure AD session
+   * `continia auth login` saved in ~/.continia/auth.json.
+   */
+  continiaAuthMethod: ContiniaAuthMethod;
   /** AL app dirs (worktree-relative, dependency-ordered) to deps-install/deploy. */
   continiaAppPaths: string[];
   /** AL app dirs to scan for test codeunits. Defaults to continiaAppPaths. */

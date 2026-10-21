@@ -23,7 +23,7 @@ const config: AppConfig = {
   maxCostUsdPerWi: 50, stageTimeoutMs: {},
   claudeModel: 'm', stateDir: '.state', logDir: 'logs', assignedToFilter: [],
   continiaCliPath: '.tools/continia.exe', continiaEnvProfileId: '', continiaEnvLocalization: 'base',
-  continiaApiToken: 'tok', continiaAppPaths: [], continiaTestAppPaths: [], maxTestFixAttempts: 2,
+  continiaApiToken: 'tok', continiaAuthMethod: 'api-token', continiaAppPaths: [], continiaTestAppPaths: [], maxTestFixAttempts: 2,
   continiaTestTimeoutS: 600, dryRun: false, skipBuildTest: false, testSelection: 'all',
   maxTestCodeunits: 0, costLogPath: '.state/cost-ledger.jsonl',
   finalReviewMinLines: 300,

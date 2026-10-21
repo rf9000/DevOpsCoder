@@ -3,6 +3,16 @@ set -e
 
 # Run as root first to fix volume permissions; bind-mounted dirs are owned by the host uid.
 if [ "$(id -u)" = "0" ]; then
+  # `continia auth login` (CONTINIA_AUTH_METHOD=azure-ad) saves its session in
+  # ~/.continia/auth.json. The home dir is rebuilt with the image, so point it
+  # at the state volume, or every rebuild loses the sign-in.
+  mkdir -p /app/.state/continia
+  if [ ! -L /home/claude/.continia ]; then
+    rm -rf /home/claude/.continia
+    ln -s /app/.state/continia /home/claude/.continia
+  fi
+  chown -h claude:claude /home/claude/.continia
+
   chown -R claude:claude /app/.state
   chown -R claude:claude /home/claude/.claude 2>/dev/null || true
 

@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentRunner, AgentRunArgs, AgentRunResult, AgentUsage } from '../pipeline/agent-stage.ts';
 import type { Logger } from '../utils/logger.ts';
 import type { AppConfig } from '../types/index.ts';
+import { continiaProcessEnv } from './continia-cli.ts';
 
 export const STRUCTURED_OUTPUT_INSTRUCTION =
   'Respond with ONLY a single valid JSON object that satisfies the schema described in the prompt. ' +
@@ -134,6 +135,11 @@ export function buildQueryOptions<T>(
   if (deps.config.claudeCodeExecutablePath !== undefined) {
     opts.pathToClaudeCodeExecutable = deps.config.claudeCodeExecutablePath;
   }
+
+  // Skills such as continia-deploy run the Continia CLI from inside the
+  // session, so it gets the same auth method as the pipeline's own calls, and
+  // no token in azure-ad mode.
+  opts.env = continiaProcessEnv(deps.config);
 
   // Merged centrally rather than per stage: a deny rule is the one control that
   // works in every permission mode, and a baseline that each of the eight call
