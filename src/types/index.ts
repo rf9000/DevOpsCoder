@@ -165,6 +165,13 @@ export interface PipelineRejection {
    * The orchestrator never writes this field.
    */
   dispatched?: boolean;
+  /**
+   * Watcher-managed: set when the human dropped the item instead of answering
+   * (need-input/blocked tag removed without re-adding the trigger tag, or the
+   * WI was closed or deleted). The item no longer waits on anyone; the
+   * dashboard stops listing it. A later re-tag clears the whole rejection.
+   */
+  withdrawnAt?: string;
 }
 
 export interface PipelineState {

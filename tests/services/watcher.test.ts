@@ -7,6 +7,7 @@ import {
   runPollCycle,
   createAbortFlag,
   startWatcher,
+  withdrawDroppedRejections,
 } from '../../src/services/watcher.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { createLogger } from '../../src/utils/logger.ts';
@@ -588,6 +589,100 @@ describe('runPollCycle', () => {
     expect(line).toBeDefined();
     expect(line).toContain('closed-state');
     expect(line).not.toContain('cost:');
+  });
+});
+
+describe('withdrawDroppedRejections', () => {
+  let dir: string;
+  let store: PipelineStateStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'watcher-withdraw-'));
+    store = new PipelineStateStore(dir);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function saveRejected(id: number, extra: { dispatched?: boolean; withdrawnAt?: string } = { dispatched: true }) {
+    store.save({
+      workItemId: id,
+      slug: `wi-${id}`,
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+      currentStage: null,
+      history: [],
+      outputs: {},
+      rejectCount: 1,
+      rejection: { reasons: [], summary: 'unclear', stage: 'analyzer', at: '2026-01-01T00:00:00Z', ...extra },
+    });
+  }
+
+  function adoWith(fields: Record<number, Record<string, string> | 404 | Error>): AdoClient {
+    const ado = makeAdo([]);
+    ado.getWorkItem = mock(async (id: number) => {
+      const f = fields[id];
+      if (f === 404) throw Object.assign(new Error('not found'), { statusCode: 404 });
+      if (f instanceof Error) throw f;
+      return { id, fields: f ?? {} };
+    });
+    return ado;
+  }
+
+  const deps = (ado: AdoClient, logger: Logger = createLogger()) => ({
+    config: baseConfig, logger, ado, store, processor: makeProcessor(async (id) => ({ kind: 'skipped', workItemId: id, reason: 'x' })), abortFlag: createAbortFlag(),
+  });
+
+  it('withdraws a rejection whose need-input tag was removed without a re-tag', async () => {
+    saveRejected(1);
+    await withdrawDroppedRejections(deps(adoWith({ 1: { 'System.State': 'Active', 'System.Tags': 'other' } })), new Set());
+    const s = store.load(1)!;
+    expect(s.rejection?.withdrawnAt).toBeTruthy();
+    expect(s.rejectCount).toBe(1);
+  });
+
+  it('keeps a rejection while need-input or blocked is still on the WI (any case)', async () => {
+    saveRejected(1);
+    saveRejected(2);
+    await withdrawDroppedRejections(deps(adoWith({
+      1: { 'System.State': 'Active', 'System.Tags': 'x; Need-Input' },
+      2: { 'System.State': 'Active', 'System.Tags': 'agent-blocked' },
+    })), new Set());
+    expect(store.load(1)!.rejection?.withdrawnAt).toBeUndefined();
+    expect(store.load(2)!.rejection?.withdrawnAt).toBeUndefined();
+  });
+
+  it('withdraws a rejection on a closed or deleted WI', async () => {
+    saveRejected(1);
+    saveRejected(2);
+    await withdrawDroppedRejections(deps(adoWith({
+      1: { 'System.State': 'Closed', 'System.Tags': 'need-input' },
+      2: 404,
+    })), new Set());
+    expect(store.load(1)!.rejection?.withdrawnAt).toBeTruthy();
+    expect(store.load(2)!.rejection?.withdrawnAt).toBeTruthy();
+  });
+
+  it('skips re-tagged, undispatched and already withdrawn rejections without calling ADO', async () => {
+    saveRejected(1);
+    saveRejected(2, {});
+    saveRejected(3, { dispatched: true, withdrawnAt: '2026-01-02T00:00:00Z' });
+    const ado = adoWith({});
+    await withdrawDroppedRejections(deps(ado), new Set([1]));
+    expect(ado.getWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('leaves the rejection on a transient ADO error', async () => {
+    saveRejected(1);
+    await withdrawDroppedRejections(deps(adoWith({ 1: new Error('503') })), new Set());
+    expect(store.load(1)!.rejection?.withdrawnAt).toBeUndefined();
+  });
+
+  it('runs at the start of every poll cycle', async () => {
+    saveRejected(1);
+    await runPollCycle(deps(adoWith({ 1: { 'System.State': 'Active', 'System.Tags': '' } })));
+    expect(store.load(1)!.rejection?.withdrawnAt).toBeTruthy();
   });
 });
 

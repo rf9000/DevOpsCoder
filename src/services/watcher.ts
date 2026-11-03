@@ -2,7 +2,7 @@ import type { AppConfig, CycleStats } from '../types/index.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
 import type { PipelineStateStore } from '../state/state-store.ts';
 import type { Logger } from '../utils/logger.ts';
-import type { Processor } from './processor.ts';
+import { CLOSED_STATES, hasStatusCode, type Processor } from './processor.ts';
 import type { AbortFlag } from '../pipeline/stage.ts';
 import { runPool } from '../utils/pool.ts';
 import { formatToolUsage } from '../utils/tool-usage-tracker.ts';
@@ -36,6 +36,7 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
   const stats = emptyStats();
 
   const tagged = await ado.queryWorkItemsByTag(config.triggerTag);
+  await withdrawDroppedRejections(deps, new Set(tagged));
   const resumable = store.listResumable().map((s) => s.workItemId);
   const candidates = Array.from(new Set<number>([...tagged, ...resumable]));
   stats.considered = candidates.length;
@@ -88,6 +89,42 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
   });
 
   return stats;
+}
+
+/**
+ * A rejected WI waits for the human to answer and re-add the trigger tag. When
+ * they drop it instead (remove need-input/blocked without re-tagging, close or
+ * delete the WI), the state file would keep the rejection forever and the
+ * dashboard would show the WI as waiting for input. Mark those withdrawn.
+ * Best-effort per WI: an ADO error leaves the rejection for the next cycle.
+ */
+export async function withdrawDroppedRejections(deps: WatcherDeps, tagged: Set<number>): Promise<void> {
+  const { config, logger, ado, store } = deps;
+  const open = store
+    .listAll()
+    .filter((s) => s.rejection?.dispatched && !s.rejection.withdrawnAt && !tagged.has(s.workItemId));
+  for (const state of open) {
+    let reason: string | null;
+    try {
+      const wi = await ado.getWorkItem(state.workItemId);
+      const wiState = wi.fields['System.State'];
+      const tags = (wi.fields['System.Tags'] ?? '').split(';').map((t) => t.trim().toLowerCase());
+      const waitTags = [config.needInputTag, config.blockedTag].map((t) => t.toLowerCase());
+      reason = wiState && CLOSED_STATES.has(wiState) ? `WI is ${wiState}`
+        : waitTags.some((t) => tags.includes(t)) ? null
+        : `${config.needInputTag}/${config.blockedTag} tag removed`;
+    } catch (err) {
+      if (!hasStatusCode(err, 404)) {
+        logger.warn(`WI ${state.workItemId}: rejection check failed, retrying next cycle :: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      reason = 'WI not found';
+    }
+    if (!reason) continue;
+    state.rejection!.withdrawnAt = new Date().toISOString();
+    store.save(state);
+    logger.info(`WI ${state.workItemId}: rejection withdrawn (${reason})`);
+  }
 }
 
 async function sleepInterruptible(

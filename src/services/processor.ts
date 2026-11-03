@@ -49,9 +49,9 @@ export interface Processor {
   processWorkItem(workItemId: number): Promise<ProcessOutcome>;
 }
 
-const CLOSED_STATES = new Set(['Resolved', 'Closed', 'Removed']);
+export const CLOSED_STATES = new Set(['Resolved', 'Closed', 'Removed']);
 
-function hasStatusCode(err: unknown, code: number): boolean {
+export function hasStatusCode(err: unknown, code: number): boolean {
   return (
     typeof err === 'object' &&
     err !== null &&
