@@ -6,9 +6,21 @@ import {
   discoverAlApps,
   localizationAppDir,
   ownerAppOf,
+  repoBuiltAppNames,
   resolveDeployOrder,
   type AlApp,
 } from '../../src/utils/al-app-graph.ts';
+
+describe('repoBuiltAppNames', () => {
+  it('names every in-repo app but not vendored source under external/', () => {
+    const names = repoBuiltAppNames([
+      { dir: 'permission-sets', name: 'Continia Banking - Permission Sets', dependencies: [] },
+      { dir: 'import', name: 'Continia Banking - Import', dependencies: [] },
+      { dir: 'external/Continia Finance/00_Base_App', name: 'Continia Finance', dependencies: [] },
+    ]);
+    expect([...names].sort()).toEqual(['Continia Banking - Import', 'Continia Banking - Permission Sets']);
+  });
+});
 
 /** The real Continia Banking shape, trimmed to the apps that matter here. */
 const APPS: AlApp[] = [
@@ -129,6 +141,7 @@ describe('discoverAlApps', () => {
     const found = discoverAlApps(dir);
     expect(found.map((a) => a.dir).sort()).toEqual(['base-application', 'export']);
     expect(found.find((a) => a.dir === 'export')?.dependencies).toEqual(['Continia Banking']);
+    expect(found.find((a) => a.dir === 'export')?.dependencyIds).toEqual({ 'Continia Banking': 'x' });
   });
 
   it('does not descend into an app looking for nested apps', () => {

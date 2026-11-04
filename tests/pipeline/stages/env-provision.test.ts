@@ -74,6 +74,7 @@ function makeCli(overrides: Partial<Record<keyof ContiniaCli, unknown>> = {}): C
     getEnvironment: mock(async () => created),
     waitForRunning: mock(async () => ({ ...created, status: 'Running' })),
     installDependencies: mock(async () => ({ skippedCount: 0, symbolsMissingCount: 0 })),
+    previewDependencies: mock(async (): Promise<string[]> => []),
     installAppById: mock(async () => {}),
     downloadSymbols: mock(async () => {}),
     deployApp: mock(async () => []),

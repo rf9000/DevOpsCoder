@@ -186,6 +186,11 @@ export interface ContiniaCli {
     opts: ContiniaCallOpts & { pollIntervalMs?: number; maxWaitMs?: number },
   ): Promise<EnvironmentInfo>;
   installDependencies(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<DepsInstallInfo>;
+  /**
+   * `deps install --dry-run`: the names of the dependencies a real install
+   * would fetch from the catalogue. Installs nothing.
+   */
+  previewDependencies(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<string[]>;
   installAppById(envId: string, appId: string, opts: ContiniaCallOpts): Promise<void>;
   downloadSymbols(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<void>;
   deployApp(envId: string, appPathRel: string, opts: ContiniaCallOpts): Promise<DeployAppResult[]>;
@@ -334,6 +339,9 @@ const depsInstallSchema = z
   .object({
     skipped: z.array(z.unknown()).default([]),
     symbolsMissing: z.array(z.unknown()).default([]),
+    // Names, as the dry run prints them. Lenient like the rest: a row that is
+    // not a string is dropped by the caller rather than failing the parse.
+    wouldInstall: z.array(z.unknown()).nullish(),
   })
   .passthrough();
 
@@ -707,6 +715,14 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         skippedCount: parsed.skipped.length,
         symbolsMissingCount: parsed.symbolsMissing.length,
       };
+    },
+
+    async previewDependencies(envId, appPathRel, opts) {
+      const raw = await withTransientRetry(`deps install --dry-run ${appPathRel}`, opts, () =>
+        runJson(['deps', 'install', envId, appPathRel, '--dry-run', '--json'], opts),
+      );
+      const parsed = depsInstallSchema.parse(raw ?? {});
+      return (parsed.wouldInstall ?? []).filter((n): n is string => typeof n === 'string');
     },
 
     async installAppById(envId, appId, opts) {

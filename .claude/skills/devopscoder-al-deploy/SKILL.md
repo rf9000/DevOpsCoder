@@ -33,11 +33,18 @@ stage-level problem — report it, do not route around it.
 ## The localization app is already handled
 
 Since v29 only the country apps (`banking-w1`, `banking-dk`, …) declare
-`Continia Finance`; `base-application` does not. The pipeline therefore runs
-`continia deps install <envId> banking-<cc>` **before** anything else, because
-that is the only step that brings Finance onto the environment.
+`Continia Finance`; `base-application` does not. The pipeline therefore
+installs the country app's external dependencies **before** anything else,
+because that is the only step that brings Finance onto the environment.
 
 You do not need to repeat it, and you must not add a country app to a deploy.
+
+Do not run `continia deps install` yourself either. It treats this repo's own
+apps (Permission Sets, Approval, Continia Banking, Import, …) as externals and
+installs their **released** builds from the catalogue. Once a released build
+is newer than the branch's version, BC refuses to publish the branch build
+under it, and no source edit can fix that. The pipeline installs every
+dependency before you run, and it skips the apps this repo builds.
 `external/Continia Finance/00_Base_App` declares the app.json name
 `Continia Finance`, so pulling a country app into a build makes the tooling
 compile vendored third-party source (pinned to an older `application` version)

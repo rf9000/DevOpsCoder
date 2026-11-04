@@ -77,6 +77,7 @@ function makeCliMock(overrides: Record<string, unknown> = {}) {
     waitForRunning: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/env-9' })),
     installAppById: mock(async () => {}),
     installDependencies: mock(async () => ({ skippedCount: 0, symbolsMissingCount: 0 })),
+    previewDependencies: mock(async (): Promise<string[]> => []),
     downloadSymbols: mock(async () => {}),
     deployApp: mock(async (_e: string, app: string) => [{ app, compiled: true, published: true }]),
     runTests: mock(async () => ({

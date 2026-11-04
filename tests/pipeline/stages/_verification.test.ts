@@ -12,6 +12,7 @@ import { createLogger, type Logger } from '../../../src/utils/logger.ts';
 import type { ContiniaCli } from '../../../src/services/continia-cli.ts';
 import type { AppConfig, EnvironmentOutput, WorktreeContext } from '../../../src/types/index.ts';
 import type { DiscoveredTestCodeunit } from '../../../src/utils/al-test-discovery.ts';
+import type { AlApp } from '../../../src/utils/al-app-graph.ts';
 
 const worktree: WorktreeContext = {
   path: '/repos/.worktrees/wi-101-fix-login',
@@ -73,6 +74,7 @@ function makeCliMock(overrides: Record<string, unknown> = {}) {
     waitForRunning: mock(async () => ({ id: 'env-9', status: 'Running', url: 'https://bc/env-9' })),
     installAppById: mock(async () => {}),
     installDependencies: mock(async () => ({ skippedCount: 0, symbolsMissingCount: 0 })),
+    previewDependencies: mock(async (): Promise<string[]> => []),
     downloadSymbols: mock(async () => {}),
     deployApp: mock(async (_e: string, app: string) => [{ app, compiled: true, published: true }]),
     runTests: mock(async () => ({
@@ -193,6 +195,67 @@ describe('prepareVerification', () => {
     expect(installedPaths).toContain('App');
     expect(cache.envId).toBe('env-new');
     expect(cache.depsInstalled).toEqual(['App']);
+  });
+
+  // WI 85247: `deps install banking-w1` fetched the released 29.1.0.0 Banking
+  // chain from the catalogue, and the branch's 29.0.0.0 Permission Sets could
+  // then not be published under it.
+  describe('when a deps install would fetch an app this repo builds', () => {
+    const appGraph: AlApp[] = [
+      {
+        dir: 'banking-w1',
+        name: 'Continia Banking (W1)',
+        dependencies: ['Continia Banking - Import', 'Continia Banking', 'Continia Finance'],
+        dependencyIds: {
+          'Continia Banking - Import': 'id-import',
+          'Continia Banking': 'id-banking',
+          'Continia Finance': 'id-finance',
+        },
+      },
+      { dir: 'import', name: 'Continia Banking - Import', dependencies: ['Continia Banking'] },
+      { dir: 'App', name: 'Continia Banking', dependencies: ['Continia Core'], dependencyIds: { 'Continia Core': 'id-core' } },
+      { dir: 'external/Continia Finance/00_Base_App', name: 'Continia Finance', dependencies: [] },
+    ];
+
+    it('installs only the non-repo dependencies, by id, and never the full deps install', async () => {
+      const cli = makeCliMock({
+        previewDependencies: mock(async (_e: string, app: string) =>
+          app === 'banking-w1' ? ['Continia Banking - Import', 'Continia Banking', 'Continia Finance'] : [],
+        ),
+      });
+      await prepareVerification({
+        ...makeBaseArgs(),
+        continiaCli: cli as unknown as ContiniaCli,
+        discoverAlApps: () => appGraph,
+      });
+
+      const byId = cli.installAppById.mock.calls.map((c: unknown[]) => c[1]);
+      expect(byId).toContain('id-finance');
+      expect(byId).not.toContain('id-import');
+      expect(byId).not.toContain('id-banking');
+      const fullInstalls = cli.installDependencies.mock.calls.map((c: unknown[]) => c[1]);
+      expect(fullInstalls).not.toContain('banking-w1');
+      // An app whose preview names no repo app keeps the ordinary install.
+      expect(fullInstalls).toContain('App');
+    });
+
+    it('warns and skips an external whose app.json entry carries no id', async () => {
+      const warnings: string[] = [];
+      const cli = makeCliMock({
+        previewDependencies: mock(async (_e: string, app: string) =>
+          app === 'banking-w1' ? ['Continia Banking', 'Mystery App'] : [],
+        ),
+      });
+      await prepareVerification({
+        ...makeBaseArgs(),
+        continiaCli: cli as unknown as ContiniaCli,
+        discoverAlApps: () => appGraph,
+        logger: { ...silentLogger, warn: (m: string) => warnings.push(m) },
+      });
+
+      expect(warnings.some((w) => w.includes("'Mystery App'"))).toBe(true);
+      expect(cli.installDependencies.mock.calls.map((c: unknown[]) => c[1])).not.toContain('banking-w1');
+    });
   });
 
   it('treats a legacy cache carrying no envId as cold', async () => {

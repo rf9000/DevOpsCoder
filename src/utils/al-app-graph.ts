@@ -8,6 +8,8 @@ export interface AlApp {
   name: string;
   /** `name` of each entry in app.json `dependencies` (internal AND external). */
   dependencies: string[];
+  /** Dependency `name` → `id` (GUID) from app.json, for entries that carry both. */
+  dependencyIds?: Record<string, string>;
   /** `application` from app.json — the minimum BC application version this app needs. */
   application?: string;
   /** `platform` from app.json — the minimum BC platform version this app needs. */
@@ -51,10 +53,17 @@ export function discoverAlApps(worktreePath: string): AlApp[] {
                 .map((d) => (d as { name?: unknown })?.name)
                 .filter((n): n is string => typeof n === 'string')
             : [];
+          const dependencyIds: Record<string, string> = {};
+          if (Array.isArray(raw.dependencies)) {
+            for (const d of raw.dependencies as Array<{ name?: unknown; id?: unknown }>) {
+              if (typeof d?.name === 'string' && typeof d.id === 'string') dependencyIds[d.name] = d.id;
+            }
+          }
           apps.push({
             dir: toPosix(relative(worktreePath, absDir)),
             name: raw.name,
             dependencies,
+            dependencyIds,
             application: typeof raw.application === 'string' ? raw.application : undefined,
             platform: typeof raw.platform === 'string' ? raw.platform : undefined,
           });
@@ -159,6 +168,15 @@ const EXTERNAL_DIR_PREFIX = 'external/';
 
 function isVendored(app: AlApp): boolean {
   return app.dir.toLowerCase().startsWith(EXTERNAL_DIR_PREFIX);
+}
+
+/**
+ * Names of the apps this repo builds itself — every app outside `external/`.
+ * Vendored apps are excluded because their names collide with the real
+ * externals by design: `Continia Finance` must still come from the catalogue.
+ */
+export function repoBuiltAppNames(apps: AlApp[]): Set<string> {
+  return new Set(apps.filter((a) => !isVendored(a)).map((a) => a.name));
 }
 
 /**

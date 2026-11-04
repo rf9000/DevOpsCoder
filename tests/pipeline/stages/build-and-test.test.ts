@@ -227,6 +227,7 @@ function makeHarness(opts: {
       callOrder.push(`install:${app}`);
       return opts.depsInfoFor?.(app) ?? { skippedCount: 0, symbolsMissingCount: 0 };
     }),
+    previewDependencies: mock(async (): Promise<string[]> => []),
     downloadSymbols: mock(async (_e: string, app: string) => {
       callOrder.push(`download:${app}`);
     }),

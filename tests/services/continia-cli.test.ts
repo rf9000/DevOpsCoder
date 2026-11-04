@@ -204,6 +204,20 @@ describe('createContiniaCli', () => {
     expect(info).toEqual({ skippedCount: 1, symbolsMissingCount: 2 });
   });
 
+  it('previewDependencies dry-runs deps install and returns the wouldInstall names', async () => {
+    const { cli, calls } = makeCli([
+      ok('{"success":true,"alreadySatisfied":["Continia Core"],"wouldInstall":["Continia Banking",7,"Continia Finance"]}'),
+    ]);
+    const names = await cli.previewDependencies('env-1', 'banking-w1', opts);
+    expect(calls[0]?.argv.slice(1)).toEqual(['deps', 'install', 'env-1', 'banking-w1', '--dry-run', '--json']);
+    expect(names).toEqual(['Continia Banking', 'Continia Finance']);
+  });
+
+  it('previewDependencies returns nothing when the CLI omits wouldInstall', async () => {
+    const { cli } = makeCli([ok('{"success":true}')]);
+    expect(await cli.previewDependencies('env-1', 'banking-w1', opts)).toEqual([]);
+  });
+
   it('installDependencies returns zero counts when the CLI omits the arrays', async () => {
     const { cli } = makeCli([ok('{}')]);
     const info = await cli.installDependencies('env-1', 'Core/Cloud', opts);

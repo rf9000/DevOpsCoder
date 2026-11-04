@@ -42,6 +42,7 @@ import {
   discoverAlApps as defaultDiscoverAlApps,
   localizationAppDir,
   ownerAppOf,
+  repoBuiltAppNames,
   resolveDeployOrder,
   type AlApp,
 } from '../../utils/al-app-graph.ts';
@@ -472,6 +473,43 @@ export async function prepareVerification(
     'a skipped dep here may mean Continia Finance is NOT on the environment — this app is ' +
     'never compiled, so the miss surfaces later as a deploy failure blamed on another app';
 
+  // `deps install` does not know which dependencies this repo builds: it
+  // fetches sibling apps (Permission Sets, Approval, Continia Banking, Import,
+  // …) from the catalogue like any external. Every install runs before the
+  // first deploy, so on a fresh environment the RELEASED builds land first —
+  // and once the catalogue carried 29.1.0.0 against a 29.0.0.0 branch, BC
+  // refused to publish the branch's Permission Sets under its installed 29.1
+  // dependents, --allow-downgrade or not (WI 85247). A dry run says what the
+  // install would fetch; when that includes a repo-built app, install only
+  // the rest, one by one by GUID, so repo apps arrive solely from our deploys.
+  const repoBuilt = repoBuiltAppNames(appGraph);
+  const installAppDeps = async (appDir: string, tail: string): Promise<void> => {
+    const wouldInstall = await args.continiaCli.previewDependencies(env.envId, appDir, callOpts);
+    const siblings = wouldInstall.filter((n) => repoBuilt.has(n));
+    if (siblings.length === 0) {
+      surfaceDepsInfo(appDir, await args.continiaCli.installDependencies(env.envId, appDir, callOpts), tail);
+      return;
+    }
+    const externals = wouldInstall.filter((n) => !repoBuilt.has(n));
+    args.logger.info(
+      `${logPrefix}: deps install for ${appDir} would fetch repo-built ${siblings.join(', ')} from the ` +
+        `catalogue — skipping those (they are deployed from the worktree) and installing ` +
+        `${externals.length > 0 ? externals.join(', ') : 'nothing else'} by id`,
+    );
+    const ids = appGraph.find((a) => a.dir === appDir)?.dependencyIds ?? {};
+    for (const name of externals) {
+      const id = ids[name];
+      if (!id) {
+        args.logger.warn(
+          `${logPrefix}: ${appDir}/app.json declares no id for dependency '${name}' — NOT installed; ` +
+            tail,
+        );
+        continue;
+      }
+      await args.continiaCli.installAppById(env.envId, id, callOpts);
+    }
+  };
+
   // Since v29 only the country apps declare Continia Finance —
   // base-application does not — so this is the ONLY step that brings it
   // onto the environment, and it must run before the deploy set's own deps.
@@ -509,11 +547,7 @@ export async function prepareVerification(
             ' — the only step that brings Continia Finance onto the environment',
         );
       }
-      surfaceDepsInfo(
-        localizationApp.dir,
-        await args.continiaCli.installDependencies(env.envId, localizationApp.dir, callOpts),
-        LOCALIZATION_DEPS_TAIL,
-      );
+      await installAppDeps(localizationApp.dir, LOCALIZATION_DEPS_TAIL);
       cache.localizationInstalled = true;
     }
   }
@@ -521,11 +555,7 @@ export async function prepareVerification(
   const depsInstalled = (cache.depsInstalled ??= []);
   for (const appPath of appPaths) {
     if (depsInstalled.includes(appPath)) continue;
-    surfaceDepsInfo(
-      appPath,
-      await args.continiaCli.installDependencies(env.envId, appPath, callOpts),
-      DEPLOY_SET_DEPS_TAIL,
-    );
+    await installAppDeps(appPath, DEPLOY_SET_DEPS_TAIL);
     depsInstalled.push(appPath);
   }
 
