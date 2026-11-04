@@ -267,6 +267,35 @@ describe('createContiniaCli', () => {
       expect(result[0]!.code).toBe('unpublish-sweep-failed');
     });
 
+    // WI 85247: BC refused the downgrade at publish time despite --allow-downgrade,
+    // and the CLI coded it publish-failed — which the fix loop took as coder-fixable.
+    it('re-codes a publish-time downgrade refusal as higher-version-installed', async () => {
+      const rows = JSON.stringify([
+        {
+          app: 'Continia Software_Continia Banking - Permission Sets',
+          compiled: true,
+          published: false,
+          code: 'publish-failed',
+          error: "Publishing failed due to 'Cannot install the extension Continia Banking - Permission Sets by Continia Software 29.0.0.0 because a newer version 29.1.0.0 was already installed.'. The original extensions have been restored.\r\n\r\n",
+        },
+        { app: 'Continia Software_Continia Approval', compiled: false, published: false, code: 'unpublished-sibling', error: 'not published' },
+      ]);
+      const { cli } = makeCli([{ exitCode: 1, stdout: rows, stderr: '' }]);
+      const result = await cli.deployApp('env-1', 'permission-sets', opts);
+      expect(result[0]!.code).toBe('higher-version-installed');
+      expect(result[0]!.error).toContain('newer version 29.1.0.0');
+      expect(result[1]!.code).toBe('unpublished-sibling');
+    });
+
+    it('leaves any other publish-failed row coder-fixable', async () => {
+      const rows = JSON.stringify([
+        { app: 'A', compiled: true, published: false, code: 'publish-failed', error: 'AL0126 method not found' },
+      ]);
+      const { cli } = makeCli([{ exitCode: 1, stdout: rows, stderr: '' }]);
+      const result = await cli.deployApp('env-1', 'Core/Cloud', opts);
+      expect(result[0]!.code).toBe('publish-failed');
+    });
+
     it('passes --sync-mode only when continiaSyncMode is set', async () => {
       const { cli, calls } = makeCli(
         [ok('[{"app":"A","compiled":true,"published":true}]')],

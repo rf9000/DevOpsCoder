@@ -230,6 +230,27 @@ export function isSweepNotInstalled(row: DeployAppResult): boolean {
   return row.code === 'unpublish-sweep-failed' && /is not installed/i.test(String(row.error ?? ''));
 }
 
+/**
+ * BC's refusal to publish over a higher installed version. The CLI reports it
+ * as `higher-version-installed` when it detects the conflict up front, but when
+ * BC itself refuses at publish time — despite `--allow-downgrade`, seen on
+ * WI 85247 with Permission Sets 29.1.0.0 brought in by the localization deps
+ * install — the row arrives as `publish-failed`, which reads as coder-fixable.
+ */
+export const DOWNGRADE_REFUSED_ERROR = /a newer version \S+ was already installed/i;
+
+/**
+ * Re-codes a `publish-failed` row that is really a version conflict as
+ * `higher-version-installed`, so every consumer branching on `code` treats it
+ * as the environment problem it is. No AL edit raises an installed version,
+ * so leaving it `publish-failed` sends the fix loop after a cause it cannot
+ * reach and reports the WI as a compile/publish failure of innocent code.
+ */
+export function normalizeDowngradeRefusal(row: DeployAppResult): DeployAppResult {
+  if (row.code !== 'publish-failed' || !DOWNGRADE_REFUSED_ERROR.test(String(row.error ?? ''))) return row;
+  return { ...row, code: 'higher-version-installed' };
+}
+
 /** Backoff for transient retries: long enough for a waking environment to start serving. */
 export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000, 120_000];
 
@@ -757,7 +778,7 @@ export function createContiniaCli(deps: ContiniaCliDeps): ContiniaCli {
         }
 
         const rows = deployResultSchema.safeParse(raw);
-        if (rows.success) return rows.data as DeployAppResult[];
+        if (rows.success) return (rows.data as DeployAppResult[]).map(normalizeDowngradeRefusal);
 
         // A run that never reached the per-app loop: one object, not an array.
         // Normalize it to a single failed row so callers have one shape to read.
