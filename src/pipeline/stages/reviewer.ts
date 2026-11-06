@@ -90,10 +90,17 @@ const axisOutputSchema = z.object({
       title: z.string(),
       description: z.string(),
       suggestion: z.string().optional(),
-      axis: z.string(),
+      // Optional, and overwritten with the axis that actually ran: the field
+      // is never trusted (see the clamp below), so requiring it only gave a
+      // reply that omits it a way to fail the whole revision loop — WI 82676's
+      // safety-correctness axis left it out on all three parse attempts.
+      axis: z.string().optional(),
     }),
   ),
-}) satisfies z.ZodType<{ findings: Finding[] }>;
+}) satisfies z.ZodType<{ findings: AxisFinding[] }>;
+
+/** A finding as an axis returns it, before the stage stamps the running axis. */
+type AxisFinding = Omit<Finding, 'axis'> & { axis?: string };
 
 // ---------------------------------------------------------------------------
 // Read-only Bash allowlist
@@ -399,7 +406,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
         REVIEW_AXES.map((axis) =>
           runWithParseRetry(
             () =>
-              deps.runner.run<{ findings: Finding[] }>({
+              deps.runner.run<{ findings: AxisFinding[] }>({
                 prompt: promptFor(axis),
                 label: `${label}:${axis}`,
                 schema: axisOutputSchema,
@@ -453,7 +460,7 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
 
       const axisResults = settled.map(
         (s) =>
-          (s as PromiseFulfilledResult<AgentRunResult<{ findings: Finding[] }>>).value,
+          (s as PromiseFulfilledResult<AgentRunResult<{ findings: AxisFinding[] }>>).value,
       );
 
       const mergedToolUsage = mergeToolUsage(axisResults.map((r) => r.toolUsage));
@@ -476,14 +483,14 @@ export function createReviewerStage(deps: ReviewerStageDeps): Stage {
       const clampedByAxis: Finding[][] = axisResults.map((r, i) => {
         const axis = REVIEW_AXES[i]!;
         const ceiling = AXIS_SEVERITY_CEILING[axis];
-        return r.value.findings.map((f) => {
+        return r.value.findings.map((f): Finding => {
           const severity = clampSeverity(f.severity, ceiling);
           if (severity !== f.severity) {
             ctx.logger.info(
               `${label}:${axis}: ${f.severity} -> ${severity} (axis ceiling) — ${f.file}: ${f.title}`,
             );
           }
-          return { ...f, severity };
+          return { ...f, severity, axis };
         });
       });
       const flat = clampedByAxis.flat();

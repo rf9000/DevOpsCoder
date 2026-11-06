@@ -756,6 +756,32 @@ describe('createReviewerStage', () => {
     expect((result.outputs.reviewer as ReviewerOutput).findings[0]!.severity).toBe('minor');
   });
 
+  // WI 82676: safety-correctness omitted `axis` on every parse attempt and the
+  // schema failure took the whole revision loop down.
+  it('T17e: accepts a finding with no axis field and stamps the axis that ran', async () => {
+    const noAxis = { severity: 'major', file: 'src/a.al', line: 3, title: 'T', description: 'D' };
+    const runner = makeRunner(async (args) =>
+      args.label === 'reviewer:safety-correctness' ? { findings: [noAxis] } : { findings: [] },
+    );
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+
+    const schema = runner.calls[0]!.schema as { safeParse: (v: unknown) => { success: boolean } };
+    expect(schema.safeParse({ findings: [noAxis] }).success).toBe(true);
+    expect((result.outputs.reviewer as ReviewerOutput).findings[0]!.axis).toBe('safety-correctness');
+  });
+
+  it('T17f: overwrites a model-supplied axis with the axis that ran', async () => {
+    const runner = makeRunner(async (args) =>
+      args.label === 'reviewer:naming-style'
+        ? { findings: [{ severity: 'minor', file: 'src/a.al', title: 'T', description: 'D', axis: 'security' }] }
+        : { findings: [] },
+    );
+    const stage = createReviewerStage(makeDeps(runner));
+    const result = await stage.execute(makeState(), makeCtx());
+    expect((result.outputs.reviewer as ReviewerOutput).findings[0]!.axis).toBe('naming-style');
+  });
+
   // -------------------------------------------------------------------------
   // T12 — buildReviewerUserPrompt section rendering
   // -------------------------------------------------------------------------
