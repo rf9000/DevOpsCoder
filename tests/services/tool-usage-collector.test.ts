@@ -115,6 +115,20 @@ describe('createToolUsageCollector', () => {
     ]);
   });
 
+  test('instructions relative to the hook cwd before any init', async () => {
+    const c = createToolUsageCollector();
+    await fireInstructions(c.hooks(), {
+      hook_event_name: 'InstructionsLoaded',
+      cwd: '/work/wt',
+      file_path: '/work/wt/.claude/rules/a.md',
+      load_reason: 'path_glob_match',
+      trigger_file_path: '/work/wt/src/x.al',
+    });
+    expect(c.record(META).instructions).toEqual([
+      { path: '.claude/rules/a.md', reason: 'path_glob_match', trigger: 'src/x.al' },
+    ]);
+  });
+
   test('instructions null when no event', () => {
     expect(createToolUsageCollector().record(META).instructions).toBeNull();
   });

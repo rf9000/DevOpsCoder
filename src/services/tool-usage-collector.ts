@@ -62,10 +62,10 @@ export function createToolUsageCollector(): ToolUsageCollector {
   const instructions: { path: string; reason: string; trigger?: string }[] = [];
   const seenPaths = new Set<string>();
 
-  const relative = (p: string): string => {
+  const relative = (p: string, from: string | undefined = cwd): string => {
     const norm = p.replaceAll('\\', '/');
-    if (!cwd) return norm;
-    const base = cwd.replaceAll('\\', '/').replace(/\/+$/, '');
+    if (!from) return norm;
+    const base = from.replaceAll('\\', '/').replace(/\/+$/, '');
     return norm.startsWith(base + '/') ? norm.slice(base.length + 1) : norm;
   };
 
@@ -122,16 +122,17 @@ export function createToolUsageCollector(): ToolUsageCollector {
           {
             hooks: [
               async (input) => {
-                const i = input as { file_path?: unknown; load_reason?: unknown; trigger_file_path?: unknown };
+                const i = input as { cwd?: unknown; file_path?: unknown; load_reason?: unknown; trigger_file_path?: unknown };
                 if (typeof i.file_path !== 'string') return {};
-                const path = relative(i.file_path);
+                const from = typeof i.cwd === 'string' && i.cwd ? i.cwd : cwd;
+                const path = relative(i.file_path, from);
                 if (seenPaths.has(path)) return {};
                 seenPaths.add(path);
                 const entry: { path: string; reason: string; trigger?: string } = {
                   path,
                   reason: typeof i.load_reason === 'string' ? i.load_reason : 'unknown',
                 };
-                if (typeof i.trigger_file_path === 'string') entry.trigger = relative(i.trigger_file_path);
+                if (typeof i.trigger_file_path === 'string') entry.trigger = relative(i.trigger_file_path, from);
                 instructions.push(entry);
                 return {};
               },
