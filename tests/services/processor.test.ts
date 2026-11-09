@@ -13,6 +13,7 @@ import type { AppConfig, WorkItem, ReviewerOutput, VerificationOutput } from '..
 import { CostExceededError, StageTimeoutError, VerificationFailedError } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
 import type { CostRecord } from '../../src/services/cost-ledger.ts';
+import type { ToolUsageRecord } from '../../src/services/tool-usage-collector.ts';
 
 const baseConfig = {
   orgUrl: 'https://x',
@@ -477,6 +478,100 @@ describe('createProcessor', () => {
 
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({ outcome: 'paused', title: 'Fix login', costUsd: 1.25 });
+    });
+
+    it('writes the ledger line and the tool line with the same runId and at', async () => {
+      const records: CostRecord[] = [];
+      const tools: ToolUsageRecord[] = [];
+      const stage: Stage = {
+        name: 'coder',
+        canRun: () => true,
+        execute: async (state) => {
+          state.outputs.cost = { total: 2, perStage: { coder: 2 } };
+          return state;
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [stage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+        toolUsageSink: (r) => tools.push(r),
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records).toHaveLength(1);
+      expect(tools).toHaveLength(1);
+      expect(records[0]!.runId).toBeString();
+      expect(tools[0]!.runId).toBe(records[0]!.runId!);
+      expect(tools[0]!.at).toBe(records[0]!.at);
+      expect(tools[0]!.workItemId).toBe(101);
+    });
+
+    it('hands the pipeline builder the per-job collector', async () => {
+      let seen: unknown;
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: (d) => { seen = d.collector; return []; },
+        abortFlag: { aborted: false },
+        ledger: { record: () => {} },
+        toolUsageSink: () => {},
+      });
+      await proc.processWorkItem(101);
+      expect(seen).toBeDefined();
+    });
+
+    it('a paused outcome writes both lines', async () => {
+      const records: CostRecord[] = [];
+      const tools: ToolUsageRecord[] = [];
+      const pauseStage: Stage = {
+        name: 'await-human',
+        canRun: () => true,
+        execute: async (state) => {
+          state.currentStage = 'await-human';
+          throw new PipelinePauseError('waiting for human input');
+        },
+      };
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo(),
+        store,
+        buildPipeline: () => [pauseStage],
+        abortFlag: { aborted: false },
+        ledger: { record: (r) => records.push(r) },
+        toolUsageSink: (r) => tools.push(r),
+      });
+
+      await proc.processWorkItem(101);
+
+      expect(records[0]).toMatchObject({ outcome: 'paused' });
+      expect(tools).toHaveLength(1);
+      expect(tools[0]!.runId).toBe(records[0]!.runId!);
+    });
+
+    it('a skipped outcome writes no tool line', async () => {
+      const tools: ToolUsageRecord[] = [];
+      const proc = createProcessor({
+        config: baseConfig,
+        logger: createLogger(),
+        ado: makeAdo({ getWorkItem: mock(async () => ({ id: 101, fields: { 'System.Title': 't', 'System.State': 'Closed' } })) }),
+        store,
+        buildPipeline: () => [],
+        abortFlag: { aborted: false },
+        ledger: { record: () => {} },
+        toolUsageSink: (r) => tools.push(r),
+      });
+      const outcome = await proc.processWorkItem(101);
+      expect(outcome.kind).toBe('skipped');
+      expect(tools).toHaveLength(0);
     });
 
     it('records a rejected run with its title', async () => {

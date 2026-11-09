@@ -3,6 +3,7 @@ import type { AgentRunner, AgentRunArgs, AgentRunResult, AgentUsage } from '../p
 import type { Logger } from '../utils/logger.ts';
 import type { AppConfig } from '../types/index.ts';
 import { continiaProcessEnv } from './continia-cli.ts';
+import { withToolUsageHooks, type ToolUsageCollector } from './tool-usage-collector.ts';
 
 export const STRUCTURED_OUTPUT_INSTRUCTION =
   'Respond with ONLY a single valid JSON object that satisfies the schema described in the prompt. ' +
@@ -67,6 +68,8 @@ export function extractJson(raw: string): string {
 export interface ClaudeAgentRunnerDeps {
   config: AppConfig;
   logger: Logger;
+  /** Per-job tool-usage collector. Observes every SDK message and adds its hooks. */
+  collector?: ToolUsageCollector;
 }
 
 /**
@@ -156,6 +159,9 @@ export function buildQueryOptions<T>(
   if (args.settingSources !== undefined) opts.settingSources = args.settingSources;
   if (args.signal !== undefined) opts.abortSignal = args.signal;
 
+  const hooks = withToolUsageHooks(undefined, deps.collector);
+  if (hooks) opts.hooks = hooks;
+
   return opts;
 }
 
@@ -191,6 +197,8 @@ export function createClaudeAgentRunner(deps: ClaudeAgentRunnerDeps): AgentRunne
           err.name = 'AbortError';
           throw err;
         }
+
+        deps.collector?.observe(message);
 
         if (message.type === 'result') {
           // The SDK declares total_cost_usd as `number` on the result message, but

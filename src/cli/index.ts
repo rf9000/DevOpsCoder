@@ -9,6 +9,7 @@ import { createSuggestionGit } from '../suggestions/suggestion-git.ts';
 import { createProcessor } from '../services/processor.ts';
 import { createWiLogFactory } from '../services/wi-log.ts';
 import { createCostLedger } from '../services/cost-ledger.ts';
+import { appendToolUsage } from '../services/tool-usage-collector.ts';
 import { createWorktreeManager } from '../services/worktree-manager.ts';
 import { createContiniaCli } from '../services/continia-cli.ts';
 import { sweepClosedPrEnvironments } from '../services/env-cleanup.ts';
@@ -92,6 +93,7 @@ function buildDeps() {
     buildPipeline,
     abortFlag,
     ...(ledger ? { ledger } : {}),
+    ...(ledger ? { toolUsageSink: (r) => appendToolUsage(config.costLogPath, r, (m) => logger.warn(m)) } : {}),
     ...(wiLogs ? { wiLogs } : {}),
   });
   // Deleting environments is a write: never in a dry run, and there are none

@@ -23,6 +23,7 @@ import { normalizePerStage } from '../utils/cost-tracker.ts';
 import { findTagAdder, formatAdoMention } from '../utils/tag-history.ts';
 import { lookupTriggeredBy } from '../utils/triggered-by.ts';
 import type { CostLedger } from './cost-ledger.ts';
+import { createToolUsageCollector, type ToolUsageCollector, type ToolUsageRecord } from './tool-usage-collector.ts';
 import type { WiLog, WiLogFactory } from './wi-log.ts';
 import { renderCostReport } from '../utils/cost-report.ts';
 import type { PipelineBuilderDeps } from './pipeline-builder.ts';
@@ -37,6 +38,8 @@ export interface ProcessorDeps {
   abortFlag: AbortFlag;
   /** Append-only spend log. Omitted in tests and dry runs. */
   ledger?: CostLedger;
+  /** Receives one tool-usage record per finished job, next to the ledger line. Omitted when the ledger is off. */
+  toolUsageSink?: (record: ToolUsageRecord) => void;
   /**
    * Per-work-item log files. When present, each run gets a WI-scoped logger
    * (console output unchanged, lines also teed to `WI<id>.log`) and the spend
@@ -446,7 +449,7 @@ async function safeAdoOp(
 }
 
 export function createProcessor(deps: ProcessorDeps): Processor {
-  const { config, logger, ado, store, buildPipeline, abortFlag, ledger, wiLogs } = deps;
+  const { config, logger, ado, store, buildPipeline, abortFlag, ledger, wiLogs, toolUsageSink } = deps;
 
   async function dispatchRejection(
     state: PipelineState,
@@ -531,7 +534,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
   // One choke point for the spend log: every terminal outcome funnels through
   // the wrapper below, so the ledger cannot drift from the outcomes the watcher
   // reports. `skipped` is excluded — nothing ran, so there is nothing to bill.
-  async function recordSpend(outcome: ProcessOutcome, wiLog?: WiLog, title?: string): Promise<void> {
+  async function recordSpend(
+    outcome: ProcessOutcome,
+    wiLog?: WiLog,
+    title?: string,
+    collector?: ToolUsageCollector,
+  ): Promise<void> {
     if (outcome.kind === 'skipped') return;
     const persisted = store.load(outcome.workItemId);
     const cost = persisted?.outputs.cost as PipelineCostInfo | undefined;
@@ -551,8 +559,12 @@ export function createProcessor(deps: ProcessorDeps): Processor {
         )
       : undefined;
 
+    // One id and one timestamp for both lines, so the dashboard can join them.
+    const runId = crypto.randomUUID();
+
     ledger?.record({
       at,
+      runId,
       workItemId: outcome.workItemId,
       ...(title ? { title } : {}),
       outcome: outcome.kind,
@@ -561,6 +573,15 @@ export function createProcessor(deps: ProcessorDeps): Processor {
       ...(triggeredBy ? { triggeredBy } : {}),
       ...(cost?.perStage ? { perStage } : {}),
     });
+
+    // Separate try: neither bookkeeping write may affect the other or the outcome.
+    if (collector && toolUsageSink) {
+      try {
+        toolUsageSink(collector.record({ runId, workItemId: outcome.workItemId, at }));
+      } catch (err) {
+        logger.warn(`WI ${outcome.workItemId}: tool usage record failed :: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     // The WI's own file closes with the same breakdown, so the file that holds
     // the run's log lines also holds the answer to what those lines cost.
@@ -582,7 +603,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
   // logger through every call site inside without passing it by hand.
   // `seen` carries the WI title back out for the ledger; it stays off
   // ProcessOutcome so the outcome shape the watcher consumes is unchanged.
-  const makeInner = (logger: Logger, seen: { title?: string }) => ({
+  const makeInner = (logger: Logger, seen: { title?: string }, collector?: ToolUsageCollector) => ({
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
       if (abortFlag.aborted) {
         return { kind: 'skipped', workItemId, reason: 'aborted' };
@@ -645,7 +666,7 @@ export function createProcessor(deps: ProcessorDeps): Processor {
 
       store.save(state);
 
-      const stages = buildPipeline({ config, logger, ado });
+      const stages = buildPipeline({ config, logger, ado, ...(collector ? { collector } : {}) });
       // Forward stub for task-08: outerCtrl will be wired to SIGINT there; the signal
       // satisfies PipelineContext's required field today, with abort propagation handled
       // via ctx.abortFlag in the orchestrator.
@@ -807,8 +828,9 @@ export function createProcessor(deps: ProcessorDeps): Processor {
     async processWorkItem(workItemId: number): Promise<ProcessOutcome> {
       const wiLog = wiLogs?.open(workItemId);
       const seen: { title?: string } = {};
-      const outcome = await makeInner(wiLog?.logger ?? logger, seen).processWorkItem(workItemId);
-      await recordSpend(outcome, wiLog, seen.title);
+      const collector = toolUsageSink ? createToolUsageCollector() : undefined;
+      const outcome = await makeInner(wiLog?.logger ?? logger, seen, collector).processWorkItem(workItemId);
+      await recordSpend(outcome, wiLog, seen.title, collector);
       return outcome;
     },
   };

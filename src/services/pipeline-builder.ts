@@ -7,6 +7,7 @@ import type { Logger } from '../utils/logger.ts';
 import type { AgentRunner, CanUseToolFn } from '../pipeline/agent-stage.ts';
 import type { PipelineContext } from '../pipeline/stage.ts';
 import { createClaudeAgentRunner } from './claude-agent-runner.ts';
+import type { ToolUsageCollector } from './tool-usage-collector.ts';
 import {
   discoverTargetRepoSkills,
   discoverSkillsIn,
@@ -66,6 +67,8 @@ export interface PipelineBuilderDeps {
   config: AppConfig;
   logger: Logger;
   ado: AdoClient;
+  /** Per-job tool-usage collector, handed to the default runner. */
+  collector?: ToolUsageCollector;
   /** Optional runner override. Defaults to `createClaudeAgentRunner`. */
   runner?: AgentRunner;
   /** Optional worktree-manager override. Defaults to `createWorktreeManager`. */
@@ -168,7 +171,7 @@ export const REVISION_LOOP_EXHAUSTED = 'exhausted revision loop';
 export function buildPipeline(deps: PipelineBuilderDeps): Stage[] {
   const runner =
     deps.runner ??
-    createClaudeAgentRunner({ config: deps.config, logger: deps.logger });
+    createClaudeAgentRunner({ config: deps.config, logger: deps.logger, ...(deps.collector ? { collector: deps.collector } : {}) });
   const worktreeManager =
     deps.worktreeManager ?? createWorktreeManager({ config: deps.config });
   const continiaCli =
@@ -355,6 +358,7 @@ export interface SuggestionPipelineDeps {
   logger: Logger;
   ado: AdoClient;
   git: SuggestionGit;
+  collector?: ToolUsageCollector;
   runner?: AgentRunner;
   discoveredSkills?: DiscoveredSkill[];
   /** System-prompt append override. Default reads src/prompts/apply-suggestions.md. */
@@ -369,7 +373,7 @@ export interface SuggestionPipelineDeps {
  * orchestrator stops at the first failing stage.
  */
 export function buildSuggestionPipeline(deps: SuggestionPipelineDeps, mode: SuggestionMode): Stage[] {
-  const runner = deps.runner ?? createClaudeAgentRunner({ config: deps.config, logger: deps.logger });
+  const runner = deps.runner ?? createClaudeAgentRunner({ config: deps.config, logger: deps.logger, ...(deps.collector ? { collector: deps.collector } : {}) });
   const fixFindings = createFixFindingsStage({
     config: deps.config,
     runner,

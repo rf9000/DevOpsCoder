@@ -43,6 +43,7 @@ import {
   AgentOutputParseError,
   STRUCTURED_OUTPUT_INSTRUCTION,
 } from '../../src/services/claude-agent-runner.ts';
+import { createToolUsageCollector } from '../../src/services/tool-usage-collector.ts';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -108,6 +109,17 @@ describe('extractJson', () => {
 // buildQueryOptions
 // ---------------------------------------------------------------------------
 describe('buildQueryOptions', () => {
+  it('adds an InstructionsLoaded hook when a collector is given', () => {
+    const opts = buildQueryOptions(minimalArgs, { ...deps, collector: createToolUsageCollector() });
+    const hooks = opts.hooks as Record<string, unknown[]>;
+    expect(hooks.InstructionsLoaded).toHaveLength(1);
+  });
+
+  it('sets no hooks key without a collector', () => {
+    const opts = buildQueryOptions(minimalArgs, deps);
+    expect('hooks' in opts).toBe(false);
+  });
+
   it('uses deps.config.claudeModel when args.model is omitted', () => {
     const opts = buildQueryOptions(minimalArgs, deps);
     expect(opts.model).toBe('claude-opus-4-7');
@@ -283,6 +295,23 @@ describe('buildQueryOptions', () => {
 // createClaudeAgentRunner — cost and AbortSignal tests
 // ---------------------------------------------------------------------------
 describe('createClaudeAgentRunner', () => {
+  it('feeds every message to the collector', async () => {
+    setQueryImpl(async function* () {
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] },
+      };
+      yield {
+        type: 'result', subtype: 'success', result: '{}',
+        total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 }, num_turns: 1,
+      } as const;
+    });
+    const collector = createToolUsageCollector();
+    await createClaudeAgentRunner({ ...deps, collector }).run({ prompt: 'x', schema: z.unknown() });
+    const rec = collector.record({ runId: 'r', workItemId: 1, at: 'a' });
+    expect(rec.tools).toEqual({ Read: 1 });
+  });
+
   it('appends the label to the cost log line so spend is attributable', async () => {
     const lines: string[] = [];
     const logger = { ...createLogger(), info: (m: string) => lines.push(m) };
