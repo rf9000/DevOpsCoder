@@ -32,20 +32,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Linux build of the Continia CLI. `.tools/` is gitignored — copy
 # .tools/continia-linux into the build context before building (see README
 # "VM Deployment"). The build fails fast here if it is missing.
-COPY .tools/continia-linux /usr/local/bin/continia
-RUN chmod +x /usr/local/bin/continia
+# --chmod on the COPY, not a separate `RUN chmod`: a chmod in its own layer
+# stores the 82 MB binary a second time.
+COPY --chmod=755 .tools/continia-linux /usr/local/bin/continia
 
-# Install dependencies as root before switching user
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
-
-# Copy application source (includes .claude/ — those skills are symlinked
-# into each per-WI worktree at runtime; see src/services/skill-wiring.ts)
-COPY . .
-
-# Create non-root user — Claude Code refuses --dangerously-skip-permissions as root
+# Create non-root user — Claude Code refuses --dangerously-skip-permissions as root.
+# Created before anything lands in /app, and /app is handed over while still
+# empty: a `chown -R /app` after the install rewrites every file into a new
+# layer and stores node_modules twice (it was a 583 MB layer).
 RUN useradd -m -s /bin/bash claude && \
-    chown -R claude:claude /app && \
+    chown claude:claude /app && \
     mkdir -p /repos && \
     mkdir -p /tmp && chmod 1777 /tmp
 
@@ -57,9 +53,30 @@ RUN useradd -m -s /bin/bash claude && \
 # is single-purpose with only our own mounted repos, so waive it system-wide.
 RUN git config --system --add safe.directory '*'
 
-# Install Claude Code CLI as the claude user
+# Install Claude Code CLI as the claude user. Before the dependency install, so
+# a lockfile or source change does not rebuild this 342 MB layer.
 USER claude
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Install dependencies as claude, so the files are born with the right owner.
+# The SDK's platform packages (claude-agent-sdk-linux-x64, -linux-x64-musl) each
+# bundle a full Claude Code binary. This image runs the CLI installed above
+# through CLAUDE_CODE_EXECUTABLE_PATH, so those copies are dead weight; they go
+# in the same RUN, together with Bun's download cache, or the layer keeps them.
+COPY --chown=claude:claude package.json bun.lock ./
+RUN bun install --frozen-lockfile \
+    && find node_modules -maxdepth 3 -type d -name 'claude-agent-sdk-*' -prune -exec rm -rf {} + \
+    && bun pm cache rm \
+    && test -d node_modules/@anthropic-ai/claude-agent-sdk
+
+# Copy only what runs: src/ (code + prompts), config/ (worktree overlays) and
+# .claude/ (skills symlinked into each per-WI worktree at runtime; see
+# src/services/skill-wiring.ts). Not `COPY . .`: that also copied
+# .tools/continia-linux into /app, a third 82 MB copy of the CLI, plus tests.
+COPY --chown=claude:claude tsconfig.json ./
+COPY --chown=claude:claude src ./src
+COPY --chown=claude:claude config ./config
+COPY --chown=claude:claude .claude ./.claude
 USER root
 
 ENV PATH="/home/claude/.local/bin:$PATH"
