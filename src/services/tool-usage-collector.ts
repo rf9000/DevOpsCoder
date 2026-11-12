@@ -14,6 +14,10 @@ export interface ToolUsageRecord {
   sessions: number;
   tools: Record<string, number>;
   skills: Record<string, number>;
+  /** Read calls on a file inside `.claude/skills/<name>/`, by skill name: the skill was opened by path, not through the Skill tool. */
+  skillReads: Record<string, number>;
+  /** Read calls on a file under `.claude/rules/`, by path from `.claude/`: the rule was opened by path, not loaded by the session. */
+  ruleReads: Record<string, number>;
   subagents: Record<string, number>;
   bySubagent: Record<string, Record<string, number>>;
   available: {
@@ -23,8 +27,13 @@ export interface ToolUsageRecord {
     plugins: string[];
     commands: string[];
   };
+  /** What the session loaded by itself. `[]`: the hook was registered, a session ran and nothing was loaded. `null`: not known. */
   instructions: { path: string; reason: string; trigger?: string }[] | null;
 }
+
+// Only the skill name and the rule path are kept, never the rest of the tool input.
+const SKILL_FILE = /(?:^|\/)\.claude\/skills\/([^/]+)\/[^/]/;
+const RULE_FILE = /(?:^|\/)(\.claude\/rules\/.+)$/;
 
 type Hooks = Partial<Record<HookEvent, HookCallbackMatcher[]>>;
 
@@ -48,6 +57,8 @@ export function createToolUsageCollector(): ToolUsageCollector {
   let sessions = 0;
   const tools: Record<string, number> = {};
   const skills: Record<string, number> = {};
+  const skillReads: Record<string, number> = {};
+  const ruleReads: Record<string, number> = {};
   const subagents: Record<string, number> = {};
   const bySubagent: Record<string, Record<string, number>> = {};
   const subagentByToolUseId = new Map<string, string>();
@@ -61,6 +72,7 @@ export function createToolUsageCollector(): ToolUsageCollector {
 
   const instructions: { path: string; reason: string; trigger?: string }[] = [];
   const seenPaths = new Set<string>();
+  let hooked = false;
 
   const relative = (p: string, from: string | undefined = cwd): string => {
     const norm = p.replaceAll('\\', '/');
@@ -100,6 +112,13 @@ export function createToolUsageCollector(): ToolUsageCollector {
       const input = (block.input ?? {}) as Record<string, unknown>;
       bump(tools, name);
       if (name === 'Skill' && typeof input.skill === 'string') bump(skills, input.skill);
+      if (name === 'Read' && typeof input.file_path === 'string') {
+        const file = input.file_path.replaceAll('\\', '/');
+        const skill = SKILL_FILE.exec(file)?.[1];
+        const rule = RULE_FILE.exec(file)?.[1];
+        if (skill) bump(skillReads, skill);
+        else if (rule) bump(ruleReads, rule);
+      }
       if (name === 'Agent' || name === 'Task') {
         const type = typeof input.subagent_type === 'string' ? input.subagent_type : 'general-purpose';
         bump(subagents, type);
@@ -117,6 +136,7 @@ export function createToolUsageCollector(): ToolUsageCollector {
     },
 
     hooks() {
+      hooked = true;
       return {
         InstructionsLoaded: [
           {
@@ -152,6 +172,8 @@ export function createToolUsageCollector(): ToolUsageCollector {
         sessions,
         tools: { ...tools },
         skills: { ...skills },
+        skillReads: { ...skillReads },
+        ruleReads: { ...ruleReads },
         subagents: { ...subagents },
         bySubagent: Object.fromEntries(Object.entries(bySubagent).map(([k, v]) => [k, { ...v }])),
         available: {
@@ -161,7 +183,9 @@ export function createToolUsageCollector(): ToolUsageCollector {
           plugins: sorted(availPlugins),
           commands: sorted(availCommands),
         },
-        instructions: seenPaths.size === 0 ? null : instructions.map((e) => ({ ...e })),
+        // No event means "nothing loaded" only when the hook was in place for a session that ran.
+        // The hook does fire: checked with SDK 0.3.263 against Claude Code 2.1.263 and 2.1.322.
+        instructions: seenPaths.size === 0 && !(hooked && sessions > 0) ? null : instructions.map((e) => ({ ...e })),
       };
       if (meta.partial) rec.partial = true;
       return rec;

@@ -133,6 +133,41 @@ describe('createToolUsageCollector', () => {
     expect(createToolUsageCollector().record(META).instructions).toBeNull();
   });
 
+  test('instructions empty when the hook was registered, a session ran and nothing loaded', () => {
+    const c = createToolUsageCollector();
+    c.hooks();
+    expect(c.record(META).instructions).toBeNull();
+    c.observe(init());
+    expect(c.record(META).instructions).toEqual([]);
+  });
+
+  test('instructions null when a session ran without the hook', () => {
+    const c = createToolUsageCollector();
+    c.observe(init());
+    expect(c.record(META).instructions).toBeNull();
+  });
+
+  test('counts skill and rule files opened with Read', () => {
+    const c = createToolUsageCollector();
+    c.observe(
+      assistant([
+        { type: 'tool_use', id: 'a', name: 'Read', input: { file_path: '/data/worktrees/9/banking/.claude/skills/bank-wizard/SKILL.md' } },
+        { type: 'tool_use', id: 'b', name: 'Read', input: { file_path: 'C:\\wt\\.claude\\skills\\bank-wizard\\reference\\api.md' } },
+        { type: 'tool_use', id: 'c', name: 'Read', input: { file_path: '/app/.claude/skills/al-deploy/SKILL.md' } },
+        { type: 'tool_use', id: 'd', name: 'Read', input: { file_path: '/work/wt/.claude/rules/coding-rules/al-naming.md' } },
+        { type: 'tool_use', id: 'e', name: 'Read', input: { file_path: '/work/wt/src/skills/x.al' } },
+        { type: 'tool_use', id: 'f', name: 'Read', input: { file_path: '/work/wt/.claude/skills' } },
+        { type: 'tool_use', id: 'g', name: 'Grep', input: { path: '/work/wt/.claude/skills/bank-wizard/SKILL.md' } },
+      ]),
+    );
+    const r = c.record(META);
+    expect(r.skillReads).toEqual({ 'bank-wizard': 2, 'al-deploy': 1 });
+    expect(r.ruleReads).toEqual({ '.claude/rules/coding-rules/al-naming.md': 1 });
+    expect(r.skills).toEqual({});
+    expect(r.tools).toEqual({ Read: 6, Grep: 1 });
+    expect(JSON.stringify(r)).not.toContain('/data/worktrees');
+  });
+
   test('partial only when requested', () => {
     expect(createToolUsageCollector().record({ ...META, partial: true }).partial).toBe(true);
     expect(createToolUsageCollector().record({ ...META, partial: false }).partial).toBeUndefined();
