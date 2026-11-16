@@ -372,6 +372,8 @@ interface AppSettings {
   ranges: { from: number; to: number }[];
   /** `preprocessorSymbols`; case-sensitive, as AL is. */
   symbols: ReadonlySet<string>;
+  /** Set when app.json could not be read; fatal only for an app something is renumbered in. */
+  error?: Error;
 }
 
 function readAppSettings(abs: string): AppSettings {
@@ -535,7 +537,15 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
       const settingsOf = (app: string): AppSettings => {
         let st = settingsByApp.get(app);
         if (!st) {
-          st = readAppSettings(join(path, app, 'app.json'));
+          const appJson = app ? `${app}/app.json` : 'app.json';
+          try {
+            st = readAppSettings(join(path, app, 'app.json'));
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const error = new Error(`${RENUMBER_STAGE}: cannot read ${appJson}: ${message}`);
+            ctx.logger.warn(`${error.message}; treating it as having no preprocessorSymbols and no idRanges`);
+            st = { ranges: [], symbols: new Set(), error };
+          }
           settingsByApp.set(app, st);
         }
         return st;
@@ -601,6 +611,11 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
       if (plans.length === 0) {
         state.outputs.renumber = output;
         return state;
+      }
+      // An unreadable app.json is fatal only where something is renumbered.
+      for (const { target } of plans) {
+        const error = settingsOf(target.app).error;
+        if (error) throw error;
       }
       const modified = changed.filter((c) => c.status === 'M' && !isExcludedPath(c.file)).map((c) => c.file);
       const added = changed.filter((c) => c.status === 'A' && !isExcludedPath(c.file)).map((c) => c.file);

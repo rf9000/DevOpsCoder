@@ -127,6 +127,17 @@ describe('parseDeclaration: preprocessor', () => {
     expect(masked.endsWith('\r\nok')).toBe(true);
     expect(masked).not.toContain('codeunit');
   });
+  test.each([
+    ['a decoded U+FEFF', '\uFEFF'],
+    ['the latin1 view of its UTF-8 bytes', '\u00EF\u00BB\u00BF'],
+  ])('a line-1 #if after %s is still a directive, and the BOM is kept', (_label, bom) => {
+    const text = `${bom}#if X\r\ncodeunit 5 A\r\n#endif\r\n`;
+    const masked = maskAl(text);
+    expect(masked.length).toBe(text.length);
+    expect(masked.startsWith(bom)).toBe(true);
+    expect(masked).not.toContain('codeunit');
+    expect(maskAl(text, new Set(['X']))).toContain('codeunit 5 A');
+  });
 });
 
 describe('findCollisions', () => {

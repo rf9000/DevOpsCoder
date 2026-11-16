@@ -33,6 +33,12 @@ const DECLARATION_RE = new RegExp(
 );
 
 const DIRECTIVE_RE = /^[ \t]*#[ \t]*(if|elif|else|endif)\b(.*)$/i;
+/**
+ * A byte order mark at offset 0, as a decoded U+FEFF or as the three latin1
+ * characters of its UTF-8 bytes: callers that keep it must still see a line-1
+ * directive. It is skipped for directive detection only, and kept in the output.
+ */
+const LEADING_BOM_RE = /^(?:\uFEFF|\u00EF\u00BB\u00BF)/;
 /** `X` or `not X`, optionally followed by a line comment; anything else is not evaluated. */
 const SIMPLE_CONDITION_RE = /^[ \t]+(not[ \t]+)?([A-Za-z_]\w*)[ \t]*(?:\/\/.*)?$/i;
 
@@ -67,8 +73,9 @@ function evaluateCondition(rest: string, symbols: ReadonlySet<string>): boolean 
  */
 export function maskAl(text: string, symbols: ReadonlySet<string> = new Set()): string {
   const out = text.split('');
+  const bomLength = LEADING_BOM_RE.exec(text)?.[0].length ?? 0;
   const blank = (from: number, to: number) => {
-    for (let k = from; k < to; k++) if (out[k] !== '\r' && out[k] !== '\n') out[k] = ' ';
+    for (let k = Math.max(from, bomLength); k < to; k++) if (out[k] !== '\r' && out[k] !== '\n') out[k] = ' ';
   };
   const stack: ConditionalFrame[] = [];
   const active = () => stack.length === 0 || (stack[stack.length - 1] as ConditionalFrame).active;
@@ -77,7 +84,9 @@ export function maskAl(text: string, symbols: ReadonlySet<string> = new Set()): 
   while (i < text.length) {
     const nl = text.indexOf('\n', i);
     const end = nl === -1 ? text.length : nl;
-    const directive = inBlock ? null : DIRECTIVE_RE.exec(text.slice(i, end).replace(/\r$/, ''));
+    let line = text.slice(i, end).replace(/\r$/, '');
+    if (i === 0) line = line.replace(LEADING_BOM_RE, '');
+    const directive = inBlock ? null : DIRECTIVE_RE.exec(line);
     if (directive) {
       const kind = (directive[1] as string).toLowerCase();
       const top = stack[stack.length - 1];
@@ -146,7 +155,7 @@ export function parseDeclaration(
   text: string,
   symbols?: ReadonlySet<string>,
 ): { type: string; id: number; name: string } | null {
-  const m = DECLARATION_RE.exec(maskAl(text.replace(/^﻿/, ''), symbols));
+  const m = DECLARATION_RE.exec(maskAl(text.replace(/^\uFEFF/, ''), symbols));
   if (!m) return null;
   const rawName = m[3] as string;
   return {

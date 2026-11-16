@@ -266,7 +266,7 @@ describe('createRenumberStage', () => {
 
   it('reads the singular idRange and an app.json with a BOM', async () => {
     baseFixture();
-    put('base-application/app.json', '﻿' + JSON.stringify({ idRange: { from: 72918625, to: 72918824 } }));
+    put('base-application/app.json', '\uFEFF' + JSON.stringify({ idRange: { from: 72918625, to: 72918824 } }));
     const { git } = fakeGit();
     const n = fakeNinja([72918790]);
     const out = await stage(git, n.factory).execute(makeState(), makeCtx());
@@ -362,7 +362,7 @@ describe('createRenumberStage', () => {
 
   it('renumber keeps CRLF and BOM', async () => {
     baseFixture();
-    const original = Buffer.from('﻿// header\r\n\r\ncodeunit 72918753 "CTS-CB Ponto Feature"\r\n{\r\n}\r\n', 'utf8');
+    const original = Buffer.from('\uFEFF// header\r\n\r\ncodeunit 72918753 "CTS-CB Ponto Feature"\r\n{\r\n}\r\n', 'utf8');
     put(PONTO, original);
     const { git } = fakeGit();
     const n = fakeNinja([72918790]);
@@ -753,11 +753,11 @@ describe('createRenumberStage: what the compiler does not see', () => {
       '    // was codeunit 72918753 before the move\r\n' +
       '    /* Codeunit.Run(72918753);\r\n       codeunit 72918753 */\r\n' +
       '    procedure Run()\r\n    begin\r\n    end;\r\n}\r\n';
-    put(PONTO, Buffer.from('﻿' + text, 'utf8'));
+    put(PONTO, Buffer.from('\uFEFF' + text, 'utf8'));
     const { git } = fakeGit();
     await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
     // Only the declaration changes; both comments keep the old ID.
-    const expected = '﻿' + text.replace('codeunit 72918753 "CTS', 'codeunit 72918790 "CTS');
+    const expected = '\uFEFF' + text.replace('codeunit 72918753 "CTS', 'codeunit 72918790 "CTS');
     expect(readFileSync(join(root, PONTO)).equals(Buffer.from(expected, 'utf8'))).toBe(true);
   });
 
@@ -776,5 +776,44 @@ describe('createRenumberStage: what the compiler does not see', () => {
     await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
     expect(read(MOD)).toBe(modText);
     expect(read(PONTO)).toContain('codeunit 72918790');
+  });
+
+  it('a BOM-prefixed PR-modified file whose reference sits in a line-1 inactive #if does not refuse', async () => {
+    baseFixture();
+    const MOD = 'base-application/Logging/LLMUse.Codeunit.al';
+    const modText = '\uFEFF#if US64044\r\ncodeunit 72918702 "LLM Use"\r\n{\r\n    var\r\n        X: Codeunit 72918753;\r\n}\r\n#endif\r\n';
+    put(MOD, Buffer.from(modText, 'utf8'));
+    const { git } = fakeGit({
+      changed: [
+        { status: 'A', file: PONTO },
+        { status: 'M', file: MOD },
+      ],
+      atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [MOD]: '\uFEFF#if US64044\r\n#endif\r\n' },
+    });
+    await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+    expect(readFileSync(join(root, MOD)).equals(Buffer.from(modText, 'utf8'))).toBe(true);
+    expect(read(PONTO)).toContain('codeunit 72918790');
+  });
+
+  it('a malformed app.json in an app with nothing to renumber only warns', async () => {
+    baseFixture();
+    put('test-application/app.json', '{ not json');
+    put('test-application/src/T.Codeunit.al', 'codeunit 72918799 "T"\n{\n}\n');
+    const ctx = makeCtx();
+    const out = await stage(fakeGit().git, fakeNinja([72918790]).factory).execute(makeState(), ctx);
+    expect((out.outputs.renumber as RenumberOutput).renumbered).toHaveLength(1);
+    const warns = (ctx.logger.warn as ReturnType<typeof mock>).mock.calls.map((c) => String(c[0]));
+    expect(warns.some((w) => w.includes('cannot read test-application/app.json'))).toBe(true);
+  });
+
+  it("a malformed app.json in the target's app stays fatal, before Ninja starts", async () => {
+    baseFixture();
+    put('base-application/app.json', '{ not json');
+    const n = fakeNinja([72918790]);
+    await expect(stage(fakeGit().git, n.factory).execute(makeState(), makeCtx())).rejects.toThrow(
+      'cannot read base-application/app.json',
+    );
+    expect(n.factory).not.toHaveBeenCalled();
+    expect(read(PONTO)).toBe(PONTO_TEXT);
   });
 });
