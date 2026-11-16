@@ -426,6 +426,21 @@ describe('changedFiles', () => {
       { status: 'M', file: 'Shared.al' },
     ]);
   });
+
+  it('changedFiles reports D for a file the PR deleted', async () => {
+    await runGit(['checkout', '-q', 'feat/x'], dev);
+    await runGit(['rm', '-q', 'Shared.al'], dev);
+    await runGit(['commit', '-m', 'delete shared'], dev);
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const changed = await g.changedFiles(wt.path, wt.targetSha);
+    expect(changed).toEqual([
+      { status: 'A', file: 'Feature.al' },
+      { status: 'D', file: 'Shared.al' },
+    ]);
+  });
 });
 
 describe('listFiles', () => {
