@@ -473,7 +473,11 @@ const appKey = (app: string, type: string, id: number) => `${app}\0${type}\0${id
  * member; when a file to be rewritten holds the old ID with no type keyword
  * (`Codeunit.Run(5)`), which is ambiguous; or when a file of the app that the
  * PR modified but did not add mentions it bare or qualified by the target's
- * type, since that may mean the existing object.
+ * type, since that may mean the existing object. The same refusal covers
+ * every file the PR added or modified in any other app (`external/**` aside),
+ * since other apps are never rewritten: unless that app declares the same
+ * type and ID itself, a reference there to the old ID would silently point at
+ * the existing object after the renumber.
  *
  * Every ID Ninja assigns goes into `state.outputs.renumber.reserved` the
  * moment `assign` returns, so the caller can release it when the run ends
@@ -544,6 +548,8 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
       const plans = planRenumbers(groups, (d) => introduced.has(d));
       const modified = changed.filter((c) => c.status === 'M' && !isExcludedPath(c.file)).map((c) => c.file);
       const added = changed.filter((c) => c.status === 'A' && !isExcludedPath(c.file)).map((c) => c.file);
+      /** (app, type, id) declared at HEAD. */
+      const declared = new Set(decls.map((d) => appKey(d.app, d.type, d.id)));
       /** Files whose references a plan rewrites: the target itself, and the PR's added files in its app. */
       const rewriteSet = (target: AlDeclaration) => [
         ...new Set([target.file, ...added.filter((f) => appOf(f, appDirs) === target.app)]),
@@ -574,6 +580,25 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
             refuse(file, text, hit, `(modified by the PR, not added) mentions ${target.id}, which may mean the existing object`);
           }
         }
+        // Other apps are never rewritten, so a reference there to the old ID
+        // would silently point at the existing object after the renumber. An
+        // app that declares (type, id) itself is skipped: its references are
+        // its own object's, and its own collision plan (if any) handles them.
+        for (const file of [...added, ...modified]) {
+          const app = appOf(file, appDirs);
+          if (app === undefined || app === target.app || declared.has(appKey(app, target.type, target.id))) continue;
+          const text = readLatin1(join(path, file));
+          const occ = classifyOccurrences(text, target.type, target.id);
+          const hit = [...occ.replace, ...occ.bare].sort((x, y) => x - y)[0];
+          if (hit !== undefined) {
+            refuse(
+              file,
+              text,
+              hit,
+              `(in ${app || 'the root app'}, which is not renumbered) mentions ${target.id}, which may mean the existing object`,
+            );
+          }
+        }
       }
 
       const rangesByApp = new Map<string, { from: number; to: number }[]>();
@@ -586,7 +611,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         return r;
       };
       // Declared at HEAD, plus whatever this run has already handed out.
-      const taken = new Set(decls.map((d) => appKey(d.app, d.type, d.id)));
+      const taken = new Set(declared);
 
       state.outputs.renumber = output;
       const touched = new Set<string>();

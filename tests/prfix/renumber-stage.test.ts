@@ -544,6 +544,79 @@ describe('createRenumberStage', () => {
       expect(read(PONTO)).toBe(PONTO_TEXT);
     });
 
+    describe('references from another app', () => {
+      const T_PERM = 'test-application/src/Test.PermissionSet.al';
+      const T_TEST = 'test-application/src/PontoTest.Codeunit.al';
+
+      it('a PR-modified file in another app with codeunit N → IdCollisionError, no Ninja call', async () => {
+        baseFixture();
+        put('test-application/app.json', APP_JSON);
+        const before = 'permissionset 72918627 "T"\n{\n}\n';
+        put(T_PERM, 'permissionset 72918627 "T"\n{\n    Permissions = codeunit 72918753 = X;\n}\n');
+        const { git } = fakeGit({
+          changed: [
+            { status: 'A', file: PONTO },
+            { status: 'M', file: T_PERM },
+          ],
+          atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [T_PERM]: before },
+        });
+        const n = fakeNinja([72918790]);
+        const err = await stage(git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(IdCollisionError);
+        expect((err as Error).message).toContain(`${T_PERM}:3`);
+        expect(n.factory).not.toHaveBeenCalled();
+        expect(read(PONTO)).toBe(PONTO_TEXT);
+      });
+
+      it('a PR-added test codeunit in another app with a Codeunit N variable → IdCollisionError', async () => {
+        baseFixture();
+        put('test-application/app.json', APP_JSON);
+        put(T_TEST, 'codeunit 72918700 "Ponto Test"\n{\n    var\n        Sut: Codeunit 72918753;\n}\n');
+        const { git } = fakeGit({
+          changed: [
+            { status: 'A', file: PONTO },
+            { status: 'A', file: T_TEST },
+          ],
+        });
+        const n = fakeNinja([72918790]);
+        const err = await stage(git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(IdCollisionError);
+        expect((err as Error).message).toContain(`${T_TEST}:4`);
+        expect(n.factory).not.toHaveBeenCalled();
+      });
+
+      it('a PR-added file in another app with page N (another type) is allowed and left alone', async () => {
+        baseFixture();
+        put('test-application/app.json', APP_JSON);
+        const text = 'permissionset 72918627 "T"\n{\n    Permissions = page 72918753 = X;\n}\n';
+        put(T_PERM, text);
+        const { git } = fakeGit({
+          changed: [
+            { status: 'A', file: PONTO },
+            { status: 'A', file: T_PERM },
+          ],
+        });
+        await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+        expect(read(T_PERM)).toBe(text);
+        expect(read(PONTO)).toContain('codeunit 72918790');
+      });
+
+      it('a file under external/ is never scanned', async () => {
+        baseFixture();
+        const EXT = 'external/Continia Finance/src/Uses.Codeunit.al';
+        put('external/Continia Finance/app.json', APP_JSON);
+        put(EXT, 'codeunit 72918701 "Uses"\n{\n    var\n        X: Codeunit 72918753;\n}\n');
+        const { git } = fakeGit({
+          changed: [
+            { status: 'A', file: PONTO },
+            { status: 'M', file: EXT },
+          ],
+        });
+        await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+        expect(read(PONTO)).toContain('codeunit 72918790');
+      });
+    });
+
     it('factory throws → close not called, error propagates', async () => {
       baseFixture();
       const n = fakeNinja([]);
