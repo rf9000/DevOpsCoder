@@ -15,6 +15,8 @@ const UNASSIGN_TOOL = 'ninja_unassignObjectId';
 const MIN_CONNECT_TIMEOUT_MS = 120_000;
 /** How much of the child's stderr a connect failure quotes. */
 const STDERR_TAIL_CHARS = 2_000;
+/** How much of an unparseable assign response the error quotes. */
+const RAW_RESPONSE_CHARS = 500;
 
 /**
  * The Object ID Ninja MCP server (`@vjeko.com/al-object-id-ninja-mcp`), driven
@@ -100,6 +102,14 @@ export function parseAssignedId(result: ToolResult, targetFilePath?: string): nu
     throw new Error(`ninja: could not find an assigned object ID in the response: ${raw || '(no text)'}`);
   }
   throw new Error(`ninja: ambiguous assign response, several candidate IDs (${candidates.join(', ')}): ${raw}`);
+}
+
+/** The whole response as text (content, then structuredContent as JSON), cut to `RAW_RESPONSE_CHARS`. */
+function rawResponse(result: ToolResult): string {
+  const parts = [resultText(result)];
+  if (result.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent));
+  const raw = parts.filter((s) => s !== '').join(' | ') || '(empty)';
+  return raw.length > RAW_RESPONSE_CHARS ? `${raw.slice(0, RAW_RESPONSE_CHARS)}... (${raw.length} chars)` : raw;
 }
 
 /**
@@ -213,7 +223,17 @@ export function createNinjaClient(opts: {
 
   return {
     async assign(objectType, targetFilePath) {
-      return parseAssignedId(await call(ASSIGN_TOOL, { objectType, targetFilePath }), targetFilePath);
+      const result = await call(ASSIGN_TOOL, { objectType, targetFilePath });
+      try {
+        return parseAssignedId(result, targetFilePath);
+      } catch (err) {
+        // The server has answered, so an ID may already be reserved: quote the response so an operator can find it.
+        const reason = (err instanceof Error ? err.message : String(err)).split(':')[1]?.trim() ?? 'unreadable';
+        throw new Error(
+          `ninja: could not read the assigned ${objectType} ID for ${targetFilePath} (${reason}); ` +
+            `an ID may already be reserved, release it by hand. Raw response: ${rawResponse(result)}`,
+        );
+      }
     },
     async unassign(objectType, objectId, targetFilePath) {
       await call(UNASSIGN_TOOL, { objectType, objectId, targetFilePath });

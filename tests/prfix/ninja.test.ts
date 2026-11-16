@@ -61,6 +61,20 @@ describe('createNinjaClient', () => {
     await client.close();
   });
 
+  it('an unparseable assign response throws with the raw text, truncated, so the ID can be released by hand', async () => {
+    const raw = 'Assigned 50100 in range 50000..59999 ' + 'x'.repeat(600);
+    const { clientTransport } = await fakeServer({ assign: () => ({ content: [{ type: 'text', text: raw }] }) });
+    const client = createNinjaClient({ command: 'x', args: [], timeoutMs: 5000, transport: clientTransport });
+    const err = (await client.assign('codeunit', 'C:/repo/app/src/Foo.Codeunit.al').catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain('Assigned 50100 in range 50000..59999');
+    expect(err.message).toContain(raw.slice(0, 500));
+    expect(err.message).not.toContain(raw.slice(0, 501));
+    expect(err.message).toContain('release it by hand');
+    expect(err.message).toContain('C:/repo/app/src/Foo.Codeunit.al');
+    await client.close();
+  });
+
   it('unassign passes objectId', async () => {
     const { calls, clientTransport } = await fakeServer();
     const client = createNinjaClient({ command: 'x', args: [], timeoutMs: 5000, transport: clientTransport });
