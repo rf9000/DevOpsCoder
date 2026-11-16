@@ -75,6 +75,8 @@ export interface AppConfig {
    * `continia auth login` saved in ~/.continia/auth.json.
    */
   continiaAuthMethod: ContiniaAuthMethod;
+  /** Port of the internal control API the monitor dashboard uses; unset: no server. */
+  controlPort?: number;
   /** AL app dirs (worktree-relative, dependency-ordered) to deps-install/deploy. */
   continiaAppPaths: string[];
   /** AL app dirs to scan for test codeunits. Defaults to continiaAppPaths. */

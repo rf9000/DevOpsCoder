@@ -76,6 +76,11 @@ const envSchema = z.object({
   STAGE_TIMEOUT_MS_VERIFY_PASS: z.coerce.number().int().positive().default(900_000),
   STAGE_TIMEOUT_MS_BUILD_AND_TEST: z.coerce.number().int().positive().optional(),
   CONTINIA_CLI_PATH: z.string().default('.tools/continia.exe'),
+  // Port of the internal control API (dashboard sign-in). Unset or blank: no server.
+  CONTROL_PORT: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.coerce.number().int().min(1).max(65535).optional(),
+  ),
   CONTINIA_ENV_PROFILE_ID: z.string().default(''),
   CONTINIA_ENV_LOCALIZATION: z.string().default('base'),
   CONTINIA_API_TOKEN: z.string().default(''),
@@ -375,6 +380,7 @@ export function loadConfig(
     continiaEnvLocalization: p.CONTINIA_ENV_LOCALIZATION.trim() || 'base',
     continiaApiToken: p.CONTINIA_API_TOKEN,
     continiaAuthMethod,
+    controlPort: p.CONTROL_PORT,
     continiaAppPaths,
     continiaTestAppPaths,
     maxTestFixAttempts: p.MAX_TEST_FIX_ATTEMPTS,
