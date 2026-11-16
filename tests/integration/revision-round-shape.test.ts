@@ -93,6 +93,7 @@ function makeAdo(): AdoClient {
     getWorkItemUpdates: async () => [],
     createPullRequestThread: async () => {},
     getPullRequestStatus: async () => 'active' as const,
+    getPullRequest: async () => ({ id: 0 }) as never,
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},

@@ -121,6 +121,7 @@ const envSchema = z.object({
   CLAUDE_MODEL_TEST_AUTHOR: z.string().optional(),
   CLAUDE_MODEL_TEST_FIXER: z.string().optional(),
   CLAUDE_MODEL_FIX_FINDINGS: z.string().optional(),
+  CLAUDE_MODEL_REBASE_RESOLVER: z.string().optional(),
   // The PR-message step (nested in draft-pr-creator) reads one diff and writes
   // a title plus a handful of bullets — a cheap model is usually the right one.
   CLAUDE_MODEL_PR_MESSAGE: z.string().optional(),
@@ -137,6 +138,7 @@ const envSchema = z.object({
   CLAUDE_EFFORT_TEST_AUTHOR: effortVar,
   CLAUDE_EFFORT_TEST_FIXER: effortVar,
   CLAUDE_EFFORT_FIX_FINDINGS: effortVar,
+  CLAUDE_EFFORT_REBASE_RESOLVER: effortVar,
   CLAUDE_EFFORT_PR_MESSAGE: effortVar,
   // Replay a WI on fixed code: the worktree branches from this ref instead of
   // origin/main. Used by the experiment harness; unset in production.
@@ -253,6 +255,7 @@ export function loadConfig(
   setStep('coder-plan', coderPlanModel);
   setStep('coder', model(p.CLAUDE_MODEL_CODER));
   setStep('fix-findings', model(p.CLAUDE_MODEL_FIX_FINDINGS));
+  setStep('rebase-resolver', model(p.CLAUDE_MODEL_REBASE_RESOLVER));
   setStep('reviewer', model(p.CLAUDE_MODEL_REVIEWER));
   setStep('test-author-plan', testPlanModel);
   setStep('test-author', model(p.CLAUDE_MODEL_TEST_AUTHOR));
@@ -277,6 +280,7 @@ export function loadConfig(
   setEffort('coder-plan', p.CLAUDE_EFFORT_CODER_PLAN ?? planningEffort);
   setEffort('coder', p.CLAUDE_EFFORT_CODER);
   setEffort('fix-findings', p.CLAUDE_EFFORT_FIX_FINDINGS);
+  setEffort('rebase-resolver', p.CLAUDE_EFFORT_REBASE_RESOLVER);
   setEffort('reviewer', p.CLAUDE_EFFORT_REVIEWER);
   setEffort('test-author-plan', p.CLAUDE_EFFORT_TEST_AUTHOR_PLAN ?? planningEffort);
   setEffort('test-author', p.CLAUDE_EFFORT_TEST_AUTHOR);

@@ -108,6 +108,7 @@ like any other:
 | `bun run src/cli/index.ts debug-pr <id>` | Print the draft-PR record stored in state for a work item |
 | `bun run src/cli/index.ts experiment --corpus <f> --variants <f>` | Replay corpus WIs under each model/effort variant and write a cost-vs-quality report — see [Model/effort experiments](#modeleffort-experiments) |
 | `bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]` | Apply mutant-fixer's verified test fixes to a PR — see [apply-suggestions](#apply-suggestions) |
+| `bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]` | Rebase a PR onto its target, verify it and lease-push it — see [fix-pr](#fix-pr) |
 
 ## apply-suggestions
 
@@ -127,12 +128,69 @@ Variables it needs: `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJEC
 
 State goes to `STATE_DIR/suggestions/<prId>.json` and every run starts fresh. The command never runs `git worktree prune`, because the clone is shared with other containers whose worktree paths do not exist here. It removes only its own worktree.
 
+## fix-pr
+
+```
+bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]
+```
+
+Rebases an active PR's source branch onto its target branch, verifies the result on DemoPortal, and pushes it back. Run it by hand. The watcher never runs it.
+
+What it does:
+- `pr-intake` reads the PR. It refuses one that is not active.
+- `pr-worktree` creates a locked worktree at the PR head commit and applies the worktree overlay (`WORKTREE_OVERLAY_DIR`), as `worktree-setup` does, so `CONTINIA_RULESET` points at the team ruleset. It stops with `head-moved` if the remote branch is not at that commit, and with `up-to-date` if the branch already contains its target.
+- `rebase-onto-target` runs `git rebase` onto the target (a rebase, never a merge). A branch that contains merge commits stops with `merge-commits` before the rebase starts, because a rebase would drop the merges; rebase it manually. Each conflicting commit gets one `rebase-resolver` agent call. The agent edits the conflicted files only. Before that call, a conflict no content edit can settle stops with `unresolved-conflict` and no agent call: a binary file, modify/delete, rename/delete or file/directory. After the call, the stage refuses leftover conflict markers (diff3 `|||||||` included), a conflicted file the agent left unchanged or deleted, and edits to files outside the conflict. Then it stages the files and continues the rebase. When the rebase is done, the worktree must hold nothing but the rebased commits (`git status` clean; overlay files are excluded), because that tree is what gets verified and only commits are pushed. Any failure aborts the rebase.
+- `renumber-collisions` clears AL object ID collisions the rebase created: a PR object whose type and ID are now also declared by another object in the same app (typically one that reached the target while the PR was open). No LLM is involved. Only PR-introduced objects move; an object the target already had never does. It reads what the compiler sees: declarations and references inside `/* */` or `//` comments, and inside `#if` / `#elif` / `#else` blocks that are inactive for the app's `app.json` `preprocessorSymbols`, do not count (a condition is evaluated only as `X` or `not X`; any other expression counts as active), and a comment is never rewritten. A collision with no PR-introduced member is the target's own state and is skipped with an info line (`renumber-collisions: ignoring <type> <id> in <app> — no PR-introduced member`); verification catches a real one. For each one it asks Object ID Ninja for a new ID in the app's `idRanges` (when the app's `.objidconfig` names its ranges, Ninja is given a `rangeName`: the range holding the old ID first, then the others in file order, moving on when a range is exhausted), rewrites the declaration and every reference written as the object's type keyword followed by the ID (`codeunit 5`; `tabledata 5` for a table) in that file and in files the PR added to the same app, and commits all of it as one separate bot commit (`fix: renumber AL object IDs that collide with <target>`) on top of the rebased commits. It refuses with `id-collision`, before reserving anything, when a collision has more than one PR-introduced member; when a file it would rewrite mentions the ID as a bare number (`Codeunit::5`, `Codeunit.Run(5)`, `Record 5`, a plain `5`), since it cannot tell which object that means; when a file the PR modified (not added) in that app mentions the ID bare or with the object's type, since that may mean the existing object; or when a file the PR added or modified in any other app (`external/**` aside) mentions it bare or with the object's type, since other apps are never rewritten and that reference would silently keep pointing at the existing object (a permission set's `codeunit 5 = X`, a test's `Codeunit 5` variable). An app that declares the same type and ID itself is exempt from that last check, as its references mean its own object. The ID with another type keyword (`page 5`) is fine everywhere. It never guesses: an `id-collision` needs a manual renumber, and the failure comment lists each colliding group and its files. `PRFIX_RENUMBER_COLLISIONS=false` turns the stage off. Every ID Ninja reserves is released again (`ninja_unassignObjectId`, best-effort, a failure is only logged; if the Ninja server cannot start, it stops at once and logs every ID left reserved) when the run ends without a push: dry run, failure or cancel. A pushed run keeps them. An ID Ninja offered that the app already declares is never released, since unassigning it would free an ID in use; an ID rejected as outside the app's `idRanges` is released.
+  - Ninja runs as an MCP server launched by `NINJA_MCP_COMMAND` (default `npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2`). The host needs `npx` (the Docker image has it) and outbound HTTPS to the Object ID Ninja backend. Each app needs its `.objidconfig` committed, since Ninja reads the app's pool and authorization from it. Its ranges must lie inside the app's `app.json` `idRanges`: an ID outside them is rejected and Ninja asked again, and after 5 rejected IDs the run fails with `ninja: no usable <type> ID for <file>`, naming the app's `idRanges` and the IDs Ninja offered.
+- `env-provision` + `build-and-test` deploy and test the rebased branch, as in the main pipeline, but with no fix attempts. A red gate ends in `verification-failed` and nothing is pushed. On a compile failure the outcome's `error` and the failure comment carry up to 10 of alc's error lines, compiler (`error AL....`) and analyzer (`error AA....`, `AS`, `AW`, ...) alike. alc normally prints project-relative paths, which are kept; an absolute path loses its worktree root (and the app directory, when the CLI reports the row's `projectPath`). `SKIP_BUILD_TEST=true` skips both. Tests are selected from the PR's changes against the new base, by `TEST_SELECTION` (default `related`). **A PR whose changes select no test codeunit fails as `verification-failed`** ("no test codeunits selected"): nothing would have been verified. `TEST_SELECTION=all` runs every discovered codeunit instead, still capped by `CONTINIA_MAX_TEST_CODEUNITS`. Codeunits run sequentially, so on a large suite raise `STAGE_TIMEOUT_MS_BUILD_AND_TEST` as well.
+- `push-rebased` pushes with `--force-with-lease` against the pre-rebase head. If someone pushed during the run, the push fails as `head-moved` and their commits are kept.
+- `pr-comment` posts a summary on the PR: the conflicts and how each was resolved, any renumbered object IDs (`<type> <name>: <old> → <new>`), the test results and the commands developers need to update their local branch. It links the test environment only with `--keep-env`, since otherwise the environment is deleted when the run ends. Posting it is best-effort: a failure is logged and the run still reports `rebased`. A failed run posts a failure comment instead, except for `up-to-date` and `cancelled`.
+
+Flags:
+- `--dry-run`: rebases and verifies, but does not push or comment. It still deletes the environment it created.
+- `--keep-env`: leave the DemoPortal environment (`wi-<prId>-pr-<prId>`) running. By default it is deleted at the end of every run.
+
+Settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PRFIX_MAX_CONFLICT_COMMITS` | 3 | Stop with `conflict-cap` when more commits than this conflict |
+| `PRFIX_MAX_CONFLICT_FILES` | 10 | Stop with `conflict-cap` when one commit conflicts in more files than this |
+| `REBASE_RESOLVER_MAX_TURNS` | 40 | Turn limit of one resolver call |
+| `CLAUDE_MODEL_REBASE_RESOLVER` | `CLAUDE_MODEL` | Resolver model |
+| `CLAUDE_EFFORT_REBASE_RESOLVER` | `CLAUDE_EFFORT` | Resolver effort |
+| `PRFIX_RENUMBER_COLLISIONS` | true | Run `renumber-collisions`; `false` skips it |
+| `NINJA_MCP_COMMAND` | `npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2` | How to launch the Object ID Ninja MCP server, split on whitespace (`cmd /c` is prefixed on Windows) |
+| `NINJA_CALL_TIMEOUT_MS` | 60000 | Timeout of one Ninja tool call |
+| `STAGE_TIMEOUT_MS_RENUMBER_COLLISIONS` | max(300000, 10 × `NINJA_CALL_TIMEOUT_MS`) | Timeout of the whole `renumber-collisions` stage |
+
+It also needs `BOT_GIT_NAME` / `BOT_GIT_EMAIL` (the committer of the rebased commits) and the variables the main pipeline needs. `MAX_COST_USD_PER_WI` caps the run's spend.
+
+The last stdout line is the JSON outcome. The exit code is 0 when `ok` is true and 1 otherwise:
+
+```json
+{
+  "ok": true,
+  "status": "rebased",
+  "pullRequestId": 12345,
+  "oldHead": "<PR head before the run, or null>",
+  "newHead": "<head the branch ends at (renumber commit included), or null>",
+  "conflicts": [{ "commit": "<sha>", "subject": "...", "files": ["..."], "summary": "...", "resolutions": [{ "path": "...", "resolution": "..." }] }],
+  "renumbered": [{ "type": "codeunit", "name": "...", "file": "<repo-relative>", "app": "<app dir>", "oldId": 72918753, "newId": 72918790 }],
+  "costUsd": 0.42,
+  "error": null
+}
+```
+
+`status` is one of `rebased`, `up-to-date` (both `ok`), `head-moved`, `conflict-cap`, `unresolved-conflict`, `merge-commits`, `id-collision`, `verification-failed`, `cost-cap`, `cancelled` or `error` (`error` then reads `<stage>: <message>`). Once the push has succeeded, the run reports `rebased` whatever happens afterwards (a failed comment, a timeout, a cancel), with a warning in the log, because the remote branch has already changed; no failure comment is posted then. State goes to `STATE_DIR/prfix/<prId>.json`, and every run starts fresh. The worktree is removed on success and kept on failure for inspection; the next run replaces it. SIGINT or SIGTERM stops the run and reports `cancelled`.
+
 ## Layout
 
 ```
 src/
   cli/             — CLI entry point
   config/          — Zod env schema + loader
+  prfix/           — fix-pr: config, git, conflict resolver, stages, comments, runner
   pipeline/
     stage.ts       — Stage interface, PipelinePauseError, PipelineRejectError
     orchestrator.ts — runPipeline with pause + reject + terminal-error branches

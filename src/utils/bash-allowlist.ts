@@ -26,6 +26,21 @@ export interface BashAllowlistConfig {
 const SHELL_COMPOSITION_RE = /(?:&&|\|\||;|\||`|\$\(|>|<|\n|\r)/;
 
 /**
+ * Deny patterns every Bash policy carries, for git flags that turn a verb the
+ * read-only allowlists admit into a write or an exec:
+ * - `git diff/log/show --output=<path>` writes any file the process can reach,
+ *   the shared clone's `.git/hooks` included.
+ * - `git grep -O<cmd>` / `--open-files-in-pager=<cmd>` runs an arbitrary
+ *   program on the matched files. `-O` may be bundled (`-nO<cmd>`), so any
+ *   short-flag cluster containing a capital O is refused.
+ */
+export const UNSAFE_GIT_FLAG_DENY: RegExp[] = [
+  /--output\b/,
+  /--open-files-in-pager\b/,
+  /(?:^|\s)-[A-Za-z]*O/,
+];
+
+/**
  * Build a `CanUseToolFn` that enforces a strict allowlist + denylist on Bash tool calls.
  *
  * Semantics:

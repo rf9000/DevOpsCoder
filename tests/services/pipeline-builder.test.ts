@@ -1,7 +1,13 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { buildPipeline, type PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
 import { buildSuggestionPipeline } from '../../src/services/pipeline-builder.ts';
-import { makeTestConfig } from '../helpers/app-config.ts';
+import { buildPrFixPipeline, type PrFixPipelineDeps } from '../../src/services/pipeline-builder.ts';
+import { loadPrFixConfig, type PrFixConfig } from '../../src/prfix/config.ts';
+import { VerificationFailedError } from '../../src/types/index.ts';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { MIN_ENV, makeTestConfig } from '../helpers/app-config.ts';
 import { REVIEW_AXES } from '../../src/pipeline/stages/reviewer.ts';
 import { createLogger } from '../../src/utils/logger.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
@@ -60,6 +66,7 @@ function makeAdo(): AdoClient {
     getWorkItemUpdates: async () => [],
     createPullRequestThread: async () => {},
     getPullRequestStatus: async () => 'active' as const,
+    getPullRequest: async () => ({ id: 0 }) as never,
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},
@@ -577,5 +584,89 @@ describe('buildSuggestionPipeline', () => {
     expect(buildSuggestionPipeline(deps(), 'push').map((s) => s.name)).toEqual([
       'suggestion-worktree', 'apply-fixes', 'push-suggestions',
     ]);
+  });
+});
+
+describe('buildPrFixPipeline', () => {
+  const prfixFor = (env: Record<string, string> = {}): PrFixConfig =>
+    loadPrFixConfig({ ...MIN_ENV, BOT_GIT_NAME: 'bot', BOT_GIT_EMAIL: 'bot@x', ...env });
+  const deps = (prfix: PrFixConfig, overrides: Partial<PrFixPipelineDeps> = {}): PrFixPipelineDeps => ({
+    prfix,
+    logger: { info() {}, warn() {}, error() {} },
+    ado: {} as never,
+    git: {} as never,
+    continiaCli: makeGreenContiniaCli(),
+    runner: makeRecordingRunner(() => ({})),
+    resolverPromptTemplate: 'x',
+    testFixerPromptTemplate: 'F',
+    discoveredSkills: [],
+    ...overrides,
+  });
+
+  it('buildPrFixPipeline stage order with and without SKIP_BUILD_TEST', () => {
+    expect(buildPrFixPipeline(deps(prfixFor())).map((s) => s.name)).toEqual([
+      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'renumber-collisions', 'push-rebased', 'pr-comment',
+    ]);
+    const verified = prfixFor({ SKIP_BUILD_TEST: 'false', CONTINIA_API_TOKEN: 'tok' });
+    expect(buildPrFixPipeline(deps(verified)).map((s) => s.name)).toEqual([
+      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'renumber-collisions', 'env-provision', 'build-and-test',
+      'push-rebased', 'pr-comment',
+    ]);
+  });
+
+  it('build-and-test gets maxTestFixAttempts 0', async () => {
+    const prfix = prfixFor({ SKIP_BUILD_TEST: 'false', CONTINIA_API_TOKEN: 'tok', CONTINIA_APP_PATHS: 'App', TEST_SELECTION: 'all' });
+    expect(prfix.app.maxTestFixAttempts).toBe(0);
+    // The builder pins it too: a caller-supplied config with a fix budget still gets none.
+    prfix.app.maxTestFixAttempts = 2;
+
+    const wtPath = mkdtempSync(join(tmpdir(), 'prfix-bt-'));
+    mkdirSync(join(wtPath, 'App'));
+    writeFileSync(join(wtPath, 'App', 'app.json'), JSON.stringify({ name: 'App', dependencies: [] }));
+
+    const cli = makeGreenContiniaCli();
+    (cli as unknown as { runTests: unknown }).runTests = mock(async () => ({
+      status: 'completed', passed: false,
+      summary: { total: 1, passed: 0, failed: 1, skipped: 0 },
+      tests: [{ name: 'T', result: 'Fail', message: 'boom' }],
+    }));
+    const runner = makeRecordingRunner(() => ({ summary: 's', filesChanged: [], commits: [] }));
+    const stages = buildPrFixPipeline(deps(prfix, { continiaCli: cli, runner, discoverTestCodeunits: greenCodeunits }));
+    const bt = stages.find((s) => s.name === 'build-and-test')!;
+
+    const state = makeState();
+    state.outputs.worktree = { path: wtPath, branch: 'prfix/pr-42', baseSha: 'abc' };
+    state.outputs.environment = { envId: 'env-9', name: 'wi-42-pr-42', status: 'Running', createdAt: 'x' };
+    state.outputs.wiContext = {
+      id: 42, title: 't', workItemType: 'Pull Request', state: 'active',
+      description: '', reproSteps: '', acceptanceCriteria: '', images: [], comments: [],
+    };
+
+    const err = await bt.execute(state, { ...makeCtx(), config: prfix.app }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(VerificationFailedError);
+    expect((err as VerificationFailedError).attempts).toBe(0);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('threads keepEnv into pr-comment: the environment is linked only when kept', async () => {
+    const prfix = prfixFor({ SKIP_BUILD_TEST: 'false', CONTINIA_API_TOKEN: 'tok' });
+    const pr = {
+      id: 42, status: 'active', title: 'T', sourceRefName: 'refs/heads/f', targetRefName: 'refs/heads/main',
+      headCommit: 'h', isDraft: false, url: 'u',
+    };
+    const commentFor = async (keepEnv: boolean | undefined): Promise<string> => {
+      const createPullRequestThread = mock(async (_a: { content: string }, _o?: unknown) => {});
+      const ado = { createPullRequestThread } as unknown as AdoClient;
+      const stages = buildPrFixPipeline(deps(prfix, { ado, ...(keepEnv === undefined ? {} : { keepEnv }) }));
+      const state = makeState();
+      state.outputs.prFixInput = { pullRequestId: 42, repository: 'test-repo', pr };
+      state.outputs.rebase = { preRebaseSha: 'a', targetSha: 'b', newHeadSha: 'c', commitsReplayed: 1, conflicts: [] };
+      state.outputs.verification = { attempts: 0, compiled: true, deploy: [], testRuns: [], passed: true };
+      state.outputs.environment = { envId: 'e', name: 'wi-42-pr-42', url: 'https://env.example/x', status: 'Running', createdAt: 'x' };
+      await stages.find((s) => s.name === 'pr-comment')!.execute(state, { ...makeCtx(), config: prfix.app });
+      return createPullRequestThread.mock.calls[0]?.[0].content ?? '';
+    };
+    expect(await commentFor(undefined)).not.toContain('https://env.example/x');
+    expect(await commentFor(true)).toContain('https://env.example/x');
   });
 });

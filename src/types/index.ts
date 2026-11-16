@@ -697,6 +697,21 @@ export interface FinalReviewOutput {
 
 export type PullRequestStatus = 'active' | 'completed' | 'abandoned' | 'notSet';
 
+/** What `getPullRequest` reads of one pull request. */
+export interface PullRequestDetails {
+  id: number;
+  status: PullRequestStatus;
+  title: string;
+  /** `refs/heads/...` */
+  sourceRefName: string;
+  /** `refs/heads/...` */
+  targetRefName: string;
+  /** `lastMergeSourceCommit.commitId` */
+  headCommit: string;
+  isDraft: boolean;
+  url: string;
+}
+
 export interface DraftPrOutput {
   id: number;
   url: string;

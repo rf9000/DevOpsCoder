@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "marked": "^18.0.3",
     "zod": "latest"
   },

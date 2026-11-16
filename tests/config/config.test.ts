@@ -636,3 +636,15 @@ describe('bot git identity', () => {
     expect(c.botGitEmail).toBeUndefined();
   });
 });
+
+describe('rebase-resolver step', () => {
+  it('CLAUDE_MODEL_REBASE_RESOLVER sets stepModel[rebase-resolver]', () => {
+    const cfg = loadConfig({ ...validEnv, CLAUDE_MODEL_REBASE_RESOLVER: 'claude-opus-5' });
+    expect(cfg.stepModel?.['rebase-resolver']).toBe('claude-opus-5');
+  });
+
+  it('CLAUDE_EFFORT_REBASE_RESOLVER sets stepEffort[rebase-resolver]', () => {
+    const cfg = loadConfig({ ...validEnv, CLAUDE_EFFORT_REBASE_RESOLVER: 'high' });
+    expect(cfg.stepEffort?.['rebase-resolver']).toBe('high');
+  });
+});

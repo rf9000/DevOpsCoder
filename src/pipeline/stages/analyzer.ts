@@ -9,7 +9,7 @@ import {
 } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AppConfig } from '../../types/index.ts';
-import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
+import { createBashAllowlist, UNSAFE_GIT_FLAG_DENY } from '../../utils/bash-allowlist.ts';
 import { STRUCTURED_OUTPUT_DENIED_TOOLS } from './_stage-helpers.ts';
 import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
@@ -27,7 +27,7 @@ export type AnalyzerOutput = z.infer<typeof analyzerOutputSchema>;
 // The analyzer is a read-only readiness gate: it may inspect the target repo but
 // must never mutate it. `disallowedTools` already blocks Edit/Write; this allowlist
 // enforces the same contract on Bash instead of trusting the prompt alone.
-const ANALYZER_BASH_ALLOW: RegExp[] = [
+export const ANALYZER_BASH_ALLOW: RegExp[] = [
   /^git (status|diff|log|show|blame|grep|ls-files)\b/,
   /^ls\b/,
   /^cat\b/,
@@ -36,6 +36,8 @@ const ANALYZER_BASH_ALLOW: RegExp[] = [
   /^wc\b/,
   /^pwd\b/,
 ];
+
+export const ANALYZER_BASH_DENY: RegExp[] = [...UNSAFE_GIT_FLAG_DENY];
 
 export interface AnalyzerStageDeps {
   config: AppConfig;
@@ -116,7 +118,7 @@ export function createAnalyzerStage(deps: AnalyzerStageDeps): Stage {
   const fetcher = deps.fetchWiContext ?? defaultFetchWiContext;
   const canUseTool =
     deps.canUseTool ??
-    createBashAllowlist({ allow: ANALYZER_BASH_ALLOW, deny: [] });
+    createBashAllowlist({ allow: ANALYZER_BASH_ALLOW, deny: ANALYZER_BASH_DENY });
   return {
     name: 'analyzer',
     canRun: () => true,
