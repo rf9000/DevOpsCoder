@@ -60,7 +60,7 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
 
   logger.info(`poll cycle: ${candidates.length} candidate(s)`);
 
-  if (deps.demoPortal && !(await deps.demoPortal.ensure())) {
+  if (deps.demoPortal && !(await signedIn(deps.demoPortal, logger))) {
     logger.info(`DemoPortal sign-in needed; ${candidates.length} work item(s) wait. Sign in from the dashboard or run continia auth login`);
     return stats;
   }
@@ -106,6 +106,19 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
   });
 
   return stats;
+}
+
+/**
+ * `ensure()` throwing (the CLI could not even start) must not hold work back:
+ * the job reports its own sign-in error, as when the check fails inside ensure.
+ */
+async function signedIn(demoPortal: DemoPortalSession, logger: Logger): Promise<boolean> {
+  try {
+    return await demoPortal.ensure();
+  } catch (err) {
+    logger.warn(`DemoPortal sign-in check failed - ${err instanceof Error ? err.message : String(err)}`);
+    return true;
+  }
 }
 
 /**
@@ -183,7 +196,10 @@ export async function startWatcher(deps: WatcherDeps): Promise<void> {
     } catch (err) {
       logger.error('poll cycle threw, continuing', err);
     }
-    if (deps.sweepEnvironments && !abortFlag.aborted) {
+    if (deps.sweepEnvironments && !abortFlag.aborted && deps.demoPortal?.status().needed) {
+      // Deleting an environment needs DemoPortal too; it would only fail until someone signs in.
+      logger.info('environment sweep skipped - DemoPortal sign-in needed');
+    } else if (deps.sweepEnvironments && !abortFlag.aborted) {
       try {
         const deleted = await deps.sweepEnvironments();
         if (deleted > 0) logger.info(`environment sweep: deleted ${deleted} environment(s) of closed PRs`);

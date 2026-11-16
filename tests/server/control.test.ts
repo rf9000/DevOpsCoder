@@ -1,5 +1,5 @@
-import { describe, test, expect } from 'bun:test';
-import { createControlHandler, startControlServer } from '../../src/server/control.ts';
+import { describe, test, expect, mock } from 'bun:test';
+import { createControlHandler, startControlServer, withControlServer } from '../../src/server/control.ts';
 import { DemoPortalAuth, type DemoPortalSession, type SignInStatus } from '../../src/services/demoportal-auth.ts';
 import type { ProcessResult, RunProcess } from '../../src/services/process-runner.ts';
 
@@ -90,5 +90,37 @@ describe('control handler', () => {
     } finally {
       server.stop();
     }
+  });
+});
+
+describe('withControlServer', () => {
+  test('serves while the body runs and stops once it ends, so the process can exit', async () => {
+    let port = 0;
+    const result = await withControlServer(0, createControlHandler({}), async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/status`);
+      expect(res.status).toBe(200);
+      return 'done';
+    }, (p) => {
+      port = p;
+    }, '127.0.0.1');
+    expect(result).toBe('done');
+    expect(port).toBeGreaterThan(0);
+    await expect(fetch(`http://127.0.0.1:${port}/status`)).rejects.toThrow();
+  });
+
+  test('stops the server when the body throws', async () => {
+    let port = 0;
+    await expect(withControlServer(0, createControlHandler({}), async () => {
+      throw new Error('loop crashed');
+    }, (p) => {
+      port = p;
+    }, '127.0.0.1')).rejects.toThrow('loop crashed');
+    await expect(fetch(`http://127.0.0.1:${port}/status`)).rejects.toThrow();
+  });
+
+  test('without a port it only runs the body', async () => {
+    const onListening = mock(() => {});
+    expect(await withControlServer(undefined, createControlHandler({}), async () => 1, onListening)).toBe(1);
+    expect(onListening).not.toHaveBeenCalled();
   });
 });

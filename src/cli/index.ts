@@ -11,16 +11,14 @@ import { createWiLogFactory } from '../services/wi-log.ts';
 import { createCostLedger } from '../services/cost-ledger.ts';
 import { appendToolUsage } from '../services/tool-usage-collector.ts';
 import { createWorktreeManager } from '../services/worktree-manager.ts';
-import { createContiniaCli, continiaProcessEnv } from '../services/continia-cli.ts';
-import { DemoPortalAuth } from '../services/demoportal-auth.ts';
-import { runProcess } from '../services/process-runner.ts';
-import { createControlHandler, startControlServer } from '../server/control.ts';
+import { createContiniaCli } from '../services/continia-cli.ts';
+import { createDemoPortal } from '../services/demoportal-setup.ts';
+import { createControlHandler, withControlServer } from '../server/control.ts';
 import { sweepClosedPrEnvironments } from '../services/env-cleanup.ts';
 import {
   createAbortFlag,
   runPollCycle,
   startWatcher,
-  type WakeFlag,
 } from '../services/watcher.ts';
 import type { WorktreeContext } from '../types/index.ts';
 import { slugify } from '../utils/slug.ts';
@@ -113,28 +111,11 @@ function buildDeps() {
             store,
             continiaCli: createContiniaCli({ config, onRetry: (message) => logger.warn(message) }),
           });
-  // DemoPortal's Azure AD session exists only in azure-ad mode; an API token has nothing to sign in to.
-  let demoPortal: DemoPortalAuth | undefined;
-  let wake: WakeFlag | undefined;
-  if (config.continiaAuthMethod === 'azure-ad') {
-    const wakeFlag: WakeFlag = { requested: false };
-    wake = wakeFlag;
-    demoPortal = new DemoPortalAuth(
-      config.continiaCliPath,
-      process.cwd(),
-      (cmd, cwd, _env, t, onLine) => runProcess(cmd, cwd, continiaProcessEnv(config), t, onLine),
-      (m) => logger.info(m),
-    );
-    demoPortal.onSignedIn = () => {
-      wakeFlag.requested = true;
-    };
-    void demoPortal.peek().catch((err) => logger.warn(`DemoPortal sign-in check failed :: ${err instanceof Error ? err.message : String(err)}`));
-  }
+  // DemoPortal's Azure AD session: only in azure-ad mode with the build gate on (see createDemoPortal).
   return {
     config, logger, ado, store, processor, abortFlag,
     ...(sweepEnvironments ? { sweepEnvironments } : {}),
-    ...(demoPortal ? { demoPortal } : {}),
-    ...(wake ? { wake } : {}),
+    ...createDemoPortal(config, logger),
   };
 }
 
@@ -156,11 +137,15 @@ async function main(): Promise<void> {
 
     case 'watch': {
       const deps = buildDeps();
-      if (deps.config.controlPort !== undefined) {
-        startControlServer(deps.config.controlPort, createControlHandler({ ...(deps.demoPortal ? { demoPortal: deps.demoPortal } : {}) }));
-        deps.logger.info(`control API on port ${deps.config.controlPort}`);
-      }
-      await startWatcher(deps);
+      // Fills the dashboard's sign-in card before the first cycle; never blocks startup.
+      void deps.demoPortal?.peek().catch((err) => deps.logger.warn(`DemoPortal sign-in check failed :: ${err instanceof Error ? err.message : String(err)}`));
+      // The control server stops once the watcher loop ends, so SIGTERM lets the process exit.
+      await withControlServer(
+        deps.config.controlPort,
+        createControlHandler({ ...(deps.demoPortal ? { demoPortal: deps.demoPortal } : {}) }),
+        () => startWatcher(deps),
+        (port) => deps.logger.info(`control API on port ${port}`),
+      );
       return;
     }
 
