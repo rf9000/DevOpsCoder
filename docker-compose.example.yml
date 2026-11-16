@@ -12,15 +12,20 @@
 #   docker compose up -d devops-coder
 #   docker compose logs -f devops-coder
 #
-# .env.devops-coder must now also define CONTINIA_API_TOKEN, or
-# CONTINIA_AUTH_METHOD=azure-ad followed by a one-time
-# `docker compose exec -u claude devops-coder continia auth login` (the session
-# is kept on the .state volume; or set CONTROL_PORT to let the monitor dashboard
-# start the sign-in: compose network only, no ports: mapping), or SKIP_BUILD_TEST=true for a smoke bring-up
-# without the verification gate. Leave CONTINIA_APP_PATHS unset: build-and-test derives the
-# deploy set per work item from the changed files plus the apps owning the
-# selected tests. A pin silently disables that, so a test written into a test app
-# outside the list never gets deployed.
+# .env.devops-coder must also choose how the Continia CLI signs in to DemoPortal.
+# Use one of these:
+#   - CONTINIA_API_TOKEN.
+#   - CONTINIA_AUTH_METHOD=azure-ad. Sign in once with
+#     `docker compose exec -u claude devops-coder continia auth login`; the
+#     session is kept on the .state volume. With CONTROL_PORT set, the monitor
+#     dashboard can start that sign-in instead. Reach the control API over an
+#     internal compose network only, and never add a ports: mapping for it.
+#   - SKIP_BUILD_TEST=true, for a smoke bring-up without the verification gate.
+#
+# Leave CONTINIA_APP_PATHS unset: build-and-test derives the deploy set per work
+# item from the changed files plus the apps owning the selected tests. A pin
+# silently disables that, so a test written into a test app outside the list
+# never gets deployed.
 
 services:
   devops-coder:
