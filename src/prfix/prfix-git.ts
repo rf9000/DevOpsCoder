@@ -194,6 +194,9 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
         if (!/stale info|rejected/i.test(msg)) throw err;
         const ls = (await runGit([...buildGitAuthArgs(pat), 'ls-remote', 'origin', target], a.path)).stdout.trim();
         const actual = ls.split(/\s+/)[0] ?? '';
+        // A hook decline or a branch-policy refusal also reads "rejected", but
+        // only a remote that actually moved is a lost lease.
+        if (actual === a.expectedRemoteSha) throw err;
         deps.logger?.warn(`fix-pr: push to ${short} rejected; remote is at ${actual || '(gone)'}, expected ${a.expectedRemoteSha}`);
         throw new HeadMovedError(short, a.expectedRemoteSha, actual);
       }

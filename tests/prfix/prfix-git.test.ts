@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFile } from 'child_process';
@@ -260,5 +260,22 @@ describe('push', () => {
     expect((err as HeadMovedError).actual).toBe(moved);
     expect((err as HeadMovedError).expected).toBe(head);
     expect(await originSha('feat/x')).toBe(moved);
+  });
+
+  it('push rethrows a rejection when the remote did not move', async () => {
+    await advanceMain('Main.al', 'm\n');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    expect((await g.startRebase(wt.path, wt.targetSha)).kind).toBe('done');
+    const hook = join(originPath, 'hooks', 'pre-receive');
+    writeFileSync(hook, '#!/bin/sh\necho "TF402455: policy says no" >&2\nexit 1\n', 'utf-8');
+    chmodSync(hook, 0o755);
+    const err = await g
+      .push({ path: wt.path, sourceRefName: 'refs/heads/feat/x', expectedRemoteSha: head })
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(HeadMovedError);
+    expect((err as Error).message).toContain('TF402455');
+    expect(await originSha('feat/x')).toBe(head);
   });
 });
