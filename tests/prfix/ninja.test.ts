@@ -3,12 +3,17 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { createNinjaClient, ninjaStdioParams, parseAssignedId } from '../../src/prfix/ninja.ts';
+import {
+  NinjaAssignRefusedError,
+  createNinjaClient,
+  ninjaStdioParams,
+  parseAssignedId,
+} from '../../src/prfix/ninja.ts';
 
-type ToolText = { content: { type: 'text'; text: string }[]; isError?: boolean };
+type ToolText = { content: { type: 'text'; text: string }[]; isError?: boolean; structuredContent?: Record<string, unknown> };
 
 interface FakeOpts {
-  assign?: (args: { objectType: string; targetFilePath: string }) => ToolText;
+  assign?: (args: { objectType: string; targetFilePath: string; rangeName?: string }) => ToolText;
 }
 
 async function fakeServer(opts: FakeOpts = {}) {
@@ -59,6 +64,40 @@ describe('createNinjaClient', () => {
     const client = createNinjaClient({ command: 'x', args: [], timeoutMs: 5000, transport: clientTransport });
     await expect(client.assign('table', 'C:/repo/app/src/T.al')).rejects.toThrow('ninja: No ranges available');
     await client.close();
+  });
+
+  it('passes rangeName only when given', async () => {
+    const { calls, clientTransport } = await fakeServer();
+    const client = createNinjaClient({ command: 'x', args: [], timeoutMs: 5000, transport: clientTransport });
+    await client.assign('codeunit', 'C:/a.al', 'From 72918625 to 72918824');
+    await client.assign('codeunit', 'C:/a.al');
+    expect(calls.map((c) => c.args)).toEqual([
+      { objectType: 'codeunit', targetFilePath: 'C:/a.al', rangeName: 'From 72918625 to 72918824' },
+      { objectType: 'codeunit', targetFilePath: 'C:/a.al' },
+    ]);
+    await client.close();
+  });
+
+  it('an error result is a NinjaAssignRefusedError carrying the server text', async () => {
+    const text = 'Error: Multiple ranges available for codeunit. You must specify which range to use via the rangeName parameter.';
+    const { clientTransport } = await fakeServer({ assign: () => ({ content: [{ type: 'text', text }], isError: true }) });
+    const client = createNinjaClient({ command: 'x', args: [], timeoutMs: 5000, transport: clientTransport });
+    const err = await client.assign('codeunit', 'C:/a.al').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NinjaAssignRefusedError);
+    expect((err as NinjaAssignRefusedError).serverText).toBe(text);
+    await client.close();
+  });
+
+  it('available: false is a NinjaAssignRefusedError, in structuredContent or as JSON text', async () => {
+    for (const result of [
+      { content: [{ type: 'text' as const, text: 'none' }], structuredContent: { available: false } },
+      { content: [{ type: 'text' as const, text: '{"available":false,"id":0}' }] },
+    ]) {
+      const { clientTransport } = await fakeServer({ assign: () => result });
+      const client = createNinjaClient({ command: 'x', args: [], timeoutMs: 5000, transport: clientTransport });
+      await expect(client.assign('codeunit', 'C:/a.al', 'R')).rejects.toBeInstanceOf(NinjaAssignRefusedError);
+      await client.close();
+    }
   });
 
   it('an unparseable assign response throws with the raw text, truncated, so the ID can be released by hand', async () => {

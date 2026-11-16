@@ -24,9 +24,45 @@ const RAW_RESPONSE_CHARS = 500;
  * in Ninja's backend, so a caller that ends up not using one must unassign it.
  */
 export interface NinjaClient {
-  assign(objectType: string, targetFilePath: string): Promise<number>;
+  /**
+   * `rangeName` is the `description` of a range in the app's `.objidconfig`;
+   * Ninja requires one when several ranges apply. Throws NinjaAssignRefusedError
+   * when Ninja hands out no ID (an error result, or `available: false`).
+   */
+  assign(objectType: string, targetFilePath: string, rangeName?: string): Promise<number>;
   unassign(objectType: string, objectId: number, targetFilePath: string): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * Ninja answered an assign without an ID: an error result (the range is
+ * exhausted, a range name is needed or unknown, ...) or `available: false`.
+ * Nothing was reserved, so there is nothing to release.
+ */
+export class NinjaAssignRefusedError extends Error {
+  constructor(
+    readonly serverText: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'NinjaAssignRefusedError';
+  }
+}
+
+/** `available: false` in structuredContent, or in a text content that is JSON. */
+function saysUnavailable(result: ToolResult): boolean {
+  const flag = (v: unknown) =>
+    v !== null && typeof v === 'object' && (v as Record<string, unknown>).available === false;
+  if (flag(result.structuredContent)) return true;
+  for (const c of result.content ?? []) {
+    if (c.type !== 'text' || typeof c.text !== 'string' || !c.text.trim().startsWith('{')) continue;
+    try {
+      if (flag(JSON.parse(c.text))) return true;
+    } catch {
+      // Not JSON: not an availability answer.
+    }
+  }
+  return false;
 }
 
 interface ToolResult {
@@ -202,7 +238,8 @@ export function createNinjaClient(opts: {
     return connecting;
   }
 
-  async function call(tool: string, args: Record<string, unknown>): Promise<ToolResult> {
+  /** The raw result, error results included; `call` turns an error into a throw. */
+  async function callRaw(tool: string, args: Record<string, unknown>): Promise<ToolResult> {
     const c = await connect();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -214,16 +251,27 @@ export function createNinjaClient(opts: {
         c.callTool({ name: tool, arguments: args }, undefined, { timeout: opts.timeoutMs + 5_000 }),
         timeout,
       ])) as ToolResult;
-      if (result.isError) throw new Error(`ninja: ${resultText(result) || `${tool} failed`}`);
       return result;
     } finally {
       clearTimeout(timer);
     }
   }
 
+  async function call(tool: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const result = await callRaw(tool, args);
+    if (result.isError) throw new Error(`ninja: ${resultText(result) || `${tool} failed`}`);
+    return result;
+  }
+
   return {
-    async assign(objectType, targetFilePath) {
-      const result = await call(ASSIGN_TOOL, { objectType, targetFilePath });
+    async assign(objectType, targetFilePath, rangeName) {
+      const args: Record<string, unknown> = { objectType, targetFilePath };
+      if (rangeName !== undefined) args.rangeName = rangeName;
+      const result = await callRaw(ASSIGN_TOOL, args);
+      if (result.isError || saysUnavailable(result)) {
+        const text = resultText(result) || rawResponse(result);
+        throw new NinjaAssignRefusedError(text, `ninja: ${result.isError ? text || `${ASSIGN_TOOL} failed` : `no ${objectType} ID available: ${text}`}`);
+      }
       try {
         return parseAssignedId(result, targetFilePath);
       } catch (err) {

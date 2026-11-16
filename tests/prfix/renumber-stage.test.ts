@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import { createRenumberStage } from '../../src/prfix/stages.ts';
 import type { PrFixGit } from '../../src/prfix/prfix-git.ts';
 import type { PrFixConfig } from '../../src/prfix/config.ts';
-import { NINJA_MAX_ASSIGN_ATTEMPTS, type NinjaClient } from '../../src/prfix/ninja.ts';
+import { NINJA_MAX_ASSIGN_ATTEMPTS, NinjaAssignRefusedError, type NinjaClient } from '../../src/prfix/ninja.ts';
 import { IdCollisionError, type PrFixInput, type RenumberOutput } from '../../src/prfix/types.ts';
 import type { PipelineContext } from '../../src/pipeline/stage.ts';
 import type { PipelineState, WorktreeContext } from '../../src/types/index.ts';
@@ -91,12 +91,14 @@ function fakeGit(o: FakeGitOpts = {}) {
   return { git, calls };
 }
 
-function fakeNinja(ids: number[]) {
+/** Each entry is the ID the next assign returns, or 'refuse' for a NinjaAssignRefusedError (range exhausted). */
+function fakeNinja(ids: (number | 'refuse')[]) {
   const queue = [...ids];
   const calls = {
-    assign: mock(async (_type: string, _file: string) => {
+    assign: mock(async (_type: string, _file: string, _rangeName?: string) => {
       const next = queue.shift();
       if (next === undefined) throw new Error('no more ids');
+      if (next === 'refuse') throw new NinjaAssignRefusedError('No more IDs available in range', 'ninja: No more IDs available in range');
       return next;
     }),
     unassign: mock(async (_type: string, _id: number, _file: string) => {}),
@@ -815,5 +817,123 @@ describe('createRenumberStage: what the compiler does not see', () => {
     );
     expect(n.factory).not.toHaveBeenCalled();
     expect(read(PONTO)).toBe(PONTO_TEXT);
+  });
+});
+
+describe('createRenumberStage: Ninja rangeName from .objidconfig', () => {
+  const R1 = 'From 71553575 to 71553874';
+  const R2 = 'From 72282325 to 72282424';
+  const R3 = 'From 72918625 to 72918824';
+  const OBJIDCONFIG = JSON.stringify({
+    idRanges: [
+      { from: 71553575, to: 71553874, description: R1 },
+      { from: 72282325, to: 72282424, description: R2 },
+      { from: 72918625, to: 72918824, description: R3 },
+    ],
+  });
+  const APP_JSON_3 = JSON.stringify({
+    name: 'Continia Banking',
+    idRanges: [
+      { from: 71553575, to: 71553874 },
+      { from: 72282325, to: 72282424 },
+      { from: 72918625, to: 72918824 },
+    ],
+  });
+
+  function fixture(objIdConfig: string | null = OBJIDCONFIG): void {
+    baseFixture();
+    put('base-application/app.json', APP_JSON_3);
+    if (objIdConfig !== null) put('base-application/.objidconfig', objIdConfig);
+  }
+  const rangeNames = (n: ReturnType<typeof fakeNinja>) => n.calls.assign.mock.calls.map((c) => c[2]);
+
+  it("asks for the range that holds the old ID first", async () => {
+    fixture();
+    const n = fakeNinja([72918790]);
+    await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx());
+    expect(n.calls.assign.mock.calls[0]).toEqual(['codeunit', join(root, PONTO), R3]);
+  });
+
+  it('an old ID outside every named range asks for the first range in file order', async () => {
+    fixture();
+    put(EXPORT_HASH, 'codeunit 50100 "CTS-CB Export File Hash"\n{\n}\n');
+    put(PONTO, 'codeunit 50100 "CTS-CB Ponto Feature"\n{\n}\n');
+    const n = fakeNinja([71553600]);
+    await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx());
+    expect(rangeNames(n)).toEqual([R1]);
+  });
+
+  it('no .objidconfig: no rangeName, and a warning', async () => {
+    fixture(null);
+    const n = fakeNinja([72918790]);
+    const ctx = makeCtx();
+    await stage(fakeGit().git, n.factory).execute(makeState(), ctx);
+    expect(n.calls.assign.mock.calls[0]).toEqual(['codeunit', join(root, PONTO)]);
+    const warns = (ctx.logger.warn as ReturnType<typeof mock>).mock.calls.map((c) => String(c[0]));
+    expect(warns.some((w) => w.includes('base-application/.objidconfig not found'))).toBe(true);
+  });
+
+  it('an unparsable .objidconfig: no rangeName, and a warning', async () => {
+    fixture('{ nope');
+    const n = fakeNinja([72918790]);
+    const ctx = makeCtx();
+    await stage(fakeGit().git, n.factory).execute(makeState(), ctx);
+    expect(n.calls.assign.mock.calls[0]).toEqual(['codeunit', join(root, PONTO)]);
+    const warns = (ctx.logger.warn as ReturnType<typeof mock>).mock.calls.map((c) => String(c[0]));
+    expect(warns.some((w) => w.includes('base-application/.objidconfig cannot be read'))).toBe(true);
+  });
+
+  it('a BOM-prefixed .objidconfig is read', async () => {
+    fixture('\uFEFF' + OBJIDCONFIG);
+    const n = fakeNinja([72918790]);
+    await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx());
+    expect(rangeNames(n)).toEqual([R3]);
+  });
+
+  it('an exhausted range moves on to the next named range in file order', async () => {
+    fixture();
+    const n = fakeNinja(['refuse', 71553600]);
+    const out = await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx());
+    expect(rangeNames(n)).toEqual([R3, R1]);
+    const r = out.outputs.renumber as RenumberOutput;
+    expect(r.renumbered[0]?.newId).toBe(71553600);
+    expect(r.reserved).toEqual([{ type: 'codeunit', id: 71553600, file: join(root, PONTO), status: 'used' }]);
+  });
+
+  it('a rejected ID retries the same range', async () => {
+    fixture();
+    const n = fakeNinja([72918700, 72918790]);
+    await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx());
+    expect(rangeNames(n)).toEqual([R3, R3]);
+  });
+
+  it('objectRanges for the type take precedence over idRanges', async () => {
+    fixture(
+      JSON.stringify({
+        ...JSON.parse(OBJIDCONFIG),
+        objectRanges: { codeunit: [{ from: 72918780, to: 72918799, description: 'Codeunits' }] },
+      }),
+    );
+    const n = fakeNinja([72918790]);
+    await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx());
+    expect(rangeNames(n)).toEqual(['Codeunits']);
+  });
+
+  it('every range refused: the give-up error names the ranges tried', async () => {
+    fixture();
+    const n = fakeNinja(['refuse', 'refuse', 'refuse']);
+    const err = (await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e)) as Error;
+    expect(err.message).toStartWith(`ninja: no usable codeunit ID for ${PONTO}`);
+    expect(err.message).toContain(`ranges tried: "${R3}", "${R1}", "${R2}"`);
+    expect(err.message).toContain('No more IDs available in range');
+    expect(n.calls.assign).toHaveBeenCalledTimes(3);
+  });
+
+  it('attempts across ranges count toward NINJA_MAX_ASSIGN_ATTEMPTS', async () => {
+    fixture();
+    const n = fakeNinja(['refuse', ...Array.from({ length: NINJA_MAX_ASSIGN_ATTEMPTS }, () => 72918700)]);
+    const err = (await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e)) as Error;
+    expect(n.calls.assign).toHaveBeenCalledTimes(NINJA_MAX_ASSIGN_ATTEMPTS);
+    expect(err.message).toContain(`ranges tried: "${R3}", "${R1}"`);
   });
 });

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentRunner } from '../pipeline/agent-stage.ts';
 import type { Stage } from '../pipeline/stage.ts';
@@ -19,7 +19,7 @@ import {
 } from './al-objects.ts';
 import type { PrFixConfig } from './config.ts';
 import { renderSuccessComment } from './comment.ts';
-import { NINJA_MAX_ASSIGN_ATTEMPTS, type NinjaClient } from './ninja.ts';
+import { NINJA_MAX_ASSIGN_ATTEMPTS, NinjaAssignRefusedError, type NinjaClient } from './ninja.ts';
 import type { PrFixGit, RebaseStep } from './prfix-git.ts';
 import { resolveConflict } from './resolver.ts';
 import {
@@ -392,6 +392,47 @@ function readAppSettings(abs: string): AppSettings {
   return { ranges, symbols: new Set(symbols) };
 }
 
+/** A range in `.objidconfig` that has a `description`, which is the `rangeName` Ninja expects. */
+export interface NamedRange {
+  name: string;
+  from: number;
+  to: number;
+}
+
+function namedRanges(raw: unknown): NamedRange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: NamedRange[] = [];
+  for (const r of raw as { from?: unknown; to?: unknown; description?: unknown }[]) {
+    const from = Number(r?.from);
+    const to = Number(r?.to);
+    const name = r?.description;
+    if (typeof name === 'string' && name !== '' && Number.isInteger(from) && Number.isInteger(to)) out.push({ name, from, to });
+  }
+  return out;
+}
+
+/**
+ * The named ranges of an `.objidconfig` for `type`, in file order:
+ * `objectRanges[type]` when it holds any, else `idRanges`. Throws when the
+ * file cannot be read or parsed.
+ */
+export function readNamedRanges(abs: string, type: string): NamedRange[] {
+  const json = JSON.parse(readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')) as {
+    idRanges?: unknown;
+    objectRanges?: Record<string, unknown>;
+  };
+  const objectRanges = json.objectRanges && typeof json.objectRanges === 'object' ? json.objectRanges : {};
+  const key = Object.keys(objectRanges).find((k) => k.toLowerCase() === type);
+  const forType = key === undefined ? [] : namedRanges(objectRanges[key]);
+  return forType.length > 0 ? forType : namedRanges(json.idRanges);
+}
+
+/** The order to ask Ninja in: the range(s) holding `oldId` (the PR author's choice) first, then the rest in file order. */
+export function rangeOrder(ranges: NamedRange[], oldId: number): NamedRange[] {
+  const holds = (r: NamedRange) => oldId >= r.from && oldId <= r.to;
+  return [...ranges.filter(holds), ...ranges.filter((r) => !holds(r))];
+}
+
 /** Deepest app directory that contains `file`; `''` is the repo root. */
 function appOf(file: string, appDirs: string[]): string | undefined {
   let best: string | undefined;
@@ -673,6 +714,27 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
       }
 
       const rangesOf = (app: string) => settingsOf(app).ranges;
+      /** `.objidconfig` named ranges for (app, type); missing or unreadable means none, with a warning. */
+      const objIdConfigWarned = new Set<string>();
+      const namedRangesOf = (app: string, type: string): NamedRange[] => {
+        const rel = app ? `${app}/.objidconfig` : '.objidconfig';
+        const abs = join(path, app, '.objidconfig');
+        const warnOnce = (why: string) => {
+          if (objIdConfigWarned.has(app)) return;
+          objIdConfigWarned.add(app);
+          ctx.logger.warn(`${RENUMBER_STAGE}: ${rel} ${why}; asking Ninja without a rangeName`);
+        };
+        if (!existsSync(abs)) {
+          warnOnce('not found');
+          return [];
+        }
+        try {
+          return readNamedRanges(abs, type);
+        } catch (err) {
+          warnOnce(`cannot be read (${err instanceof Error ? err.message : String(err)})`);
+          return [];
+        }
+      };
       // Declared at HEAD, plus whatever this run has already handed out.
       const taken = new Set(declared);
 
@@ -691,10 +753,40 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
           const abs = join(path, target.file);
 
           // 5b. Ask Ninja until it hands out an ID that is in range and free in this app.
+          //     With named ranges in .objidconfig, ask for the old ID's range first; a
+          //     rejected ID retries the same range, a refusal (range exhausted) moves on.
+          const order = rangeOrder(namedRangesOf(target.app, target.type), target.id);
+          let rangeIdx = 0;
+          const tried: string[] = [];
           let newId: number | undefined;
           const offered: number[] = [];
+          const giveUp = (why: string): Error => {
+            const ranges = rangesOf(target.app).map((r) => `${r.from}-${r.to}`).join(', ') || '(none)';
+            const appJson = target.app ? `${target.app}/app.json` : 'app.json';
+            return new Error(
+              `ninja: no usable ${target.type} ID for ${target.file}: ${appJson} idRanges ${ranges}; ` +
+                `Ninja offered ${offered.join(', ') || 'none'}` +
+                (tried.length > 0 ? `; ranges tried: ${tried.map((n) => `"${n}"`).join(', ')}` : '') +
+                `; ${why}`,
+            );
+          };
           for (let attempt = 1; attempt <= NINJA_MAX_ASSIGN_ATTEMPTS && newId === undefined; attempt++) {
-            const id = await client.assign(target.type, abs);
+            const rangeName = order[rangeIdx]?.name;
+            if (rangeName !== undefined && !tried.includes(rangeName)) tried.push(rangeName);
+            let id: number;
+            try {
+              id = rangeName === undefined ? await client.assign(target.type, abs) : await client.assign(target.type, abs, rangeName);
+            } catch (err) {
+              // Without a range name there is nothing else to ask for: the error stands as it is.
+              if (!(err instanceof NinjaAssignRefusedError) || rangeName === undefined) throw err;
+              if (rangeIdx + 1 >= order.length) throw giveUp(`Ninja refused the last range: ${err.serverText}`);
+              ctx.logger.warn(
+                `${RENUMBER_STAGE}: Ninja has no ${target.type} ID in range "${rangeName}" for ${target.file} ` +
+                  `(${err.serverText}); trying "${order[rangeIdx + 1]?.name}"`,
+              );
+              rangeIdx++;
+              continue;
+            }
             offered.push(id);
             // Recorded before anything below can throw; `used` until checked, so it is released if the stage dies here.
             const entry: ReservedId = { type: target.type, id, file: abs, status: 'used' };
@@ -713,12 +805,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
           }
           if (newId === undefined) {
             // Typically Ninja's pool (.objidconfig) and the app's idRanges do not overlap.
-            const ranges = rangesOf(target.app).map((r) => `${r.from}-${r.to}`).join(', ') || '(none)';
-            const appJson = target.app ? `${target.app}/app.json` : 'app.json';
-            throw new Error(
-              `ninja: no usable ${target.type} ID for ${target.file}: ${appJson} idRanges ${ranges}; ` +
-                `Ninja offered ${offered.join(', ')}; check that .objidconfig ranges lie inside app.json idRanges`,
-            );
+            throw giveUp('check that .objidconfig ranges lie inside app.json idRanges');
           }
           taken.add(appKey(target.app, target.type, newId));
 
