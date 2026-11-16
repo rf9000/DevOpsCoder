@@ -2,7 +2,10 @@ import { loadConfig } from '../config/index.ts';
 import { createLogger } from '../utils/logger.ts';
 import { createAdoClient } from '../sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../state/state-store.ts';
-import { buildPipeline, buildSuggestionPipeline } from '../services/pipeline-builder.ts';
+import { buildPipeline, buildPrFixPipeline, buildSuggestionPipeline } from '../services/pipeline-builder.ts';
+import { loadPrFixConfig } from '../prfix/config.ts';
+import { createPrFixGit } from '../prfix/prfix-git.ts';
+import { fixPr } from '../prfix/fix-pr.ts';
 import { applySuggestions, failureOutcome, loadSuggestionConfig } from '../services/apply-suggestions.ts';
 import { parseSuggestionInput } from '../suggestions/input.ts';
 import { createSuggestionGit } from '../suggestions/suggestion-git.ts';
@@ -44,6 +47,9 @@ Usage:
   bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]
                                       Apply mutant-fixer's verified test fixes to a PR
                                       (last stdout line: JSON outcome)
+  bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]
+                                      Rebase a PR onto its target, verify, lease-push
+                                      (last stdout line: JSON outcome; exit 0 when ok)
   bun run src/cli/index.ts reset-state <id> Delete state + remove worktree + delete branch
   bun run src/cli/index.ts debug-tags       List WIs tagged with TRIGGER_TAG
   bun run src/cli/index.ts debug-pr <id>    Print the draft-PR record for a work item
@@ -67,6 +73,7 @@ Flags:
   --dry-run         Suppress ADO writes (tags, comments). Pipeline still runs.
   --keep-worktree   (reset-state only) Delete the state file but leave the
                     worktree and branch on disk for inspection.
+  --keep-env        (fix-pr only) Leave the DemoPortal environment running.
 `);
 }
 
@@ -243,6 +250,11 @@ async function main(): Promise<void> {
       return;
     }
 
+    case 'fix-pr': {
+      await runFixPrCommand();
+      return;
+    }
+
     case 'experiment': {
       await runExperimentCommand();
       return;
@@ -303,6 +315,49 @@ async function runApplySuggestionsCommand(): Promise<void> {
     abortFlag,
   });
   console.log(JSON.stringify(outcome));
+}
+
+/**
+ * Rebase one PR onto its target. The JSON outcome is printed last, after every
+ * log line, because the logger writes to stdout. Exit 0 only when ok.
+ */
+async function runFixPrCommand(): Promise<void> {
+  const raw = process.argv[3];
+  const pullRequestId = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(pullRequestId) || pullRequestId <= 0) {
+    console.error('Usage: bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]');
+    process.exitCode = 1;
+    return;
+  }
+  const prfix = loadPrFixConfig(process.env);
+  const config = prfix.app;
+  if (process.argv.includes('--dry-run')) config.dryRun = true;
+  const logger = createLogger('fix-pr');
+  const ado = createAdoClient(config);
+  const git = createPrFixGit({ config, logger });
+  const continiaCli = createContiniaCli({ config, onRetry: (message) => logger.warn(message) });
+  // Abort so the runner's finally still deletes the environment.
+  const abortFlag = { aborted: false };
+  const onSignal = (sig: string) => {
+    logger.warn(`fix-pr: ${sig}, stopping`);
+    abortFlag.aborted = true;
+  };
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  const outcome = await fixPr({
+    prfix,
+    logger,
+    ado,
+    git,
+    continiaCli,
+    stages: buildPrFixPipeline({ prfix, logger, ado, git, continiaCli }),
+    store: new PipelineStateStore(join(config.stateDir, 'prfix')),
+    pullRequestId,
+    keepEnv: process.argv.includes('--keep-env'),
+    abortFlag,
+  });
+  console.log(JSON.stringify(outcome));
+  process.exitCode = outcome.ok ? 0 : 1;
 }
 
 async function runExperimentCommand(): Promise<void> {
