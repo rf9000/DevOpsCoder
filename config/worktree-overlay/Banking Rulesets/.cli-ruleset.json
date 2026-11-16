@@ -138,6 +138,16 @@
             "id": "AL0133",
             "action": "Info",
             "justification": "Cannot access the obsolete member. Mirrors the local Compiler.ruleset.json override the team builds with; kept here so the tracked file stays untouched."
+        },
+        {
+            "id": "AA0237",
+            "action": "Hidden",
+            "justification": "Temp table naming issue that should be fixed."
+        },
+        {
+            "id": "AA0210",
+            "action": "Info",
+            "justification": "The table does not contain a key with the specified field. Same as Banking Rulesets/ruleset.json since Banking PR 58143, which removed the AA0210 pragmas."
         }
     ]
 }
