@@ -97,6 +97,9 @@ function prfixConfig(overrides: Partial<Omit<PrFixConfig, 'app'>> = {}): PrFixCo
     maxConflictCommits: 3,
     maxConflictFiles: 10,
     resolverMaxTurns: 40,
+    renumberCollisions: true,
+    ninjaCommand: { command: 'npx', args: [] },
+    ninjaCallTimeoutMs: 60_000,
     ...overrides,
   };
 }

@@ -80,7 +80,15 @@ function setup(
     { STATE_DIR: mkdtempSync(join(tmpdir(), 'prfix-')) },
     { dryRun: opts.dryRun ?? false, pat: PAT },
   );
-  const prfix: PrFixConfig = { app, maxConflictCommits: 3, maxConflictFiles: 10, resolverMaxTurns: 40 };
+  const prfix: PrFixConfig = {
+    app,
+    maxConflictCommits: 3,
+    maxConflictFiles: 10,
+    resolverMaxTurns: 40,
+    renumberCollisions: true,
+    ninjaCommand: { command: 'npx', args: [] },
+    ninjaCallTimeoutMs: 60_000,
+  };
   const removeWorktree = mock(async (_wt: unknown) => {});
   const git = { removeWorktree } as unknown as PrFixGit;
   const createPullRequestThread = mock(async (_a: { content: string }, _o?: unknown) => {

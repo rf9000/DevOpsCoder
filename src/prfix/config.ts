@@ -7,13 +7,47 @@ export interface PrFixConfig {
   maxConflictCommits: number;
   maxConflictFiles: number;
   resolverMaxTurns: number;
+  /** Renumber AL object IDs that collide after the rebase (`PRFIX_RENUMBER_COLLISIONS`). */
+  renumberCollisions: boolean;
+  /** How to launch the Object ID Ninja MCP server (`NINJA_MCP_COMMAND`). */
+  ninjaCommand: { command: string; args: string[] };
+  /** Per-tool-call timeout for the Ninja MCP server (`NINJA_CALL_TIMEOUT_MS`). */
+  ninjaCallTimeoutMs: number;
 }
+
+const DEFAULT_NINJA_MCP_COMMAND = 'npx -y @vjeko.com/al-object-id-ninja-mcp';
+
+// Same semantics as the app config's boolFlag: blank means the default.
+const boolFlag = (defaultValue: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === undefined || v.trim() === '') return defaultValue;
+      return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
+    });
 
 const knobSchema = z.object({
   PRFIX_MAX_CONFLICT_COMMITS: z.coerce.number().int().positive().default(3),
   PRFIX_MAX_CONFLICT_FILES: z.coerce.number().int().positive().default(10),
   REBASE_RESOLVER_MAX_TURNS: z.coerce.number().int().positive().default(40),
+  PRFIX_RENUMBER_COLLISIONS: boolFlag(true),
+  NINJA_MCP_COMMAND: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? DEFAULT_NINJA_MCP_COMMAND : v)),
+  NINJA_CALL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
 });
+
+/**
+ * Split `NINJA_MCP_COMMAND` on whitespace. On Windows `npx` is a `.cmd` shim
+ * that a shell-less spawn cannot run, so the command goes through `cmd /c`.
+ */
+export function splitNinjaCommand(raw: string, platform: NodeJS.Platform): { command: string; args: string[] } {
+  const parts = raw.trim().split(/\s+/).filter((p) => p !== '');
+  const [command = '', ...args] = platform === 'win32' ? ['cmd', '/c', ...parts] : parts;
+  return { command, args };
+}
 
 const REBASE_PER_COMMIT_BUDGET_MS = 1_800_000;
 
@@ -62,5 +96,8 @@ export function loadPrFixConfig(env: Record<string, string | undefined>): PrFixC
     maxConflictCommits: k.PRFIX_MAX_CONFLICT_COMMITS,
     maxConflictFiles: k.PRFIX_MAX_CONFLICT_FILES,
     resolverMaxTurns: k.REBASE_RESOLVER_MAX_TURNS,
+    renumberCollisions: k.PRFIX_RENUMBER_COLLISIONS,
+    ninjaCommand: splitNinjaCommand(k.NINJA_MCP_COMMAND, process.platform),
+    ninjaCallTimeoutMs: k.NINJA_CALL_TIMEOUT_MS,
   };
 }

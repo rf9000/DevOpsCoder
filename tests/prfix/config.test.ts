@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { loadPrFixConfig } from '../../src/prfix/config.ts';
+import { loadPrFixConfig, splitNinjaCommand } from '../../src/prfix/config.ts';
 
 const env: Record<string, string> = {
   AZURE_DEVOPS_PAT: 'test-pat',
@@ -70,5 +70,50 @@ describe('loadPrFixConfig', () => {
     expect([t['pr-intake'], t['pr-worktree'], t['rebase-onto-target'], t['push-rebased'], t['pr-comment']]).toEqual([
       1000, 2000, 3000, 4000, 5000,
     ]);
+  });
+  it('defaults the Ninja knobs', () => {
+    const c = loadPrFixConfig(env);
+    expect(c.renumberCollisions).toBe(true);
+    expect(c.ninjaCallTimeoutMs).toBe(60_000);
+    expect(c.ninjaCommand).toEqual(splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp', process.platform));
+  });
+
+  it('reads PRFIX_RENUMBER_COLLISIONS=false, NINJA_MCP_COMMAND and NINJA_CALL_TIMEOUT_MS', () => {
+    const c = loadPrFixConfig({
+      ...env,
+      PRFIX_RENUMBER_COLLISIONS: 'false',
+      NINJA_MCP_COMMAND: 'node  ninja.js',
+      NINJA_CALL_TIMEOUT_MS: '1500',
+    });
+    expect(c.renumberCollisions).toBe(false);
+    expect(c.ninjaCallTimeoutMs).toBe(1500);
+    expect(c.ninjaCommand).toEqual(splitNinjaCommand('node ninja.js', process.platform));
+  });
+
+  it('rejects an invalid NINJA_CALL_TIMEOUT_MS', () => {
+    expect(() => loadPrFixConfig({ ...env, NINJA_CALL_TIMEOUT_MS: '0' })).toThrow('NINJA_CALL_TIMEOUT_MS');
+    expect(() => loadPrFixConfig({ ...env, NINJA_CALL_TIMEOUT_MS: '1.5' })).toThrow('NINJA_CALL_TIMEOUT_MS');
+  });
+
+  it('falls back to the default for a blank NINJA_MCP_COMMAND', () => {
+    expect(loadPrFixConfig({ ...env, NINJA_MCP_COMMAND: '  ' }).ninjaCommand).toEqual(
+      splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp', process.platform),
+    );
+  });
+});
+
+describe('splitNinjaCommand', () => {
+  it('splits on whitespace off win32', () => {
+    expect(splitNinjaCommand('  npx -y	@vjeko.com/al-object-id-ninja-mcp ', 'linux')).toEqual({
+      command: 'npx',
+      args: ['-y', '@vjeko.com/al-object-id-ninja-mcp'],
+    });
+  });
+
+  it('prefixes cmd /c on win32', () => {
+    expect(splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp', 'win32')).toEqual({
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', '@vjeko.com/al-object-id-ninja-mcp'],
+    });
   });
 });
