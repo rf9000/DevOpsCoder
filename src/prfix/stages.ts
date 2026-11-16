@@ -2,6 +2,7 @@ import type { AgentRunner } from '../pipeline/agent-stage.ts';
 import type { Stage } from '../pipeline/stage.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
 import type { WorkItemContext } from '../services/wi-context.ts';
+import { applyWorktreeOverlay } from '../services/worktree-overlay.ts';
 import type { EnvironmentOutput, VerificationOutput, WorktreeContext } from '../types/index.ts';
 import { assertWithinCostCap } from '../utils/cost-tracker.ts';
 import type { PrFixConfig } from './config.ts';
@@ -178,12 +179,23 @@ export function createPrIntakeStage(deps: { ado: AdoClient }): Stage {
   };
 }
 
-export function createPrWorktreeStage(deps: { git: PrFixGit }): Stage {
+/**
+ * Creates the PR worktree and applies the worktree overlay to it, exactly as
+ * `worktree-setup` does for a WI: without it, `deploy --ruleset` points at a
+ * missing file or the stricter committed ruleset applies. Overlay files are
+ * added to `info/exclude`, so they never show as untracked.
+ */
+export function createPrWorktreeStage(deps: {
+  git: PrFixGit;
+  /** Test override for the overlay copier. */
+  applyOverlay?: (sourceDir: string, worktreePath: string) => string[];
+}): Stage {
+  const overlay = deps.applyOverlay ?? ((src: string, wt: string) => applyWorktreeOverlay(src, wt));
   return {
     name: 'pr-worktree',
     costFree: true,
     canRun: () => true,
-    async execute(state) {
+    async execute(state, ctx) {
       const { pullRequestId, pr } = inputOf(state);
       const wt = await deps.git.createWorktree({
         pullRequestId,
@@ -192,6 +204,9 @@ export function createPrWorktreeStage(deps: { git: PrFixGit }): Stage {
         headCommit: pr.headCommit,
       });
       state.outputs.worktree = wt;
+      for (const dir of ctx.config.worktreeOverlayDirs ?? []) {
+        overlay(dir, wt.path);
+      }
       if (await deps.git.isUpToDate(wt.path, wt.targetSha)) {
         throw new PrUpToDateError(`PR ${pullRequestId} already contains ${pr.targetRefName.replace(/^refs\/heads\//, '')}`);
       }

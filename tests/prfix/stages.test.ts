@@ -1,4 +1,8 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   createPrCommentStage,
   createPrIntakeStage,
@@ -114,6 +118,39 @@ describe('pr-worktree', () => {
       targetRefName: 'refs/heads/main',
       headCommit: 'head000',
     });
+  });
+
+  it('applies every worktree overlay dir to the new worktree, in order', async () => {
+    const git = gitOf(false);
+    const applyOverlay = mock((_src: string, _wt: string) => [] as string[]);
+    const ctx = makeCtx();
+    ctx.config = { ...ctx.config, worktreeOverlayDirs: ['/overlay/team', '/overlay/extra'] };
+    await createPrWorktreeStage({ git, applyOverlay }).execute(makeState({ prFixInput: FULL_INPUT }), ctx);
+    expect(applyOverlay.mock.calls).toEqual([
+      ['/overlay/team', '/w/p'],
+      ['/overlay/extra', '/w/p'],
+    ]);
+  });
+
+  it('copies a real overlay into the worktree (default copier)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'prfix-overlay-'));
+    try {
+      const overlayDir = join(root, 'overlay');
+      const wtPath = join(root, 'wt');
+      mkdirSync(join(overlayDir, 'Banking Rulesets'), { recursive: true });
+      writeFileSync(join(overlayDir, 'Banking Rulesets', '.cli-ruleset.json'), '{}', 'utf-8');
+      execFileSync('git', ['init', '-q', wtPath]);
+      const git = {
+        createWorktree: mock(async (_a: unknown) => ({ ...wt, path: wtPath })),
+        isUpToDate: mock(async () => false),
+      } as unknown as PrFixGit;
+      const ctx = makeCtx();
+      ctx.config = { ...ctx.config, worktreeOverlayDirs: [overlayDir] };
+      await createPrWorktreeStage({ git }).execute(makeState({ prFixInput: FULL_INPUT }), ctx);
+      expect(existsSync(join(wtPath, 'Banking Rulesets', '.cli-ruleset.json'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('throws PrUpToDateError when up to date, after the worktree exists', async () => {
