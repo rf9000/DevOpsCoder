@@ -646,4 +646,26 @@ describe('buildPrFixPipeline', () => {
     expect((err as VerificationFailedError).attempts).toBe(0);
     expect(runner.calls).toHaveLength(0);
   });
+
+  it('threads keepEnv into pr-comment: the environment is linked only when kept', async () => {
+    const prfix = prfixFor({ SKIP_BUILD_TEST: 'false', CONTINIA_API_TOKEN: 'tok' });
+    const pr = {
+      id: 42, status: 'active', title: 'T', sourceRefName: 'refs/heads/f', targetRefName: 'refs/heads/main',
+      headCommit: 'h', isDraft: false, url: 'u',
+    };
+    const commentFor = async (keepEnv: boolean | undefined): Promise<string> => {
+      const createPullRequestThread = mock(async (_a: { content: string }, _o?: unknown) => {});
+      const ado = { createPullRequestThread } as unknown as AdoClient;
+      const stages = buildPrFixPipeline(deps(prfix, { ado, ...(keepEnv === undefined ? {} : { keepEnv }) }));
+      const state = makeState();
+      state.outputs.prFixInput = { pullRequestId: 42, repository: 'test-repo', pr };
+      state.outputs.rebase = { preRebaseSha: 'a', targetSha: 'b', newHeadSha: 'c', commitsReplayed: 1, conflicts: [] };
+      state.outputs.verification = { attempts: 0, compiled: true, deploy: [], testRuns: [], passed: true };
+      state.outputs.environment = { envId: 'e', name: 'wi-42-pr-42', url: 'https://env.example/x', status: 'Running', createdAt: 'x' };
+      await stages.find((s) => s.name === 'pr-comment')!.execute(state, { ...makeCtx(), config: prfix.app });
+      return createPullRequestThread.mock.calls[0]?.[0].content ?? '';
+    };
+    expect(await commentFor(undefined)).not.toContain('https://env.example/x');
+    expect(await commentFor(true)).toContain('https://env.example/x');
+  });
 });

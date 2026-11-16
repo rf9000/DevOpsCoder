@@ -5,6 +5,7 @@ import type { WorkItemContext } from '../services/wi-context.ts';
 import { applyWorktreeOverlay } from '../services/worktree-overlay.ts';
 import type { EnvironmentOutput, VerificationOutput, WorktreeContext } from '../types/index.ts';
 import { assertWithinCostCap } from '../utils/cost-tracker.ts';
+import { redactPat } from '../utils/git-auth.ts';
 import type { PrFixConfig } from './config.ts';
 import { renderSuccessComment } from './comment.ts';
 import type { PrFixGit, RebaseStep } from './prfix-git.ts';
@@ -269,12 +270,23 @@ export function createPushRebasedStage(deps: { git: PrFixGit }): Stage {
       state.outputs.pushedCommit = await deps.git.headSha(wt.path);
       if (ctx.config.dryRun) return state;
       await deps.git.push({ path: wt.path, sourceRefName: pr.sourceRefName, expectedRemoteSha: rebase.preRebaseSha });
+      // From here on the remote branch is the rebased one: fixPr reports any
+      // later failure as `rebased` rather than claiming nothing changed.
+      state.outputs.pushed = true;
       return state;
     },
   };
 }
 
-export function createPrCommentStage(deps: { ado: AdoClient }): Stage {
+/**
+ * Posts the success comment. Best-effort: it runs after the push, so a
+ * failure here is logged rather than turning a pushed branch into a failed run.
+ */
+export function createPrCommentStage(deps: {
+  ado: AdoClient;
+  /** The environment survives the run (`--keep-env`); only then is it linked. */
+  keepEnv?: boolean;
+}): Stage {
   return {
     name: 'pr-comment',
     costFree: true,
@@ -290,11 +302,17 @@ export function createPrCommentStage(deps: { ado: AdoClient }): Stage {
         verification: state.outputs.verification as VerificationOutput | undefined,
         environment: state.outputs.environment as EnvironmentOutput | undefined,
         skippedVerification: ctx.config.skipBuildTest,
+        keepEnv: deps.keepEnv ?? false,
       });
-      await deps.ado.createPullRequestThread(
-        { repositoryName: input.repository, pullRequestId: input.pullRequestId, content },
-        { signal: ctx.signal },
-      );
+      try {
+        await deps.ado.createPullRequestThread(
+          { repositoryName: input.repository, pullRequestId: input.pullRequestId, content },
+          { signal: ctx.signal },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.logger.warn(`pr-comment: success comment on PR ${input.pullRequestId} not posted :: ${redactPat(msg, ctx.config.pat)}`);
+      }
       return state;
     },
   };

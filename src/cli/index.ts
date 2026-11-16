@@ -336,6 +336,7 @@ async function runFixPrCommand(): Promise<void> {
   const ado = createAdoClient(config);
   const git = createPrFixGit({ config, logger });
   const continiaCli = createContiniaCli({ config, onRetry: (message) => logger.warn(message) });
+  const keepEnv = process.argv.includes('--keep-env');
   // Abort so the runner's finally still deletes the environment.
   const abortFlag = { aborted: false };
   const onSignal = (sig: string) => {
@@ -350,10 +351,10 @@ async function runFixPrCommand(): Promise<void> {
     ado,
     git,
     continiaCli,
-    stages: buildPrFixPipeline({ prfix, logger, ado, git, continiaCli }),
+    stages: buildPrFixPipeline({ prfix, logger, ado, git, continiaCli, keepEnv }),
     store: new PipelineStateStore(join(config.stateDir, 'prfix')),
     pullRequestId,
-    keepEnv: process.argv.includes('--keep-env'),
+    keepEnv,
     abortFlag,
   });
   console.log(JSON.stringify(outcome));

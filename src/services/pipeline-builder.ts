@@ -416,6 +416,8 @@ export interface PrFixPipelineDeps {
   discoveredSkills?: DiscoveredSkill[];
   /** Test override: AL test-codeunit discovery. */
   discoverTestCodeunits?: PipelineBuilderDeps['discoverTestCodeunits'];
+  /** `--keep-env`: the environment outlives the run, so pr-comment links it. */
+  keepEnv?: boolean;
 }
 
 /**
@@ -461,6 +463,6 @@ export function buildPrFixPipeline(deps: PrFixPipelineDeps): Stage[] {
     }),
     ...verifyStages,
     createPushRebasedStage({ git: deps.git }),
-    createPrCommentStage({ ado: deps.ado }),
+    createPrCommentStage({ ado: deps.ado, keepEnv: deps.keepEnv ?? false }),
   ];
 }

@@ -179,6 +179,7 @@ describe('push-rebased', () => {
       expectedRemoteSha: 'pre0000',
     });
     expect(out.outputs.pushedCommit).toBe('new0000');
+    expect(out.outputs.pushed).toBe(true);
   });
 
   it('does not push in a dry run but records the commit', async () => {
@@ -186,6 +187,15 @@ describe('push-rebased', () => {
     const out = await createPushRebasedStage({ git }).execute(st(), makeCtx(true));
     expect(push).not.toHaveBeenCalled();
     expect(out.outputs.pushedCommit).toBe('new0000');
+    expect(out.outputs.pushed).toBeUndefined();
+  });
+
+  it('does not mark the branch pushed when the push fails', async () => {
+    const { git, push } = mk();
+    push.mockImplementation(async () => { throw new Error('rejected'); });
+    const state = st();
+    await expect(createPushRebasedStage({ git }).execute(state, makeCtx())).rejects.toThrow('rejected');
+    expect(state.outputs.pushed).toBeUndefined();
   });
 });
 
@@ -199,8 +209,32 @@ describe('pr-comment', () => {
     expect(createPullRequestThread.mock.calls[0]?.[0]).toEqual({
       repositoryName: 'repo',
       pullRequestId: 42,
-      content: renderSuccessComment({ pr: PR, rebase: REBASE, skippedVerification: false }),
+      content: renderSuccessComment({ pr: PR, rebase: REBASE, skippedVerification: false, keepEnv: false }),
     });
+  });
+
+  it('a failing comment post only warns: the branch is already pushed', async () => {
+    const { ado, createPullRequestThread } = fakeAdo(PR);
+    createPullRequestThread.mockImplementation(async () => { throw new Error('ado down'); });
+    const ctx = makeCtx();
+    await createPrCommentStage({ ado }).execute(state(), ctx);
+    expect(createPullRequestThread).toHaveBeenCalledTimes(1);
+    const warn = ctx.logger.warn as ReturnType<typeof mock>;
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('ado down'))).toBe(true);
+  });
+
+  it('links the environment only when keepEnv', async () => {
+    const environment = { envId: 'e1', name: 'wi-42-pr-42', url: 'https://env.example/x', status: 'Running', createdAt: 'now' };
+    const withEnv = () => makeState({ prFixInput: FULL_INPUT, rebase: REBASE, environment });
+    const contentOf = (m: ReturnType<typeof fakeAdo>) => (m.createPullRequestThread.mock.calls[0]?.[0] as { content: string }).content;
+
+    const deleted = fakeAdo(PR);
+    await createPrCommentStage({ ado: deleted.ado }).execute(withEnv(), makeCtx());
+    expect(contentOf(deleted)).not.toContain('https://env.example/x');
+
+    const kept = fakeAdo(PR);
+    await createPrCommentStage({ ado: kept.ado, keepEnv: true }).execute(withEnv(), makeCtx());
+    expect(contentOf(kept)).toContain('https://env.example/x');
   });
 
   it('marks verification skipped when the config skips build/test', async () => {

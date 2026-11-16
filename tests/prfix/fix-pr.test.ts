@@ -7,6 +7,7 @@ import type { PrFixConfig } from '../../src/prfix/config.ts';
 import type { PrFixGit } from '../../src/prfix/prfix-git.ts';
 import {
   ConflictCapError,
+  MergeCommitsError,
   PrUpToDateError,
   UnresolvedConflictError,
   type ConflictResolution,
@@ -250,6 +251,41 @@ describe('fixPr', () => {
     const r = setup([intake, worktree, rebase, foreign, push, comment]);
     await r.outcome;
     expect(r.deleteEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('MergeCommitsError maps to merge-commits and posts the failure comment', async () => {
+    const r = setup([intake, worktree, throwing('rebase-onto-target', new MergeCommitsError(2))]);
+    const o = await r.outcome;
+    expect(o).toMatchObject({ ok: false, status: 'merge-commits', error: 'branch contains 2 merge commits; rebase it manually' });
+    expect(r.createPullRequestThread).toHaveBeenCalledTimes(1);
+    const content = (r.createPullRequestThread.mock.calls[0]?.[0] as { content: string }).content;
+    expect(content).toContain('merge-commits');
+    expect(content).toContain('branch contains 2 merge commits; rebase it manually');
+  });
+
+  const pushed = stage('push-rebased', (o) => {
+    o.pushed = true;
+  });
+
+  it('a failure after the push is reported as rebased, with a warning and no failure comment', async () => {
+    const r = setup([intake, worktree, rebase, pushed, throwing('pr-comment', new Error('ado down'))]);
+    const o = await r.outcome;
+    expect(o).toMatchObject({ ok: true, status: 'rebased', newHead: 'new0000', error: null });
+    expect(r.createPullRequestThread).not.toHaveBeenCalled();
+    expect(r.warn.mock.calls.some((c) => String(c[0]).includes('ado down'))).toBe(true);
+    expect(r.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it('a run cancelled after the push is reported as rebased, with no failure comment', async () => {
+    const abortFlag = { aborted: false };
+    const r = setup(
+      [intake, worktree, rebase, stage('push-rebased', (o) => { o.pushed = true; abortFlag.aborted = true; }), comment],
+      { abortFlag },
+    );
+    const o = await r.outcome;
+    expect(o).toMatchObject({ ok: true, status: 'rebased' });
+    expect(r.createPullRequestThread).not.toHaveBeenCalled();
+    expect(r.warn.mock.calls.some((c) => /pushed/i.test(String(c[0])))).toBe(true);
   });
 
   it('keeps the worktree on failure, removes it on success', async () => {

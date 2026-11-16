@@ -64,8 +64,12 @@ function messageOf(err: unknown): string {
  * overwritten), with slug `pr-<prId>` so env-provision names the environment
  * `wi-<prId>-pr-<prId>`.
  *
+ * Once `push-rebased` has pushed (`state.outputs.pushed`), the remote branch
+ * IS the rebased one: any later failure or cancellation is logged as a warning
+ * and the outcome is still `rebased`, so nothing claims the branch is unchanged.
+ *
  * A failure comment is best-effort and never posted for up-to-date, a
- * cancelled run or a dry run. The environment is deleted unless keepEnv — dry
+ * cancelled run, a pushed branch or a dry run. The environment is deleted unless keepEnv — dry
  * runs included, since a dry run still created one. The worktree is removed on
  * success and up-to-date, and kept on failure for inspection; the next run's
  * createWorktree replaces it.
@@ -106,11 +110,20 @@ export async function fixPr(deps: FixPrDeps): Promise<PrFixOutcome> {
       },
       store: deps.store,
     });
-    outcome = state.cancelled ? build('cancelled', 'cancelled') : build('rebased', null);
+    if (state.cancelled && state.outputs.pushed === true) {
+      logger.warn(`fix-pr: cancelled after the rebased branch was pushed; reporting PR ${pullRequestId} as rebased`);
+      outcome = build('rebased', null);
+    } else {
+      outcome = state.cancelled ? build('cancelled', 'cancelled') : build('rebased', null);
+    }
   } catch (err) {
     const status = statusOf(err);
     const message = redactPat(messageOf(err), config.pat);
-    if (status === 'up-to-date') {
+    if (state.outputs.pushed === true) {
+      const stage = state.terminalError?.stage ?? 'fix-pr';
+      logger.warn(`fix-pr: ${stage} failed after the rebased branch was pushed; reporting PR ${pullRequestId} as rebased :: ${message}`);
+      outcome = build('rebased', null);
+    } else if (status === 'up-to-date') {
       outcome = build(status, null);
     } else if (status === 'error') {
       const stage = state.terminalError?.stage ?? 'fix-pr';
