@@ -287,12 +287,25 @@ describe('createRenumberStage', () => {
     expect(read(PONTO)).toBe(PONTO_TEXT);
   });
 
+  it('the give-up error names the app.json idRanges, the IDs Ninja offered and the .objidconfig hint', async () => {
+    baseFixture();
+    const offered = Array.from({ length: NINJA_MAX_ASSIGN_ATTEMPTS }, (_, i) => 50100 + i);
+    const n = fakeNinja(offered);
+    const err = (await stage(fakeGit().git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e)) as Error;
+    expect(err.message).toStartWith(`ninja: no usable codeunit ID for ${PONTO}`);
+    expect(err.message).toContain('base-application/app.json idRanges 72918625-72918824');
+    expect(err.message).toContain(`Ninja offered ${offered.join(', ')}`);
+    expect(err.message).toContain('check that .objidconfig ranges lie inside app.json idRanges');
+  });
+
   it('an app with no ranges rejects every ID', async () => {
     baseFixture();
     put('base-application/app.json', JSON.stringify({ name: 'x' }));
     const { git } = fakeGit();
     const n = fakeNinja(Array.from({ length: NINJA_MAX_ASSIGN_ATTEMPTS }, () => 72918790));
-    await expect(stage(git, n.factory).execute(makeState(), makeCtx())).rejects.toThrow('ninja: no usable codeunit ID');
+    const err = (await stage(git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e)) as Error;
+    expect(err.message).toStartWith('ninja: no usable codeunit ID');
+    expect(err.message).toContain('base-application/app.json idRanges (none)');
   });
 
   it('both members PR-introduced → IdCollisionError, no Ninja call', async () => {

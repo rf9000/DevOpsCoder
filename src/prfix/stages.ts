@@ -631,8 +631,10 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
 
           // 5b. Ask Ninja until it hands out an ID that is in range and free in this app.
           let newId: number | undefined;
+          const offered: number[] = [];
           for (let attempt = 1; attempt <= NINJA_MAX_ASSIGN_ATTEMPTS && newId === undefined; attempt++) {
             const id = await client.assign(target.type, abs);
+            offered.push(id);
             // Recorded before anything below can throw; `used` until checked, so it is released if the stage dies here.
             const entry: ReservedId = { type: target.type, id, file: abs, status: 'used' };
             output.reserved.push(entry);
@@ -648,7 +650,15 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
               );
             }
           }
-          if (newId === undefined) throw new Error(`ninja: no usable ${target.type} ID for ${target.file}`);
+          if (newId === undefined) {
+            // Typically Ninja's pool (.objidconfig) and the app's idRanges do not overlap.
+            const ranges = rangesOf(target.app).map((r) => `${r.from}-${r.to}`).join(', ') || '(none)';
+            const appJson = target.app ? `${target.app}/app.json` : 'app.json';
+            throw new Error(
+              `ninja: no usable ${target.type} ID for ${target.file}: ${appJson} idRanges ${ranges}; ` +
+                `Ninja offered ${offered.join(', ')}; check that .objidconfig ranges lie inside app.json idRanges`,
+            );
+          }
           taken.add(appKey(target.app, target.type, newId));
 
           // 6. Every reference qualified by the target's type, in the target file
