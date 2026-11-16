@@ -24,6 +24,13 @@ const validEnv: Record<string, string> = {
 };
 
 describe('loadConfig', () => {
+  it('CONTROL_PORT: blank means unset, a number is the port', () => {
+    expect(loadConfig({ ...validEnv, CONTROL_PORT: '' }).controlPort).toBeUndefined();
+    expect(loadConfig({ ...validEnv, CONTROL_PORT: '  ' }).controlPort).toBeUndefined();
+    expect(loadConfig(validEnv).controlPort).toBeUndefined();
+    expect(loadConfig({ ...validEnv, CONTROL_PORT: '8080' }).controlPort).toBe(8080);
+  });
+
   it('returns AppConfig for a valid env', () => {
     const config = loadConfig(validEnv);
     expect(config.pat).toBe('test-pat');
