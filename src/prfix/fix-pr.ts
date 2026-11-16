@@ -67,19 +67,28 @@ export function ninjaFactoryFor(prfix: PrFixConfig): () => NinjaClient {
 
 /**
  * The compiler's own error lines from the failed deploy rows, for a reader who
- * has only the outcome or the PR comment. alc names files by absolute path;
- * everything up to and including the row's app directory is cut, so a line
- * reads `Feature Management\PontoFeature.Codeunit.al(1,10): error AL0264: ...`.
+ * has only the outcome or the PR comment. alc usually prints project-relative
+ * paths (`Feature Management\PontoFeature.Codeunit.al(1,10): error AL0264: ...`),
+ * which are kept as they are. An absolute path loses its leading worktree root
+ * (`worktreePath`) and, when the row carries a `projectPath`, the app directory
+ * after it. A row's `app` is the app's *name*, never a path, so it is not used.
  * De-duplicated (alc repeats a diagnostic per compile pass) and capped at `max`.
  */
-export function alErrorLines(verification: VerificationOutput | undefined, max = 10): string[] {
+export function alErrorLines(
+  verification: VerificationOutput | undefined,
+  max = 10,
+  worktreePath?: string,
+): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const row of verification?.deploy ?? []) {
     if (!(row.compiled === false || row.published === false) || !row.error) continue;
+    // `projectPath` is a passthrough field of the CLI's deploy row, not typed.
+    const projectPath = (row as unknown as Record<string, unknown>).projectPath;
+    const prefixes = pathPrefixes(worktreePath, typeof projectPath === 'string' ? projectPath : undefined);
     for (const raw of row.error.split(/\r?\n/)) {
       if (!AL_ERROR_LINE.test(raw)) continue;
-      const line = stripAppPrefix(raw.trim(), row.app);
+      const line = stripPrefix(raw.trim(), prefixes);
       if (seen.has(line)) continue;
       seen.add(line);
       out.push(line);
@@ -89,21 +98,33 @@ export function alErrorLines(verification: VerificationOutput | undefined, max =
   return out;
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const isAbsolutePath = (p: string): boolean => /^(?:[A-Za-z]:[\\/]|[\\/])/.test(p);
+const trimSeparators = (p: string): string => p.replace(/[\\/]+$/, '');
+
+/** Most specific first: the app's own directory, then the worktree root. */
+function pathPrefixes(worktreePath: string | undefined, projectPath: string | undefined): string[] {
+  const out: string[] = [];
+  const root = worktreePath ? trimSeparators(worktreePath) : undefined;
+  if (projectPath) {
+    const project = trimSeparators(projectPath);
+    if (isAbsolutePath(project)) out.push(project);
+    else if (root && project !== '' && project !== '.') out.push(`${root}/${project.replace(/^\.[\\/]/, '')}`);
+  }
+  if (root) out.push(root);
+  return out.filter((p) => p !== '');
 }
 
-function stripAppPrefix(line: string, app: string): string {
-  // Only an absolute path (drive letter, UNC or POSIX root) is the CLI's prefix.
-  if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(line)) return line;
-  const segments = app.split(/[\\/]+/).filter((s) => s !== '' && s !== '.');
-  if (segments.length === 0) return line;
-  const fileEnd = line.search(/\(\d+,\d+\): error AL/);
-  if (fileEnd < 0) return line;
-  // The first match: the app directory sits directly under the worktree root.
-  const appDir = new RegExp(`[\\\\/]${segments.map(escapeRegExp).join('[\\\\/]')}[\\\\/]`, 'i');
-  const m = appDir.exec(line.slice(0, fileEnd));
-  return m ? line.slice(m.index + m[0].length) : line;
+/** Same path with `\` and `/` interchangeable and case ignored (length-preserving). */
+const comparable = (p: string): string => p.replace(/\\/g, '/').toLowerCase();
+
+function stripPrefix(line: string, prefixes: string[]): string {
+  if (!isAbsolutePath(line)) return line;
+  const l = comparable(line);
+  for (const p of prefixes) {
+    const c = comparable(p);
+    if (l.startsWith(`${c}/`)) return line.slice(p.length + 1);
+  }
+  return line;
 }
 
 function statusOf(err: unknown): PrFixStatus {
@@ -189,7 +210,11 @@ export async function fixPr(deps: FixPrDeps): Promise<PrFixOutcome> {
     let text = messageOf(err);
     if (status === 'verification-failed') {
       // Otherwise the cause is visible only in the state file.
-      const al = alErrorLines(state.outputs.verification as VerificationOutput | undefined);
+      const al = alErrorLines(
+        state.outputs.verification as VerificationOutput | undefined,
+        undefined,
+        (state.outputs.worktree as WorktreeContext | undefined)?.path,
+      );
       if (al.length > 0) text = `${text}\n${al.join('\n')}`;
     }
     const message = redactPat(text, config.pat);
@@ -242,6 +267,7 @@ async function releaseReservedIds(deps: FixPrDeps, renumber: RenumberOutput | un
   const reserved = renumber?.reserved ?? [];
   if (reserved.length === 0) return;
   const { logger } = deps;
+  logger.info(`fix-pr: releasing ${reserved.length} reserved Ninja ID(s)`);
   let client: NinjaClient;
   try {
     client = (deps.ninja ?? ninjaFactoryFor(deps.prfix))();

@@ -413,10 +413,10 @@ describe('fixPr', () => {
   it('verification-failed outcome error carries AL error lines', async () => {
     const alc = [
       'Microsoft (R) AL Compiler version 18.1',
-      'C:\\wt\\prfix-42\\base-application\\Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A',
-      'C:\\wt\\prfix-42\\base-application\\Feature Management\\Other.al(3,1): info AL0749: noise',
-      'C:\\wt\\prfix-42\\base-application\\Export\\Hash.Codeunit.al(1,10): error AL0264: Already declared B',
-      'C:\\wt\\prfix-42\\base-application\\Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A',
+      '/wt/prfix-42/base-application/Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A',
+      '/wt/prfix-42/base-application/Feature Management\\Other.al(3,1): info AL0749: noise',
+      '/wt/prfix-42/base-application/Export\\Hash.Codeunit.al(1,10): error AL0264: Already declared B',
+      '/wt/prfix-42/base-application/Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A',
       'Compilation ended',
     ].join('\r\n');
     const verify = stage('build-and-test', (o) => {
@@ -424,7 +424,8 @@ describe('fixPr', () => {
         attempts: 0,
         compiled: false,
         deploy: [
-          { app: 'base-application', compiled: false, published: false, error: alc, code: 'compile-failed' },
+          // fixPr passes the worktree path (WT.path = /wt/prfix-42); `app` is a name.
+          { app: 'Continia Banking', projectPath: 'base-application', compiled: false, published: false, error: alc, code: 'compile-failed' },
           { app: 'tests', compiled: true, published: true, error: 'x(1,1): error AL0001: ignored, row succeeded' },
         ],
         testRuns: [],
@@ -457,7 +458,7 @@ describe('fixPr', () => {
 });
 
 describe('alErrorLines', () => {
-  const v = (deploy: { app: string; compiled: boolean; published: boolean; error?: string }[]) => ({
+  const v = (deploy: { app: string; compiled: boolean; published: boolean; error?: string; projectPath?: string }[]) => ({
     attempts: 0,
     compiled: false,
     deploy,
@@ -475,10 +476,45 @@ describe('alErrorLines', () => {
     expect(out).toEqual(['f0.al(1,1): error AL0000: e', 'f1.al(1,1): error AL0001: e', 'f2.al(1,1): error AL0002: e']);
   });
 
-  it('strips an absolute path up to the app dir, with either separator', () => {
+  it('keeps the project-relative lines of a real CLI row (app is a name), dropping info and warning lines', () => {
+    const error = [
+      'Microsoft (R) AL Compiler version 18.1.0.0',
+      'Copyright (C) Microsoft Corporation. All rights reserved',
+      '',
+      'Compilation started for project \'Continia Banking\' containing \'2140\' files at \'09:12:01.123\'.',
+      '',
+      "Feature Management\\FeatureMgt.Codeunit.al(40,5): info AL0749: The type 'X' is obsolete",
+      "Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: An application object of type 'Codeunit' with ID '72918753' is already declared by the extension 'Continia Banking by Continia Software (29.0.0.0)'",
+      "Payment Register\\Payment.Page.al(12,9): warning AL0432: Method 'Y' is marked for removal",
+      "Payment Register\\ExportFileHash.Codeunit.al(1,10): error AL0264: An application object of type 'Codeunit' with ID '72918753' is already declared by the extension 'Continia Banking by Continia Software (29.0.0.0)'",
+      '',
+      "Compilation ended at '09:12:40.456'.",
+    ].join('\r\n');
     const out = alErrorLines(
-      v([{ app: 'apps/App', compiled: false, published: false, error: '/home/x/wt/apps/App/src/F.al(2,3): error AL0118: n' }]),
+      v([{ app: 'Continia Software_Continia Banking', compiled: false, published: false, error }]),
+      10,
+      'C:\\wt\\prfix-61400',
     );
-    expect(out).toEqual(['src/F.al(2,3): error AL0118: n']);
+    expect(out).toEqual([
+      "Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: An application object of type 'Codeunit' with ID '72918753' is already declared by the extension 'Continia Banking by Continia Software (29.0.0.0)'",
+      "Payment Register\\ExportFileHash.Codeunit.al(1,10): error AL0264: An application object of type 'Codeunit' with ID '72918753' is already declared by the extension 'Continia Banking by Continia Software (29.0.0.0)'",
+    ]);
+  });
+
+  it('strips the worktree root and the projectPath app dir from an absolute line (app is a name)', () => {
+    const line = 'c:\\WT\\prfix-61400\\base-application\\Feature Management\\P.Codeunit.al(1,10): error AL0264: dup';
+    const row = { app: 'Continia Software_Continia Banking', compiled: false, published: false, error: line };
+    expect(alErrorLines(v([{ ...row, projectPath: 'base-application' }]), 10, 'C:/wt/prfix-61400/')).toEqual([
+      'Feature Management\\P.Codeunit.al(1,10): error AL0264: dup',
+    ]);
+    expect(
+      alErrorLines(v([{ ...row, projectPath: 'C:\\wt\\prfix-61400\\base-application' }]), 10, 'C:\\wt\\prfix-61400'),
+    ).toEqual(['Feature Management\\P.Codeunit.al(1,10): error AL0264: dup']);
+    // Without a projectPath only the worktree root goes.
+    expect(alErrorLines(v([row]), 10, 'C:\\wt\\prfix-61400')).toEqual([
+      'base-application\\Feature Management\\P.Codeunit.al(1,10): error AL0264: dup',
+    ]);
+    // A path outside the worktree is left alone.
+    expect(alErrorLines(v([row]), 10, 'D:\\other')).toEqual([line]);
   });
 });
