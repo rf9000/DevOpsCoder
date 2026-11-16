@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { createNinjaClient, parseAssignedId } from '../../src/prfix/ninja.ts';
+import { createNinjaClient, ninjaStdioParams, parseAssignedId } from '../../src/prfix/ninja.ts';
 
 type ToolText = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -134,9 +134,79 @@ describe('createNinjaClient', () => {
     expect(msg).toStartWith('ninja: could not start');
     await client.close();
   });
+
+  it('connect failure quotes the tail of the server stderr', async () => {
+    const client = createNinjaClient({
+      command: process.execPath,
+      // The stderr text is assembled at runtime so it cannot reach the message via the echoed command line.
+      args: ['-e', "console.error(['ninja', 'boom'].join('-') + ': 403 from registry'); process.exit(3)"],
+      timeoutMs: 10_000,
+    });
+    let msg = '';
+    try {
+      await client.assign('codeunit', 'C:/a.al');
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain('NINJA_MCP_COMMAND');
+    expect(msg).toContain('ninja-boom: 403 from registry');
+    await client.close();
+  });
+});
+
+describe('ninjaStdioParams', () => {
+  it('passes the whole environment (string values only) and pipes stderr', () => {
+    const p = ninjaStdioParams('cmd', ['/c', 'npx'], {
+      HTTPS_PROXY: 'http://proxy:3128',
+      NINJA_SENTINEL: 'yes',
+      UNSET: undefined,
+    });
+    expect(p.command).toBe('cmd');
+    expect(p.args).toEqual(['/c', 'npx']);
+    expect(p.env).toEqual({ HTTPS_PROXY: 'http://proxy:3128', NINJA_SENTINEL: 'yes' });
+    expect(p.stderr).toBe('pipe');
+  });
+
+  it('defaults to process.env', () => {
+    process.env.NINJA_TEST_SENTINEL = 'present';
+    try {
+      expect(ninjaStdioParams('npx', []).env?.NINJA_TEST_SENTINEL).toBe('present');
+    } finally {
+      delete process.env.NINJA_TEST_SENTINEL;
+    }
+  });
 });
 
 describe('parseAssignedId', () => {
+  const WT = 'C:\\wt\\prfix-61400\\banking-w1\\src\\Tab50100.Foo.al';
+
+  it('ignores an echoed target path and takes the number after ID', () => {
+    const text = `Assigned table ID 72918790 for ${WT} (C:/wt/prfix-61400/banking-w1/src/Tab50100.Foo.al)`;
+    expect(parseAssignedId({ content: [{ type: 'text', text }] }, WT)).toBe(72918790);
+  });
+
+  it('never returns a number from the target path when the text echoes only the path', () => {
+    const forward = WT.replace(/\\/g, '/');
+    expect(() => parseAssignedId({ content: [{ type: 'text', text: `Working on ${forward}` }] }, WT)).toThrow(/ninja/);
+    expect(() => parseAssignedId({ content: [{ type: 'text', text: `Working on ${WT}` }] }, WT)).toThrow(/ninja/);
+    // A path whose only 5+ digit run is the PR id: the single-candidate rule alone would return 61400.
+    const lone = 'C:\\wt\\prfix-61400\\app\\src\\Foo.Codeunit.al';
+    expect(() =>
+      parseAssignedId({ content: [{ type: 'text', text: 'Working on C:/wt/prfix-61400/app/src/Foo.Codeunit.al' }] }, lone),
+    ).toThrow(/ninja/);
+    // A partial echo (the worktree dir and the basename separately) is still not a source of IDs.
+    expect(() =>
+      parseAssignedId({ content: [{ type: 'text', text: 'Saved in C:\\wt\\prfix-61400 as Tab50100.Foo.al' }] }, WT),
+    ).toThrow(/ninja/);
+  });
+
+  it('prefers a number labelled ID over other numbers', () => {
+    expect(parseAssignedId({ content: [{ type: 'text', text: 'Range 50000..59999: object ID 50123' }] })).toBe(50123);
+    expect(parseAssignedId({ content: [{ type: 'text', text: '{"objectId": 70000002, "range": 70099999}' }] })).toBe(
+      70000002,
+    );
+  });
+
   it('parseAssignedId prefers structuredContent.id', () => {
     expect(
       parseAssignedId({
