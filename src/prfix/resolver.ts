@@ -7,7 +7,7 @@ import {
   STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from '../pipeline/stages/_stage-helpers.ts';
 import type { AppConfig, PipelineState } from '../types/index.ts';
-import { createBashAllowlist, FILE_WRITE_FLAG_DENY } from '../utils/bash-allowlist.ts';
+import { createBashAllowlist, UNSAFE_GIT_FLAG_DENY } from '../utils/bash-allowlist.ts';
 import { createCostTracker } from '../utils/cost-tracker.ts';
 import { effortFor, modelFor } from '../utils/model-selection.ts';
 import { createPathEscapeFilter } from '../utils/path-escape-filter.ts';
@@ -27,7 +27,7 @@ export const RESOLVER_BASH_ALLOW: RegExp[] = [
   /^pwd\b/,
 ];
 
-export const RESOLVER_BASH_DENY: RegExp[] = [...FILE_WRITE_FLAG_DENY];
+export const RESOLVER_BASH_DENY: RegExp[] = [...UNSAFE_GIT_FLAG_DENY];
 
 export const resolverOutputSchema = z.object({
   files: z.array(z.object({ path: z.string(), resolution: z.string() })),

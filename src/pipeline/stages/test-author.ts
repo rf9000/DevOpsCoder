@@ -12,7 +12,7 @@ import type {
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
-import { createBashAllowlist, FILE_WRITE_FLAG_DENY } from '../../utils/bash-allowlist.ts';
+import { createBashAllowlist, UNSAFE_GIT_FLAG_DENY } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
 import {
   MAX_TRANSIENT_RETRIES,
@@ -64,7 +64,7 @@ export const TEST_AUTHOR_BASH_ALLOW: RegExp[] = [
 ];
 
 export const TEST_AUTHOR_BASH_DENY: RegExp[] = [
-  ...FILE_WRITE_FLAG_DENY,
+  ...UNSAFE_GIT_FLAG_DENY,
   /^git push\b/,
   /^git checkout\b/,
   /^git switch\b/,

@@ -14,7 +14,7 @@ import type {
 } from '../../types/index.ts';
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
-import { createBashAllowlist, FILE_WRITE_FLAG_DENY } from '../../utils/bash-allowlist.ts';
+import { createBashAllowlist, UNSAFE_GIT_FLAG_DENY } from '../../utils/bash-allowlist.ts';
 import {
   composeCanUseTool,
   aggregateReviewerFindings,
@@ -116,7 +116,7 @@ export const REVIEWER_BASH_ALLOW: RegExp[] = [
 ];
 
 export const REVIEWER_BASH_DENY: RegExp[] = [
-  ...FILE_WRITE_FLAG_DENY,
+  ...UNSAFE_GIT_FLAG_DENY,
   /^bun test .*--watch\b/, // `bun test --watch` runs a persistent watcher process that would hang an agent turn — deny.
   /^git push\b/,
   /^git commit\b/,

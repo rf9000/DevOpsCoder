@@ -1,4 +1,4 @@
-import { FILE_WRITE_FLAG_DENY } from '../../utils/bash-allowlist.ts';
+import { UNSAFE_GIT_FLAG_DENY } from '../../utils/bash-allowlist.ts';
 
 /**
  * Bash policy for the write-capable coder agents (the coder stage and the
@@ -21,7 +21,7 @@ export const CODER_BASH_ALLOW: RegExp[] = [
 ];
 
 export const CODER_BASH_DENY: RegExp[] = [
-  ...FILE_WRITE_FLAG_DENY,
+  ...UNSAFE_GIT_FLAG_DENY,
   /^git push\b/,
   /^git checkout\b/,
   /^git switch\b/,

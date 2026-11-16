@@ -41,3 +41,33 @@ describe('git --output is denied by every Bash policy', () => {
     });
   }
 });
+
+/**
+ * `git grep -O<cmd>` / `--open-files-in-pager=<cmd>` runs an arbitrary
+ * program on the matched files. The analyzer admits `git grep`; every
+ * policy carries the deny so a later allowlist change cannot reopen it.
+ */
+describe('git grep --open-files-in-pager is denied by every Bash policy', () => {
+  for (const [name, allow, deny] of POLICIES) {
+    it(name, async () => {
+      const canUse = createBashAllowlist({ allow, deny });
+      const decide = async (command: string) =>
+        (await canUse('Bash', { command })).behavior;
+
+      for (const cmd of [
+        'git grep -Osh foo',
+        'git grep -O sh foo',
+        'git grep -nO./evil foo',
+        'git grep --open-files-in-pager=sh foo',
+        'git grep --open-files-in-pager sh foo',
+      ]) {
+        expect(await decide(cmd)).toBe('deny');
+      }
+    });
+  }
+
+  it('analyzer still allows a plain git grep', async () => {
+    const canUse = createBashAllowlist({ allow: ANALYZER_BASH_ALLOW, deny: ANALYZER_BASH_DENY });
+    expect((await canUse('Bash', { command: 'git grep -n -o "Codeunit 5000" -- "*.al"' })).behavior).toBe('allow');
+  });
+});

@@ -9,7 +9,7 @@ import {
 } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AppConfig } from '../../types/index.ts';
-import { createBashAllowlist, FILE_WRITE_FLAG_DENY } from '../../utils/bash-allowlist.ts';
+import { createBashAllowlist, UNSAFE_GIT_FLAG_DENY } from '../../utils/bash-allowlist.ts';
 import { STRUCTURED_OUTPUT_DENIED_TOOLS } from './_stage-helpers.ts';
 import { effortFor, modelFor } from '../../utils/model-selection.ts';
 import { createCostTracker } from '../../utils/cost-tracker.ts';
@@ -37,7 +37,7 @@ export const ANALYZER_BASH_ALLOW: RegExp[] = [
   /^pwd\b/,
 ];
 
-export const ANALYZER_BASH_DENY: RegExp[] = [...FILE_WRITE_FLAG_DENY];
+export const ANALYZER_BASH_DENY: RegExp[] = [...UNSAFE_GIT_FLAG_DENY];
 
 export interface AnalyzerStageDeps {
   config: AppConfig;
