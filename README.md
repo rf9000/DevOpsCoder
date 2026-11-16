@@ -305,6 +305,7 @@ See `.env.example` in this repo for the full annotated list. Key callouts:
 |----------|----------|---------|-------|
 | `MAX_COST_USD_PER_WI` | **yes** | **none** | Pipeline refuses to start without this; set it consciously |
 | `CONTINIA_AUTH_METHOD` | no | `api-token` if a token is set, else `azure-ad` | How the Continia CLI authenticates. Set as `CONTINIA_AUTH_METHOD` on every CLI call and in every agent session; `azure-ad` uses the session from `continia auth login` and sends no token |
+| `CONTROL_PORT` | no | unset | Port of the internal control API the monitor dashboard uses to start a DemoPortal sign-in (`GET /status`, `POST /signin`). No authentication: compose network only, never a `ports:` mapping. Unset: no server |
 | `CONTINIA_API_TOKEN` | **yes\*** | **none** | Forwarded into the spawned CLI and agent sessions in `api-token` mode only. Not needed with `CONTINIA_AUTH_METHOD=azure-ad` |
 | `CONTINIA_ENV_PROFILE_ID` | no | **none** | Pins the DemoPortal profile, overriding derivation. Leave unset. |
 | `CONTINIA_ENV_LOCALIZATION` | no | `base` | Localization of the derived profile (`base`, `dk`, `nl`, ...) |

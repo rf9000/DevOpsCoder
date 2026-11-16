@@ -7,6 +7,12 @@ import type { AbortFlag } from '../pipeline/stage.ts';
 import { runPool } from '../utils/pool.ts';
 import { formatToolUsage } from '../utils/tool-usage-tracker.ts';
 import { formatSpendLine } from '../utils/cost-report.ts';
+import type { DemoPortalSession } from './demoportal-auth.ts';
+
+/** Set to true to cut the watcher's sleep short (a sign-in finished). */
+export interface WakeFlag {
+  requested: boolean;
+}
 
 export interface WatcherDeps {
   config: AppConfig;
@@ -21,6 +27,10 @@ export interface WatcherDeps {
    * (dry runs, SKIP_BUILD_TEST).
    */
   sweepEnvironments?: () => Promise<number>;
+  /** DemoPortal's Azure AD session; absent with an API token. Work is held while it needs a sign-in. */
+  demoPortal?: DemoPortalSession;
+  /** Wakes the sleeping watcher, e.g. when a sign-in finishes. */
+  wake?: WakeFlag;
 }
 
 export function createAbortFlag(): AbortFlag {
@@ -43,10 +53,17 @@ export async function runPollCycle(deps: WatcherDeps): Promise<CycleStats> {
 
   if (candidates.length === 0) {
     logger.info('poll cycle: no candidates');
+    // Keeps the dashboard's sign-in card right while idle; never fails the cycle.
+    await deps.demoPortal?.peek().catch((err) => logger.warn(`DemoPortal sign-in check failed :: ${err instanceof Error ? err.message : String(err)}`));
     return stats;
   }
 
   logger.info(`poll cycle: ${candidates.length} candidate(s)`);
+
+  if (deps.demoPortal && !(await deps.demoPortal.ensure())) {
+    logger.info(`DemoPortal sign-in needed; ${candidates.length} work item(s) wait. Sign in from the dashboard or run continia auth login`);
+    return stats;
+  }
 
   await runPool(candidates, Math.max(1, config.concurrency), async (id) => {
     if (abortFlag.aborted) return;
@@ -127,14 +144,19 @@ export async function withdrawDroppedRejections(deps: WatcherDeps, tagged: Set<n
   }
 }
 
-async function sleepInterruptible(
+export async function sleepInterruptible(
   ms: number,
   abortFlag: AbortFlag,
+  wake?: WakeFlag,
 ): Promise<void> {
   const stepMs = 250;
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (abortFlag.aborted) return;
+    if (wake?.requested) {
+      wake.requested = false;
+      return;
+    }
     const remaining = deadline - Date.now();
     await new Promise((resolve) => setTimeout(resolve, Math.min(stepMs, remaining)));
   }
@@ -170,7 +192,7 @@ export async function startWatcher(deps: WatcherDeps): Promise<void> {
       }
     }
     if (abortFlag.aborted) break;
-    await sleepInterruptible(config.pollIntervalMinutes * 60_000, abortFlag);
+    await sleepInterruptible(config.pollIntervalMinutes * 60_000, abortFlag, deps.wake);
   }
   logger.info('watcher stopped');
 }
