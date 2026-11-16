@@ -278,12 +278,19 @@ async function releaseReservedIds(deps: FixPrDeps, renumber: RenumberOutput | un
     return;
   }
   try {
-    for (const r of reserved) {
+    for (const [i, r] of reserved.entries()) {
       try {
         await client.unassign(r.type, r.id, r.file);
         logger.info(`fix-pr: released reserved ${r.type} ${r.id} (${r.file})`);
       } catch (err) {
-        logger.warn(`fix-pr: could not release reserved ${r.type} ${r.id} (${r.file}) :: ${messageOf(err)}`);
+        const message = messageOf(err);
+        logger.warn(`fix-pr: could not release reserved ${r.type} ${r.id} (${r.file}) :: ${message}`);
+        // The server never started: every further call would wait out its own connect timeout.
+        if (message.includes('could not start')) {
+          const left = reserved.slice(i).map((x) => `${x.type} ${x.id} (${x.file})`);
+          logger.warn(`fix-pr: Ninja could not start; ${left.length} reserved ID(s) left unreleased, release by hand: ${left.join(', ')}`);
+          break;
+        }
       }
     }
   } finally {

@@ -430,6 +430,20 @@ describe('fixPr', () => {
     expect(r.unassign.mock.calls).toEqual([['codeunit', 50000, '/wt/prfix-42/app/P.al']]);
   });
 
+  it('release stops at the first could-not-start failure and lists what is left', async () => {
+    const r = setup([intake, worktree, rebase, renumber, push, comment], { dryRun: true });
+    r.unassign.mockImplementation(async () => {
+      throw new Error('ninja: could not start "npx -y x" (NINJA_MCP_COMMAND): spawn ENOENT');
+    });
+    const o = await r.outcome;
+    expect(o.status).toBe('rebased');
+    expect(r.unassign).toHaveBeenCalledTimes(1);
+    expect(r.close).toHaveBeenCalledTimes(1);
+    const left = r.warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('left unreleased'));
+    expect(left).toBeDefined();
+    for (const x of RESERVED) expect(left).toContain(`${x.type} ${x.id} (${x.file})`);
+  });
+
   it('unassign failure only warns', async () => {
     const r = setup([intake, worktree, rebase, renumber, push, comment], { dryRun: true, unassignFails: true });
     const o = await r.outcome;
