@@ -109,6 +109,8 @@ Local runs use the operator's subscription: the CLI deletes `ANTHROPIC_API_KEY` 
 
 **Dashboard stage chips.** monitor-the-situation reads `.state/<id>.json` through a read-only volume and draws DevOpsCoder WIs as stage chips (`coderStages`, its `src/state/coder.ts`), the same way it shows ADONewDirectCombuilder. There is no HTTP endpoint. The orchestrator sets `state.stageSince` and saves when a stage starts, and `appendHistory` clears it together with `stageDetail` when the stage ends. Stages report what they are doing through `ctx.reportProgress?.(detail)`: `revisionLoop` reports `round N/M · coding|fixing findings|build + tests|review`, `build-and-test` reports the fix attempt, and `final-review` reports review or fix. A progress save writes a **clone of the entry state** plus the detail, never the live state, so a crash mid-stage resumes exactly as before with no half-finished outputs on disk. It saves only when the detail changes, and a report that arrives after the stage ended is dropped. Nothing in the pipeline reads these fields. If you rename or add a stage, update the monitor's `STAGES` map; a stage it does not know shows no chips rather than wrong ones.
 
+**fix-pr (Plan 15).** `fix-pr <prId>` (`src/prfix/`) brings a PR up to date by **rebasing** its source branch onto the target, never merging. A PR that already contains its target ends `up-to-date` with nothing written. Each conflicting commit gets one `rebase-resolver` call. The resolver only edits files: its Bash is read-only, and staging and `rebase --continue` stay with the stage, which first checks for leftover conflict markers. `PRFIX_MAX_CONFLICT_COMMITS` and `PRFIX_MAX_CONFLICT_FILES` stop the rebase before a large conflict becomes a large bill. Verification is the normal `env-provision` + `build-and-test`, but with the fix loop off (`maxTestFixAttempts` 0, pinned in `buildPrFixPipeline` as well as in `loadPrFixConfig`). The command rebases code; it never rewrites it, so a red gate means no push. The push is `--force-with-lease` against the **pre-rebase** head, so a developer push during the run fails as `head-moved` and is never overwritten. State goes to `.state/prfix/<prId>.json`, fresh each run. The environment (`wi-<prId>-pr-<prId>`) is deleted at the end, dry runs included, unless `--keep-env`. The worktree is removed on success and kept on failure.
+
 ## Architecture
 
 - **Runtime:** Bun (TypeScript)
@@ -134,6 +136,7 @@ Local runs use the operator's subscription: the CLI deletes `ANTHROPIC_API_KEY` 
 - `bun run once` — single poll cycle, prints cycle stats as JSON
 - `bun run src/cli/index.ts run-wi <id>` — process one work item by ID
 - `bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]` — apply mutant-fixer's verified test fixes to a PR; the last stdout line is the JSON outcome (see README "apply-suggestions")
+- `bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]` — rebase a PR onto its target, verify, lease-push; the last stdout line is the JSON outcome, exit 0 only when `ok` (see README "fix-pr")
 - `bun run src/cli/index.ts reset-state <id>` — delete `.state/{id}.json`
 - `bun run src/cli/index.ts debug-tags` — list WI IDs tagged with `TRIGGER_TAG`
 - `bun run src/cli/index.ts debug-pr <id>` — print the draft-PR record stored in state for a WI
@@ -145,6 +148,7 @@ Local runs use the operator's subscription: the CLI deletes `ANTHROPIC_API_KEY` 
 - `src/config/` — Zod env validation (incl. `coderMaxTurns`, `testAuthorMaxTurns`, `maxCostUsdPerWi`, `stageTimeoutMs`)
 - `src/pipeline/` — Stage interface + orchestrator + factories
 - `src/pipeline/stages/` — analyzer, worktree-setup, env-provision, coder, reviewer, test-author, build-and-test, draft-pr-creator, worktree-teardown (+ `_plan.ts` shared plan step, `_pr-message.ts` PR-message step, `coder-policy.ts` shared Bash allow/deny)
+- `src/prfix/` — `fix-pr`: config, `PrFixGit` (worktree, rebase steps, lease push), conflict resolver, stages, PR comments, `fixPr` runner
 - `src/prompts/` — Claude system-prompt templates (analyzer.md, coder.md, coder-planner.md, test-author.md, test-planner.md, test-fixer.md, pr-message.md, reviewer-shared.md, reviewers/*.md, draft-pr-description.md)
 - `src/sdk/` — Azure DevOps REST client (PAT auth, retries, WIQL, tag/comment ops, createPullRequest)
 - `src/services/` — Claude SDK wrapper, watcher, processor, pipeline-builder, wi-context fetcher, skill-loader, skill-wiring, worktree-manager, continia-cli, cost-ledger, wi-log

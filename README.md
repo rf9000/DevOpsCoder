@@ -108,6 +108,7 @@ like any other:
 | `bun run src/cli/index.ts debug-pr <id>` | Print the draft-PR record stored in state for a work item |
 | `bun run src/cli/index.ts experiment --corpus <f> --variants <f>` | Replay corpus WIs under each model/effort variant and write a cost-vs-quality report — see [Model/effort experiments](#modeleffort-experiments) |
 | `bun run src/cli/index.ts apply-suggestions --input <file> [--dry-run]` | Apply mutant-fixer's verified test fixes to a PR — see [apply-suggestions](#apply-suggestions) |
+| `bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]` | Rebase a PR onto its target, verify it and lease-push it — see [fix-pr](#fix-pr) |
 
 ## apply-suggestions
 
@@ -127,12 +128,62 @@ Variables it needs: `AZURE_DEVOPS_PAT`, `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJEC
 
 State goes to `STATE_DIR/suggestions/<prId>.json` and every run starts fresh. The command never runs `git worktree prune`, because the clone is shared with other containers whose worktree paths do not exist here. It removes only its own worktree.
 
+## fix-pr
+
+```
+bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]
+```
+
+Rebases an active PR's source branch onto its target branch, verifies the result on DemoPortal, and pushes it back. Run it by hand. The watcher never runs it.
+
+What it does:
+- `pr-intake` reads the PR. It refuses one that is not active.
+- `pr-worktree` creates a locked worktree at the PR head commit. It stops with `head-moved` if the remote branch is not at that commit, and with `up-to-date` if the branch already contains its target.
+- `rebase-onto-target` runs `git rebase` onto the target (a rebase, never a merge). Each conflicting commit gets one `rebase-resolver` agent call. The agent edits the conflicted files only. The stage checks for leftover conflict markers, stages the files and continues the rebase. Any failure aborts the rebase.
+- `env-provision` + `build-and-test` deploy and test the rebased branch, as in the main pipeline, but with no fix attempts. A red gate ends in `verification-failed` and nothing is pushed. `SKIP_BUILD_TEST=true` skips both.
+- `push-rebased` pushes with `--force-with-lease` against the pre-rebase head. If someone pushed during the run, the push fails as `head-moved` and their commits are kept.
+- `pr-comment` posts a summary on the PR: the conflicts and how each was resolved, the test results and the commands developers need to update their local branch. A failed run posts a failure comment instead, except for `up-to-date` and `cancelled`.
+
+Flags:
+- `--dry-run`: rebases and verifies, but does not push or comment. It still deletes the environment it created.
+- `--keep-env`: leave the DemoPortal environment (`wi-<prId>-pr-<prId>`) running. By default it is deleted at the end of every run.
+
+Settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PRFIX_MAX_CONFLICT_COMMITS` | 3 | Stop with `conflict-cap` when more commits than this conflict |
+| `PRFIX_MAX_CONFLICT_FILES` | 10 | Stop with `conflict-cap` when one commit conflicts in more files than this |
+| `REBASE_RESOLVER_MAX_TURNS` | 40 | Turn limit of one resolver call |
+| `CLAUDE_MODEL_REBASE_RESOLVER` | `CLAUDE_MODEL` | Resolver model |
+| `CLAUDE_EFFORT_REBASE_RESOLVER` | `CLAUDE_EFFORT` | Resolver effort |
+
+It also needs `BOT_GIT_NAME` / `BOT_GIT_EMAIL` (the committer of the rebased commits) and the variables the main pipeline needs. `MAX_COST_USD_PER_WI` caps the run's spend.
+
+The last stdout line is the JSON outcome. The exit code is 0 when `ok` is true and 1 otherwise:
+
+```json
+{
+  "ok": true,
+  "status": "rebased",
+  "pullRequestId": 12345,
+  "oldHead": "<PR head before the run, or null>",
+  "newHead": "<rebased head, or null>",
+  "conflicts": [{ "commit": "<sha>", "subject": "...", "files": ["..."], "summary": "...", "resolutions": [{ "path": "...", "resolution": "..." }] }],
+  "costUsd": 0.42,
+  "error": null
+}
+```
+
+`status` is one of `rebased`, `up-to-date` (both `ok`), `head-moved`, `conflict-cap`, `unresolved-conflict`, `verification-failed`, `cost-cap`, `cancelled` or `error` (`error` then reads `<stage>: <message>`). State goes to `STATE_DIR/prfix/<prId>.json`, and every run starts fresh. The worktree is removed on success and kept on failure for inspection; the next run replaces it. SIGINT or SIGTERM stops the run and reports `cancelled`.
+
 ## Layout
 
 ```
 src/
   cli/             — CLI entry point
   config/          — Zod env schema + loader
+  prfix/           — fix-pr: config, git, conflict resolver, stages, comments, runner
   pipeline/
     stage.ts       — Stage interface, PipelinePauseError, PipelineRejectError
     orchestrator.ts — runPipeline with pause + reject + terminal-error branches
