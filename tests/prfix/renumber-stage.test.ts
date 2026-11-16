@@ -391,6 +391,170 @@ describe('createRenumberStage', () => {
     expect(failing.calls.close).toHaveBeenCalledTimes(1);
   });
 
+  describe('type-qualified, app-scoped references', () => {
+    const PAGE_MAIN = 'base-application/src/Pages/MainPage.Page.al';
+    const PAGE_PR = 'base-application/src/Ponto/PontoPage.Page.al';
+    const PERM = 'base-application/src/Permissions/Ponto.PermissionSet.al';
+
+    it('two plans in one run: codeunit N and page N renumbered independently, one commit', async () => {
+      baseFixture();
+      put(PAGE_MAIN, 'page 72918753 "Main Page"\n{\n}\n');
+      put(PAGE_PR, 'page 72918753 "Ponto Page"\n{\n}\n');
+      put(PERM, 'permissionset 72918626 "P"\n{\n    Permissions = codeunit 72918753 = X,\n        page 72918753 = X;\n}\n');
+      const { git, calls } = fakeGit({
+        changed: [
+          { status: 'A', file: PONTO },
+          { status: 'A', file: PAGE_PR },
+          { status: 'A', file: PERM },
+        ],
+        atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [PAGE_MAIN]: read(PAGE_MAIN) },
+      });
+      const n = fakeNinja([]);
+      n.calls.assign.mockImplementation(async (type: string) => (type === 'codeunit' ? 72918790 : 72918791));
+      const out = await stage(git, n.factory).execute(makeState(), makeCtx());
+
+      expect(read(PONTO)).toBe(PONTO_TEXT.replace('72918753', '72918790'));
+      expect(read(PAGE_PR)).toBe('page 72918791 "Ponto Page"\n{\n}\n');
+      expect(read(PAGE_MAIN)).toBe('page 72918753 "Main Page"\n{\n}\n');
+      expect(read(PERM)).toBe('permissionset 72918626 "P"\n{\n    Permissions = codeunit 72918790 = X,\n        page 72918791 = X;\n}\n');
+      expect(calls.commitFiles).toHaveBeenCalledTimes(1);
+      const [, files, message] = calls.commitFiles.mock.calls[0] as [string, string[], string];
+      expect([...files].sort()).toEqual([PAGE_PR, PERM, PONTO].sort());
+      const body = message.split('\n').slice(2).sort();
+      expect(body).toEqual(
+        [
+          `codeunit CTS-CB Ponto Feature 72918753 -> 72918790 (${PONTO})`,
+          `page Ponto Page 72918753 -> 72918791 (${PAGE_PR})`,
+        ].sort(),
+      );
+      expect((out.outputs.renumber as RenumberOutput).renumbered).toHaveLength(2);
+    });
+
+    it('a PR-added, non-colliding page with the same number is untouched', async () => {
+      baseFixture();
+      const pageText = 'page 72918753 "Ponto Page"\n{\n    // shows page 72918753\n}\n';
+      put(PAGE_PR, pageText);
+      put(PERM, 'permissionset 72918626 "P"\n{\n    Permissions = codeunit 72918753 = X, page 72918753 = X;\n}\n');
+      const { git, calls } = fakeGit({
+        changed: [
+          { status: 'A', file: PONTO },
+          { status: 'A', file: PAGE_PR },
+          { status: 'A', file: PERM },
+        ],
+      });
+      const n = fakeNinja([72918790]);
+      await stage(git, n.factory).execute(makeState(), makeCtx());
+
+      expect(read(PAGE_PR)).toBe(pageText);
+      expect(read(PERM)).toBe('permissionset 72918626 "P"\n{\n    Permissions = codeunit 72918790 = X, page 72918753 = X;\n}\n');
+      expect(n.calls.assign).toHaveBeenCalledTimes(1);
+      const [, files] = calls.commitFiles.mock.calls[0] as [string, string[], string];
+      expect([...files].sort()).toEqual([PERM, PONTO].sort());
+    });
+
+    it('same type and number colliding in two apps: each app edited only for its own plan', async () => {
+      baseFixture();
+      put(PERM, 'permissionset 72918626 "P"\n{\n    Permissions = codeunit 72918753 = X;\n}\n');
+      const T_MAIN = 'test-application/src/MainTest.Codeunit.al';
+      const T_PR = 'test-application/src/PontoTest.Codeunit.al';
+      const T_PERM = 'test-application/src/Test.PermissionSet.al';
+      put('test-application/app.json', APP_JSON);
+      put(T_MAIN, 'codeunit 72918753 "Main Test"\n{\n}\n');
+      put(T_PR, 'codeunit 72918753 "Ponto Test"\n{\n}\n');
+      put(T_PERM, 'permissionset 72918627 "T"\n{\n    Permissions = codeunit 72918753 = X;\n}\n');
+      const { git } = fakeGit({
+        changed: [
+          { status: 'A', file: PONTO },
+          { status: 'A', file: PERM },
+          { status: 'A', file: T_PR },
+          { status: 'A', file: T_PERM },
+        ],
+        atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [T_MAIN]: read(T_MAIN) },
+      });
+      const n = fakeNinja([]);
+      n.calls.assign.mockImplementation(async (_t: string, file: string) =>
+        file.includes('test-application') ? 72918791 : 72918790,
+      );
+      await stage(git, n.factory).execute(makeState(), makeCtx());
+
+      expect(read(PONTO)).toContain('codeunit 72918790');
+      expect(read(PERM)).toContain('codeunit 72918790 = X');
+      expect(read(T_PR)).toBe('codeunit 72918791 "Ponto Test"\n{\n}\n');
+      expect(read(T_PERM)).toContain('codeunit 72918791 = X');
+      expect(read(T_MAIN)).toBe('codeunit 72918753 "Main Test"\n{\n}\n');
+    });
+
+    it('rewrites a type-qualified self-reference in the PR-added target', async () => {
+      baseFixture();
+      const text = 'codeunit 72918753 "CTS-CB Ponto Feature"\n{\n    // RunObject = codeunit 72918753\n}\n';
+      put(PONTO, text);
+      const { git } = fakeGit();
+      await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+      expect(read(PONTO)).toBe(text.replaceAll('72918753', '72918790'));
+    });
+
+    it('a bare old ID in a PR-added file → IdCollisionError, no Ninja call', async () => {
+      baseFixture();
+      const RUNNER = 'base-application/src/Ponto/Runner.Codeunit.al';
+      put(RUNNER, 'codeunit 72918627 "Runner"\n{\n    trigger OnRun()\n    begin\n        Codeunit.Run(72918753);\n    end;\n}\n');
+      const { git } = fakeGit({
+        changed: [
+          { status: 'A', file: PONTO },
+          { status: 'A', file: RUNNER },
+        ],
+      });
+      const n = fakeNinja([72918790]);
+      const err = await stage(git, n.factory).execute(makeState(), makeCtx()).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(IdCollisionError);
+      expect((err as Error).message).toContain(`${RUNNER}:5`);
+      expect(n.factory).not.toHaveBeenCalled();
+      expect(read(PONTO)).toBe(PONTO_TEXT);
+    });
+
+    it('a PR-modified non-target file with page N (another type) is allowed', async () => {
+      baseFixture();
+      const MOD = 'base-application/src/Permissions/Banking.PermissionSet.al';
+      const modText = 'permissionset 72918625 "B"\n{\n    Permissions = page 72918753 = X;\n}\n// edited\n';
+      put(MOD, modText);
+      const { git } = fakeGit({
+        changed: [
+          { status: 'A', file: PONTO },
+          { status: 'M', file: MOD },
+        ],
+        atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [MOD]: 'permissionset 72918625 "B"\n{\n}\n' },
+      });
+      await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+      expect(read(MOD)).toBe(modText);
+      expect(read(PONTO)).toContain('codeunit 72918790');
+    });
+
+    it('a moved file (D old path + A new path, same declaration) is not PR-introduced', async () => {
+      baseFixture();
+      const OLD_PATH = 'base-application/src/Old/PontoFeature.Codeunit.al';
+      const { git } = fakeGit({
+        changed: [
+          { status: 'D', file: OLD_PATH },
+          { status: 'A', file: PONTO },
+        ],
+        atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [OLD_PATH]: PONTO_TEXT },
+      });
+      const n = fakeNinja([72918790]);
+      await expect(stage(git, n.factory).execute(makeState(), makeCtx())).rejects.toBeInstanceOf(IdCollisionError);
+      expect(n.factory).not.toHaveBeenCalled();
+      expect(read(PONTO)).toBe(PONTO_TEXT);
+    });
+
+    it('factory throws → close not called, error propagates', async () => {
+      baseFixture();
+      const n = fakeNinja([]);
+      n.factory.mockImplementation(() => {
+        throw new Error('ninja spawn failed');
+      });
+      await expect(stage(fakeGit().git, n.factory).execute(makeState(), makeCtx())).rejects.toThrow('ninja spawn failed');
+      expect(n.calls.close).not.toHaveBeenCalled();
+    });
+  });
+
   it('refuses a declaration line it cannot rewrite exactly once', async () => {
     baseFixture();
     // The declaration ID differs from what the scan saw: the rewrite must not guess.

@@ -390,20 +390,19 @@ const DECLARATION_LINE_RE = new RegExp(
 );
 
 /**
- * Replace the ID on the object's declaration line and nothing else. The first
+ * Absolute offset of the ID on the object's declaration line. The first
  * declaration in the file must still be `<type> <oldId>`, and the first
  * whole-word `oldId` on that line must be the declaration's own ID. Anything
  * else throws rather than guessing.
  */
-function rewriteDeclaration(text: string, decl: AlDeclaration, newId: number): string {
+function declarationIdOffset(text: string, decl: AlDeclaration): number {
   const m = DECLARATION_LINE_RE.exec(text);
   if (!m || (m[1] as string).toLowerCase() !== decl.type || Number(m[2]) !== decl.id) {
     throw new Error(`${RENUMBER_STAGE}: declaration of ${decl.type} ${decl.id} not found in ${decl.file}; nothing rewritten`);
   }
   const lineStart = m.index;
   const nl = text.indexOf('\n', lineStart);
-  const lineEnd = nl === -1 ? text.length : nl;
-  const line = text.slice(lineStart, lineEnd);
+  const line = text.slice(lineStart, nl === -1 ? text.length : nl);
   const idOffset = m[0].length - (m[2] as string).length;
   const hit = wholeWord(decl.id).exec(line);
   if (!hit || hit.index !== idOffset) {
@@ -411,7 +410,46 @@ function rewriteDeclaration(text: string, decl: AlDeclaration, newId: number): s
       `${RENUMBER_STAGE}: declaration line of ${decl.file} does not hold ${decl.id} exactly once where expected; nothing rewritten`,
     );
   }
-  return text.slice(0, lineStart + hit.index) + String(newId) + text.slice(lineStart + hit.index + hit[0].length);
+  return lineStart + idOffset;
+}
+
+/** Words that, right before a number, say which kind of object the number is. */
+const OBJECT_KEYWORDS = new Set<string>([...AL_OBJECT_TYPES, 'tabledata']);
+const KEYWORD_BEFORE_RE = /(?:^|[^\w])([A-Za-z]+)\s+$/;
+
+/**
+ * Every whole-word `id` in `text`, by the word before it:
+ * - `replace`: qualified by `type` (or `tabledata` for a table), so it names this object;
+ * - `bare`: no object-type keyword before it (`Codeunit.Run(5)`, `RunObject = 5`), so it is ambiguous.
+ * One qualified by another object type is a different object and is not listed.
+ */
+function classifyOccurrences(text: string, type: string, id: number): { replace: number[]; bare: number[] } {
+  const out = { replace: [] as number[], bare: [] as number[] };
+  for (const m of text.matchAll(wholeWord(id, 'g'))) {
+    const keyword = KEYWORD_BEFORE_RE.exec(text.slice(0, m.index))?.[1]?.toLowerCase();
+    if (keyword === type || (type === 'table' && keyword === 'tabledata')) out.replace.push(m.index);
+    else if (keyword === undefined || !OBJECT_KEYWORDS.has(keyword)) out.bare.push(m.index);
+  }
+  return out;
+}
+
+/** Replace `oldId` with `newId` at each offset (offsets into `text`). */
+function replaceAt(text: string, offsets: Iterable<number>, oldId: number, newId: number): string {
+  const len = String(oldId).length;
+  let out = text;
+  for (const off of [...new Set(offsets)].sort((x, y) => y - x)) {
+    out = out.slice(0, off) + String(newId) + out.slice(off + len);
+  }
+  return out;
+}
+
+function lineOf(text: string, offset: number): number {
+  return text.slice(0, offset).split('\n').length;
+}
+
+/** Byte-level view for read-only checks: the IDs and keywords are ASCII, and nothing read this way is written back. */
+function readLatin1(abs: string): string {
+  return readFileSync(abs).toString('latin1');
 }
 
 const appKey = (app: string, type: string, id: number) => `${app}\0${type}\0${id}`;
@@ -422,10 +460,17 @@ const appKey = (app: string, type: string, id: number) => `${app}\0${type}\0${id
  * New IDs come from Object ID Ninja, and all edits land as one bot commit. No
  * LLM is involved.
  *
- * Refuses with IdCollisionError when a collision group does not have exactly
- * one PR-introduced member, or when a file the PR modified (not added)
- * mentions the old ID as a whole word: that reference could mean either
- * object. Both checks run before Ninja starts, so a refusal reserves nothing.
+ * References are rewritten only in the target's app, and only where the old
+ * ID is qualified by the target's type keyword (`codeunit 5`; `tabledata 5`
+ * for a table): in the target file itself and in files the PR added. An ID
+ * qualified by another object type is a different object and is left alone.
+ *
+ * Refuses with IdCollisionError, before Ninja starts (so a refusal reserves
+ * nothing), when a collision group does not have exactly one PR-introduced
+ * member; when a file to be rewritten holds the old ID with no type keyword
+ * (`Codeunit.Run(5)`), which is ambiguous; or when a file of the app that the
+ * PR modified but did not add mentions it bare or qualified by the target's
+ * type, since that may mean the existing object.
  *
  * Every ID Ninja assigns goes into `state.outputs.renumber.reserved` the
  * moment `assign` returns, so the caller can release it when the run ends
@@ -467,32 +512,64 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
       }
 
       // 4. PR-introduced: in a file the PR added or modified, and not declared
-      //    with the same (type, id) by that path at the target.
+      //    with the same (type, id) by that path at the target. `changedFiles` is
+      //    --no-renames, so a moved file is D + A: an added file declaring what a
+      //    deleted file of the same app declared at the target was moved, not introduced.
       const changed = await git.changedFiles(path, targetSha);
-      const touchedByPr = new Set(changed.filter((c) => c.status !== 'D').map((c) => c.file));
+      const statusOf = new Map(changed.map((c) => [c.file, c.status]));
+      const movedKeys = new Set<string>();
+      for (const c of changed) {
+        if (c.status !== 'D' || !c.file.toLowerCase().endsWith('.al') || isExcludedPath(c.file)) continue;
+        const app = appOf(c.file, appDirs);
+        if (app === undefined) continue;
+        const before = await git.showFileAtRef(path, targetSha, c.file);
+        const old = before === null ? null : parseDeclaration(before);
+        if (old) movedKeys.add(appKey(app, old.type, old.id));
+      }
       const introduced = new Set<AlDeclaration>();
       for (const d of groups.flatMap((g) => g.members)) {
-        if (!touchedByPr.has(d.file)) continue;
+        const status = statusOf.get(d.file);
+        if (status !== 'A' && status !== 'M') continue;
+        if (status === 'A' && movedKeys.has(appKey(d.app, d.type, d.id))) continue;
         const before = await git.showFileAtRef(path, targetSha, d.file);
         const old = before === null ? null : parseDeclaration(before);
         if (!old || old.type !== d.type || old.id !== d.id) introduced.add(d);
       }
 
-      // 5a. Plan, then refuse ambiguous references before any ID is reserved.
+      // 5a. Plan, then refuse every ambiguous reference before any ID is reserved.
+      //     References are scoped to the target's app and qualified by its type.
       const plans = planRenumbers(groups, (d) => introduced.has(d));
-      const modified = changed.filter((c) => c.status === 'M').map((c) => c.file);
+      const modified = changed.filter((c) => c.status === 'M' && !isExcludedPath(c.file)).map((c) => c.file);
       const added = changed.filter((c) => c.status === 'A' && !isExcludedPath(c.file)).map((c) => c.file);
+      /** Files whose references a plan rewrites: the target itself, and the PR's added files in its app. */
+      const rewriteSet = (target: AlDeclaration) => [
+        ...new Set([target.file, ...added.filter((f) => appOf(f, appDirs) === target.app)]),
+      ];
       for (const { target, keep } of plans) {
-        for (const file of modified) {
-          if (file === target.file) continue;
-          // Byte-level (latin1) read: the IDs are ASCII, and nothing here is written back.
-          if (!wholeWord(target.id).test(readFileSync(join(path, file)).toString('latin1'))) continue;
-          const group: CollisionGroup = { app: target.app, type: target.type, id: target.id, members: [target, ...keep] };
+        const group: CollisionGroup = { app: target.app, type: target.type, id: target.id, members: [target, ...keep] };
+        const refuse = (file: string, text: string, offset: number, why: string): never => {
           throw new IdCollisionError(
             [group],
-            `${target.type} ${target.id} (${target.file}) collides in ${target.app}, and ${file}, which the PR modified ` +
-              `but did not add, mentions ${target.id}: it is ambiguous which object it means, so nothing was renumbered`,
+            `${target.type} ${target.id} (${target.file}) collides in ${target.app}, and ${file}:${lineOf(text, offset)} ${why}; ` +
+              `nothing was renumbered`,
           );
+        };
+        for (const file of rewriteSet(target)) {
+          const text = file === target.file ? readText(join(path, file)) : readLatin1(join(path, file));
+          if (file === target.file) declarationIdOffset(text, target);
+          const bare = classifyOccurrences(text, target.type, target.id).bare[0];
+          if (bare !== undefined) {
+            refuse(file, text, bare, `mentions ${target.id} without an object type, so it is ambiguous which object it means`);
+          }
+        }
+        for (const file of modified) {
+          if (file === target.file || appOf(file, appDirs) !== target.app) continue;
+          const text = readLatin1(join(path, file));
+          const occ = classifyOccurrences(text, target.type, target.id);
+          const hit = [...occ.replace, ...occ.bare].sort((x, y) => x - y)[0];
+          if (hit !== undefined) {
+            refuse(file, text, hit, `(modified by the PR, not added) mentions ${target.id}, which may mean the existing object`);
+          }
         }
       }
 
@@ -540,15 +617,20 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
           if (newId === undefined) throw new Error(`ninja: no usable ${target.type} ID for ${target.file}`);
           taken.add(appKey(target.app, target.type, newId));
 
-          // 6. The declaration line, then every whole-word mention in the PR's other added files.
-          writeText(abs, rewriteDeclaration(readText(abs), target, newId));
-          touched.add(target.file);
-          for (const file of added) {
-            if (file === target.file) continue;
+          // 6. Every reference qualified by the target's type, in the target file
+          //    (its declaration included) and in the PR's added files of its app.
+          for (const file of rewriteSet(target)) {
             const fileAbs = join(path, file);
             // Cheap byte-level pre-check, so binaries and unrelated files are never decoded.
-            if (!wholeWord(target.id).test(readFileSync(fileAbs).toString('latin1'))) continue;
-            writeText(fileAbs, readText(fileAbs).replace(wholeWord(target.id, 'g'), String(newId)));
+            if (file !== target.file && !wholeWord(target.id).test(readLatin1(fileAbs))) continue;
+            const text = readText(fileAbs);
+            const occ = classifyOccurrences(text, target.type, target.id);
+            if (occ.bare.length > 0) {
+              throw new Error(`${RENUMBER_STAGE}: ${file} holds a bare ${target.id} it did not hold before; nothing more rewritten`);
+            }
+            const offsets = file === target.file ? [declarationIdOffset(text, target), ...occ.replace] : occ.replace;
+            if (offsets.length === 0) continue;
+            writeText(fileAbs, replaceAt(text, offsets, target.id, newId));
             touched.add(file);
           }
           output.renumbered.push({
