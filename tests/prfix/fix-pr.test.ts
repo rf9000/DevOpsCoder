@@ -126,6 +126,7 @@ describe('fixPr', () => {
       oldHead: 'head000',
       newHead: 'new0000',
       conflicts: [CONFLICT],
+      renumbered: [],
       costUsd: 0,
       error: null,
     });

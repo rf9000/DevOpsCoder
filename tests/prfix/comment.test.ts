@@ -134,6 +134,7 @@ describe('renderFailureComment', () => {
     oldHead: 'aaaaaaa1111111',
     newHead: null,
     conflicts: [],
+    renumbered: [],
     costUsd: 1,
     error: 'unresolved conflict in commit abc: app/A.al',
   };

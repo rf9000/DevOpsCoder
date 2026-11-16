@@ -25,6 +25,7 @@ import {
   type PrFixOutcome,
   type PrFixStatus,
   type RebaseOutput,
+  type RenumberOutput,
 } from './types.ts';
 
 export interface FixPrDeps {
@@ -91,6 +92,7 @@ export async function fixPr(deps: FixPrDeps): Promise<PrFixOutcome> {
       oldHead: input.pr?.headCommit ?? null,
       newHead: rebase?.newHeadSha ?? null,
       conflicts: rebase?.conflicts ?? [],
+      renumbered: (state.outputs.renumber as RenumberOutput | undefined)?.renumbered ?? [],
       costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
       error,
     };

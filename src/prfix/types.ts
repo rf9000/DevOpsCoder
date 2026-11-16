@@ -25,6 +25,29 @@ export interface RebaseOutput {
   conflicts: ConflictResolution[];
 }
 
+/** One AL object the `renumber-collisions` stage moved to a new ID. */
+export interface RenumberedObject {
+  type: string;
+  name: string;
+  /** Repo-relative, forward slashes. */
+  file: string;
+  /** Repo-relative app directory. */
+  app: string;
+  oldId: number;
+  newId: number;
+}
+
+/**
+ * Written to `state.outputs.renumber`. `reserved` lists every ID Ninja
+ * assigned this run (used or rejected), pushed the moment `assign` returns, so
+ * a run that ends without a push can release them even when the stage threw.
+ */
+export interface RenumberOutput {
+  commit: string | null;
+  renumbered: RenumberedObject[];
+  reserved: { type: string; id: number; /** Absolute path of the .al file. */ file: string }[];
+}
+
 export type PrFixStatus =
   | 'rebased'
   | 'up-to-date'
@@ -32,6 +55,7 @@ export type PrFixStatus =
   | 'conflict-cap'
   | 'unresolved-conflict'
   | 'merge-commits'
+  | 'id-collision'
   | 'verification-failed'
   | 'cost-cap'
   | 'cancelled'
@@ -44,6 +68,8 @@ export interface PrFixOutcome {
   oldHead: string | null;
   newHead: string | null;
   conflicts: ConflictResolution[];
+  /** AL objects the run renumbered to clear an ID collision with the target. */
+  renumbered: RenumberedObject[];
   costUsd: number;
   error: string | null;
 }
