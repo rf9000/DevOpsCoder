@@ -78,7 +78,7 @@ export async function resolveConflict(a: {
   prTitle: string;
   state: PipelineState;
   signal: AbortSignal;
-}): Promise<void> {
+}): Promise<ResolverOutput> {
   const prompt = buildResolverPrompt({
     commit: a.step.commit,
     subject: a.step.subject,
@@ -93,9 +93,9 @@ export async function resolveConflict(a: {
   const cost = createCostTracker(a.state);
   const tools = createToolUsageTracker(a.state);
 
-  await runWithParseRetry(
+  return runWithParseRetry(
     async (attempt) => {
-      const { costUsd, toolUsage, usage } = await a.runner.run<ResolverOutput>({
+      const { value, costUsd, toolUsage, usage } = await a.runner.run<ResolverOutput>({
         prompt,
         label: `rebase-resolver (attempt ${attempt + 1})`,
         schema: resolverOutputSchema,
@@ -112,6 +112,7 @@ export async function resolveConflict(a: {
       });
       cost.add('rebase-resolver', costUsd, usage);
       tools.add('rebase-resolver', toolUsage);
+      return value;
     },
     (err) => {
       // A reply that failed to parse has still bought its tokens.

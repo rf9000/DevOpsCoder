@@ -113,7 +113,8 @@ describe('resolveConflict', () => {
     const captured: AgentRunArgs<unknown>[] = [];
     const state = makeState();
     const config = makeTestConfig({}, { claudeModel: 'fallback', stepModel: { 'rebase-resolver': 'resolver-model' } });
-    await callResolve(okRunner(captured), state, config);
+    const out = await callResolve(okRunner(captured), state, config);
+    expect(out).toEqual({ files: [{ path: 'app/A.al', resolution: 'kept both' }], summary: 'resolved' });
 
     expect(captured).toHaveLength(1);
     const args = captured[0]!;

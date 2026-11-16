@@ -10,6 +10,10 @@ export interface ConflictResolution {
   commit: string;
   subject: string;
   files: string[];
+  /** The resolver's own summary of how the commit was resolved. */
+  summary: string;
+  /** Per-file resolution text; a file the resolver omitted has no entry. */
+  resolutions: { path: string; resolution: string }[];
 }
 
 export interface RebaseOutput {

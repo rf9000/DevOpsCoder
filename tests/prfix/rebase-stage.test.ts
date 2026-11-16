@@ -61,7 +61,7 @@ function fakeRunner(costUsd = 0.1) {
   const runner = {
     run: mock(async (args: AgentRunArgs<unknown>) => {
       calls.push(args);
-      return { value: { files: [], summary: 'ok' }, costUsd, toolUsage: {}, usage: TEST_USAGE };
+      return { value: { files: [{ path: 'a.al', resolution: 'kept both sides' }], summary: 'ok' }, costUsd, toolUsage: {}, usage: TEST_USAGE };
     }),
   } as unknown as AgentRunner;
   return { runner, calls };
@@ -162,7 +162,15 @@ describe('createRebaseStage', () => {
     expect(calls.continueRebase).toHaveBeenCalledTimes(1);
     expect(calls.continueRebase).toHaveBeenCalledWith('/w/prfix-42', ['a.al', 'b.al']);
     const rebase = out.outputs.rebase as RebaseOutput;
-    expect(rebase.conflicts).toEqual([{ commit: c.commit, subject: c.subject, files: ['a.al', 'b.al'] }]);
+    expect(rebase.conflicts).toEqual([
+      {
+        commit: c.commit,
+        subject: c.subject,
+        files: ['a.al', 'b.al'],
+        summary: 'ok',
+        resolutions: [{ path: 'a.al', resolution: 'kept both sides' }],
+      },
+    ]);
     expect(rebase.newHeadSha).toBe(NEW_HEAD);
     expect(reportProgress).toHaveBeenCalledWith('conflict 1 · commit1');
   });

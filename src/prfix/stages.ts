@@ -1,12 +1,16 @@
 import type { AgentRunner } from '../pipeline/agent-stage.ts';
 import type { Stage } from '../pipeline/stage.ts';
-import type { WorktreeContext } from '../types/index.ts';
+import type { AdoClient } from '../sdk/azure-devops-client.ts';
+import type { WorkItemContext } from '../services/wi-context.ts';
+import type { EnvironmentOutput, VerificationOutput, WorktreeContext } from '../types/index.ts';
 import { assertWithinCostCap } from '../utils/cost-tracker.ts';
 import type { PrFixConfig } from './config.ts';
+import { renderSuccessComment } from './comment.ts';
 import type { PrFixGit, RebaseStep } from './prfix-git.ts';
 import { resolveConflict } from './resolver.ts';
 import {
   ConflictCapError,
+  PrUpToDateError,
   UnresolvedConflictError,
   type ConflictResolution,
   type PrFixInput,
@@ -86,7 +90,7 @@ export function createRebaseStage(deps: {
           ctx.logger.info(
             `${REBASE_STAGE}: resolving ${current.files.length} file(s) in ${current.commit.slice(0, 7)} "${current.subject}"`,
           );
-          await resolveConflict({
+          const resolved = await resolveConflict({
             runner: deps.runner,
             config: prfix.app,
             promptTemplate: deps.promptTemplate,
@@ -102,7 +106,13 @@ export function createRebaseStage(deps: {
           const remaining = await git.filesWithMarkers(path, current.files);
           if (remaining.length > 0) throw new UnresolvedConflictError(current.commit, remaining);
 
-          conflicts.push({ commit: current.commit, subject: current.subject, files: current.files });
+          conflicts.push({
+            commit: current.commit,
+            subject: current.subject,
+            files: current.files,
+            summary: resolved.summary,
+            resolutions: resolved.files,
+          });
           step = await git.continueRebase(path, current.files);
         }
         newHeadSha = step.head;
@@ -126,6 +136,110 @@ export function createRebaseStage(deps: {
       };
       state.outputs.rebase = rebase;
       state.outputs.worktree = { ...worktree, baseSha: targetSha };
+      return state;
+    },
+  };
+}
+
+function inputOf(state: { outputs: Record<string, unknown> }): PrFixInput {
+  const input = state.outputs.prFixInput as PrFixInput | undefined;
+  if (!input) throw new Error('fix-pr stages require state.outputs.prFixInput');
+  return input;
+}
+
+/** Reads the PR, refuses one that is not an active, branch-to-branch PR. */
+export function createPrIntakeStage(deps: { ado: AdoClient }): Stage {
+  return {
+    name: 'pr-intake',
+    costFree: true,
+    canRun: () => true,
+    async execute(state, ctx) {
+      const input = inputOf(state);
+      const pr = await deps.ado.getPullRequest(input.repository, input.pullRequestId, { signal: ctx.signal });
+      if (pr.status !== 'active') throw new Error(`PR ${input.pullRequestId} is ${pr.status}, not active`);
+      if (!pr.sourceRefName || !pr.targetRefName) {
+        throw new Error(`PR ${input.pullRequestId} has no source/target branch`);
+      }
+      state.outputs.prFixInput = { ...input, pr } satisfies PrFixInput;
+      // build-and-test requires a wiContext; it reads only id and title.
+      state.outputs.wiContext = {
+        id: input.pullRequestId,
+        title: pr.title,
+        workItemType: 'Pull Request',
+        state: pr.status,
+        description: '',
+        reproSteps: '',
+        acceptanceCriteria: '',
+        images: [],
+        comments: [],
+      } satisfies WorkItemContext;
+      return state;
+    },
+  };
+}
+
+export function createPrWorktreeStage(deps: { git: PrFixGit }): Stage {
+  return {
+    name: 'pr-worktree',
+    costFree: true,
+    canRun: () => true,
+    async execute(state) {
+      const { pullRequestId, pr } = inputOf(state);
+      const wt = await deps.git.createWorktree({
+        pullRequestId,
+        sourceRefName: pr.sourceRefName,
+        targetRefName: pr.targetRefName,
+        headCommit: pr.headCommit,
+      });
+      state.outputs.worktree = wt;
+      if (await deps.git.isUpToDate(wt.path, wt.targetSha)) {
+        throw new PrUpToDateError(`PR ${pullRequestId} already contains ${pr.targetRefName.replace(/^refs\/heads\//, '')}`);
+      }
+      return state;
+    },
+  };
+}
+
+/** Pushes the rebased head, leased on the head we rebased (a moved remote fails the push). */
+export function createPushRebasedStage(deps: { git: PrFixGit }): Stage {
+  return {
+    name: 'push-rebased',
+    costFree: true,
+    canRun: () => true,
+    async execute(state, ctx) {
+      const { pr } = inputOf(state);
+      const wt = state.outputs.worktree as WorktreeContext | undefined;
+      const rebase = state.outputs.rebase as RebaseOutput | undefined;
+      if (!wt || !rebase) throw new Error('push-rebased requires state.outputs.worktree and .rebase');
+      state.outputs.pushedCommit = await deps.git.headSha(wt.path);
+      if (ctx.config.dryRun) return state;
+      await deps.git.push({ path: wt.path, sourceRefName: pr.sourceRefName, expectedRemoteSha: rebase.preRebaseSha });
+      return state;
+    },
+  };
+}
+
+export function createPrCommentStage(deps: { ado: AdoClient }): Stage {
+  return {
+    name: 'pr-comment',
+    costFree: true,
+    canRun: () => true,
+    async execute(state, ctx) {
+      if (ctx.config.dryRun) return state;
+      const input = inputOf(state);
+      const rebase = state.outputs.rebase as RebaseOutput | undefined;
+      if (!rebase) throw new Error('pr-comment requires state.outputs.rebase');
+      const content = renderSuccessComment({
+        pr: input.pr,
+        rebase,
+        verification: state.outputs.verification as VerificationOutput | undefined,
+        environment: state.outputs.environment as EnvironmentOutput | undefined,
+        skippedVerification: ctx.config.skipBuildTest,
+      });
+      await deps.ado.createPullRequestThread(
+        { repositoryName: input.repository, pullRequestId: input.pullRequestId, content },
+        { signal: ctx.signal },
+      );
       return state;
     },
   };
