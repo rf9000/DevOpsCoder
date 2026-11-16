@@ -155,24 +155,53 @@ describe('createNinjaClient', () => {
 });
 
 describe('ninjaStdioParams', () => {
-  it('passes the whole environment (string values only) and pipes stderr', () => {
+  it('passes only allowlisted variables and pipes stderr', () => {
     const p = ninjaStdioParams('cmd', ['/c', 'npx'], {
+      PATH: '/usr/bin',
       HTTPS_PROXY: 'http://proxy:3128',
-      NINJA_SENTINEL: 'yes',
-      UNSET: undefined,
+      no_proxy: 'localhost',
+      NODE_EXTRA_CA_CERTS: '/certs/ca.pem',
+      npm_config_registry: 'https://registry.example',
+      NPM_CONFIG_CACHE: '/tmp/npm',
+      AZURE_DEVOPS_PAT: 'secret-pat',
+      ANTHROPIC_API_KEY: 'secret-key',
+      CONTINIA_API_TOKEN: 'secret-token',
+      SSL_CERT_FILE: undefined,
     });
     expect(p.command).toBe('cmd');
     expect(p.args).toEqual(['/c', 'npx']);
-    expect(p.env).toEqual({ HTTPS_PROXY: 'http://proxy:3128', NINJA_SENTINEL: 'yes' });
+    expect(p.env).toEqual({
+      PATH: '/usr/bin',
+      HTTPS_PROXY: 'http://proxy:3128',
+      no_proxy: 'localhost',
+      NODE_EXTRA_CA_CERTS: '/certs/ca.pem',
+      npm_config_registry: 'https://registry.example',
+      NPM_CONFIG_CACHE: '/tmp/npm',
+    });
     expect(p.stderr).toBe('pipe');
   });
 
-  it('defaults to process.env', () => {
-    process.env.NINJA_TEST_SENTINEL = 'present';
+  it('defaults to process.env: the proxy passes, secrets do not', () => {
+    const saved = {
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      AZURE_DEVOPS_PAT: process.env.AZURE_DEVOPS_PAT,
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    };
+    process.env.HTTPS_PROXY = 'http://sentinel-proxy:3128';
+    process.env.AZURE_DEVOPS_PAT = 'sentinel-pat';
+    process.env.ANTHROPIC_API_KEY = 'sentinel-key';
     try {
-      expect(ninjaStdioParams('npx', []).env?.NINJA_TEST_SENTINEL).toBe('present');
+      const env = ninjaStdioParams('npx', []).env ?? {};
+      expect(env.HTTPS_PROXY).toBe('http://sentinel-proxy:3128');
+      expect(env.AZURE_DEVOPS_PAT).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(Object.values(env)).not.toContain('sentinel-pat');
+      expect(Object.values(env)).not.toContain('sentinel-key');
     } finally {
-      delete process.env.NINJA_TEST_SENTINEL;
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
     }
   });
 });

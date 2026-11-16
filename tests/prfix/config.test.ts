@@ -75,7 +75,7 @@ describe('loadPrFixConfig', () => {
     const c = loadPrFixConfig(env);
     expect(c.renumberCollisions).toBe(true);
     expect(c.ninjaCallTimeoutMs).toBe(60_000);
-    expect(c.ninjaCommand).toEqual(splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp', process.platform));
+    expect(c.ninjaCommand).toEqual(splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2', process.platform));
   });
 
   it('reads PRFIX_RENUMBER_COLLISIONS=false, NINJA_MCP_COMMAND and NINJA_CALL_TIMEOUT_MS', () => {
@@ -97,7 +97,7 @@ describe('loadPrFixConfig', () => {
 
   it('falls back to the default for a blank NINJA_MCP_COMMAND', () => {
     expect(loadPrFixConfig({ ...env, NINJA_MCP_COMMAND: '  ' }).ninjaCommand).toEqual(
-      splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp', process.platform),
+      splitNinjaCommand('npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2', process.platform),
     );
   });
 });

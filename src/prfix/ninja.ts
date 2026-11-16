@@ -1,5 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport, type StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js';
+import {
+  DEFAULT_INHERITED_ENV_VARS,
+  StdioClientTransport,
+  type StdioServerParameters,
+} from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 /** How many times a caller may ask Ninja for an ID before giving up on one object. */
@@ -99,10 +103,29 @@ export function parseAssignedId(result: ToolResult, targetFilePath?: string): nu
 }
 
 /**
- * Spawn parameters for the stdio server. Without `env` the SDK passes only its
- * short safe-list (`getDefaultEnvironment()`), which drops HTTPS_PROXY,
- * NODE_EXTRA_CA_CERTS, npm_config_* and the like — and `npx -y` needs those to
- * download the server behind a proxy. So the whole environment is passed.
+ * Variables the Ninja child may see on top of the SDK's own safe-list
+ * (`DEFAULT_INHERITED_ENV_VARS`, i.e. `getDefaultEnvironment()`): what `npx -y`
+ * needs to download the package behind a proxy or a TLS-inspecting gateway.
+ * Plus every key matching `NINJA_ENV_ALLOWED_PREFIXES`.
+ */
+export const NINJA_ENV_ALLOWLIST: readonly string[] = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+];
+export const NINJA_ENV_ALLOWED_PREFIXES: readonly string[] = ['npm_config_', 'NPM_CONFIG_'];
+
+/**
+ * Spawn parameters for the stdio server. The child is a third-party package
+ * fetched by `npx -y`, so it gets an allowlisted environment — never the whole
+ * process env, which holds AZURE_DEVOPS_PAT, ANTHROPIC_*, CONTINIA_API_TOKEN
+ * and the rest. (The SDK's own default would drop the proxy/CA/npm settings.)
  */
 export function ninjaStdioParams(
   command: string,
@@ -110,7 +133,15 @@ export function ninjaStdioParams(
   env: Record<string, string | undefined> = process.env,
 ): StdioServerParameters {
   const passed: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) if (typeof v === 'string') passed[k] = v;
+  // Named lookups, not an iteration, so Windows' case-insensitive process.env still finds `Path` as PATH.
+  for (const key of [...DEFAULT_INHERITED_ENV_VARS, ...NINJA_ENV_ALLOWLIST]) {
+    const v = env[key];
+    // The SDK skips values starting with '()' (exported shell functions); so do we.
+    if (typeof v === 'string' && !v.startsWith('()')) passed[key] = v;
+  }
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v === 'string' && NINJA_ENV_ALLOWED_PREFIXES.some((p) => k.startsWith(p))) passed[k] = v;
+  }
   return { command, args, env: passed, stderr: 'pipe' };
 }
 

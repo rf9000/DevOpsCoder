@@ -15,7 +15,7 @@ export interface PrFixConfig {
   ninjaCallTimeoutMs: number;
 }
 
-const DEFAULT_NINJA_MCP_COMMAND = 'npx -y @vjeko.com/al-object-id-ninja-mcp';
+const DEFAULT_NINJA_MCP_COMMAND = 'npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2';
 
 // Same semantics as the app config's boolFlag: blank means the default.
 const boolFlag = (defaultValue: boolean) =>
