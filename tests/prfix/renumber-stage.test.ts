@@ -215,7 +215,7 @@ describe('createRenumberStage', () => {
     expect(r.renumbered).toEqual([
       { type: 'codeunit', name: 'CTS-CB Ponto Feature', file: PONTO, app: 'base-application', oldId: 72918753, newId: 72918790 },
     ]);
-    expect(r.reserved).toEqual([{ type: 'codeunit', id: 72918790, file: join(root, PONTO) }]);
+    expect(r.reserved).toEqual([{ type: 'codeunit', id: 72918790, file: join(root, PONTO), status: 'used' }]);
     expect(progress).toEqual(['renumber 1/1']);
   });
 
@@ -242,7 +242,10 @@ describe('createRenumberStage', () => {
     const out = await stage(git, n.factory).execute(makeState(), makeCtx());
 
     const r = out.outputs.renumber as RenumberOutput;
-    expect(r.reserved.map((x) => x.id)).toEqual([72918700, 72918790]);
+    expect(r.reserved.map((x) => [x.id, x.status])).toEqual([
+      [72918700, 'rejected-in-use'],
+      [72918790, 'used'],
+    ]);
     expect(r.renumbered[0]?.newId).toBe(72918790);
     expect(n.calls.unassign).not.toHaveBeenCalled();
     expect(read(PONTO)).toContain('codeunit 72918790 "CTS-CB Ponto Feature"');
@@ -254,7 +257,10 @@ describe('createRenumberStage', () => {
     const n = fakeNinja([50000, 72918790]);
     const out = await stage(git, n.factory).execute(makeState(), makeCtx());
     const r = out.outputs.renumber as RenumberOutput;
-    expect(r.reserved.map((x) => x.id)).toEqual([50000, 72918790]);
+    expect(r.reserved.map((x) => [x.id, x.status])).toEqual([
+      [50000, 'rejected-out-of-range'],
+      [72918790, 'used'],
+    ]);
     expect(r.renumbered[0]?.newId).toBe(72918790);
   });
 
@@ -373,7 +379,7 @@ describe('createRenumberStage', () => {
     const state = makeState();
     await expect(stage(git, n.factory).execute(state, makeCtx())).rejects.toThrow('commit failed');
     const r = state.outputs.renumber as RenumberOutput;
-    expect(r.reserved).toEqual([{ type: 'codeunit', id: 72918790, file: join(root, PONTO) }]);
+    expect(r.reserved).toEqual([{ type: 'codeunit', id: 72918790, file: join(root, PONTO), status: 'used' }]);
     expect(r.commit).toBeNull();
   });
 

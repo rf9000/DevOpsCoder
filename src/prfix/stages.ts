@@ -32,6 +32,7 @@ import {
   type PrFixInput,
   type RebaseOutput,
   type RenumberOutput,
+  type ReservedId,
 } from './types.ts';
 
 const REBASE_STAGE = 'rebase-onto-target';
@@ -481,8 +482,9 @@ const appKey = (app: string, type: string, id: number) => `${app}\0${type}\0${id
  *
  * Every ID Ninja assigns goes into `state.outputs.renumber.reserved` the
  * moment `assign` returns, so the caller can release it when the run ends
- * without a push, even if this stage throws later. An ID that is rejected
- * (outside the app's idRanges, or already declared) is not released here.
+ * without a push, even if this stage throws later. Each entry carries its
+ * status (`used`, `rejected-in-use`, `rejected-out-of-range`); nothing is
+ * released here, and the caller never releases a `rejected-in-use` one.
  */
 export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; ninja: () => NinjaClient }): Stage {
   const { git, prfix } = deps;
@@ -631,14 +633,18 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
           let newId: number | undefined;
           for (let attempt = 1; attempt <= NINJA_MAX_ASSIGN_ATTEMPTS && newId === undefined; attempt++) {
             const id = await client.assign(target.type, abs);
-            output.reserved.push({ type: target.type, id, file: abs });
-            const inRange = rangesOf(target.app).some((r) => id >= r.from && id <= r.to);
-            if (inRange && !taken.has(appKey(target.app, target.type, id))) {
+            // Recorded before anything below can throw; `used` until checked, so it is released if the stage dies here.
+            const entry: ReservedId = { type: target.type, id, file: abs, status: 'used' };
+            output.reserved.push(entry);
+            // In use wins over out of range: an ID the app already declares must never be released.
+            if (taken.has(appKey(target.app, target.type, id))) entry.status = 'rejected-in-use';
+            else if (!rangesOf(target.app).some((r) => id >= r.from && id <= r.to)) entry.status = 'rejected-out-of-range';
+            if (entry.status === 'used') {
               newId = id;
             } else {
               ctx.logger.warn(
                 `${RENUMBER_STAGE}: Ninja assigned ${target.type} ${id} for ${target.file}, which is ` +
-                  `${inRange ? 'already declared in the app' : `outside ${target.app}'s idRanges`}; asking again`,
+                  `${entry.status === 'rejected-in-use' ? 'already declared in the app' : `outside ${target.app}'s idRanges`}; asking again`,
               );
             }
           }

@@ -328,8 +328,8 @@ describe('fixPr', () => {
   });
 
   const RESERVED = [
-    { type: 'codeunit', id: 72918790, file: '/wt/prfix-42/app/P.al' },
-    { type: 'codeunit', id: 72918791, file: '/wt/prfix-42/app/Q.al' },
+    { type: 'codeunit', id: 72918790, file: '/wt/prfix-42/app/P.al', status: 'used' as const },
+    { type: 'codeunit', id: 72918791, file: '/wt/prfix-42/app/Q.al', status: 'used' as const },
   ];
   const RENUMBERED = [
     { type: 'codeunit', name: 'P', file: 'app/P.al', app: 'app', oldId: 72918753, newId: 72918790 },
@@ -399,6 +399,35 @@ describe('fixPr', () => {
     const r = setup([intake, worktree, rebase, none, push, comment], { dryRun: true });
     await r.outcome;
     expect(r.ninjaFactory).not.toHaveBeenCalled();
+  });
+
+  it('dry run releases a used ID but never one rejected as already in use', async () => {
+    const mixed = stage('renumber-collisions', (o) => {
+      o.renumber = {
+        commit: 'renum00',
+        renumbered: RENUMBERED,
+        reserved: [
+          { type: 'codeunit', id: 72918700, file: '/wt/prfix-42/app/P.al', status: 'rejected-in-use' as const },
+          { type: 'codeunit', id: 72918790, file: '/wt/prfix-42/app/P.al', status: 'used' as const },
+        ],
+      };
+    });
+    const r = setup([intake, worktree, rebase, mixed, push, comment], { dryRun: true });
+    await r.outcome;
+    expect(r.unassign.mock.calls).toEqual([['codeunit', 72918790, '/wt/prfix-42/app/P.al']]);
+  });
+
+  it('an ID rejected as out of range is released', async () => {
+    const outOfRange = stage('renumber-collisions', (o) => {
+      o.renumber = {
+        commit: null,
+        renumbered: [],
+        reserved: [{ type: 'codeunit', id: 50000, file: '/wt/prfix-42/app/P.al', status: 'rejected-out-of-range' as const }],
+      };
+    });
+    const r = setup([intake, worktree, rebase, outOfRange, push, comment], { dryRun: true });
+    await r.outcome;
+    expect(r.unassign.mock.calls).toEqual([['codeunit', 50000, '/wt/prfix-42/app/P.al']]);
   });
 
   it('unassign failure only warns', async () => {

@@ -45,7 +45,25 @@ export interface RenumberedObject {
 export interface RenumberOutput {
   commit: string | null;
   renumbered: RenumberedObject[];
-  reserved: { type: string; id: number; /** Absolute path of the .al file. */ file: string }[];
+  reserved: ReservedId[];
+}
+
+/**
+ * What became of a reserved ID:
+ * - `used`: the ID applied to the object (also the provisional status the
+ *   moment `assign` returns, before it is checked);
+ * - `rejected-in-use`: already declared in the app. It is never released,
+ *   since unassigning it would free an ID that is in use;
+ * - `rejected-out-of-range`: outside the app's `idRanges`.
+ */
+export type ReservedIdStatus = 'used' | 'rejected-in-use' | 'rejected-out-of-range';
+
+export interface ReservedId {
+  type: string;
+  id: number;
+  /** Absolute path of the .al file. */
+  file: string;
+  status: ReservedIdStatus;
 }
 
 /**

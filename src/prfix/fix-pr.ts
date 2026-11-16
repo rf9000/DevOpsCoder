@@ -262,9 +262,11 @@ async function postFailureComment(
  * Releases every ID `renumber-collisions` reserved, for a run that ends
  * without a push (dry run, failure, cancel); a pushed branch uses them. Each
  * unassign is best-effort: a failure only warns and leaves that ID reserved.
+ * An ID rejected because the app already declares it is never released:
+ * unassigning it would free an ID that is in use.
  */
 async function releaseReservedIds(deps: FixPrDeps, renumber: RenumberOutput | undefined): Promise<void> {
-  const reserved = renumber?.reserved ?? [];
+  const reserved = (renumber?.reserved ?? []).filter((r) => r.status !== 'rejected-in-use');
   if (reserved.length === 0) return;
   const { logger } = deps;
   logger.info(`fix-pr: releasing ${reserved.length} reserved Ninja ID(s)`);
