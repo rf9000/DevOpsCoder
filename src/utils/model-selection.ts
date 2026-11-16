@@ -18,7 +18,8 @@ export type PipelineStep =
   | 'test-author-plan'
   | 'test-author'
   | 'test-fixer'
-  | 'pr-message';
+  | 'pr-message'
+  | 'rebase-resolver';
 
 /** Steps whose model, when configured, turns on a plan-then-write split. */
 export type PlanStep = 'coder-plan' | 'test-author-plan';
