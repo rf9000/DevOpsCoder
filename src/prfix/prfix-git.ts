@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'fs';
 import { resolve } from 'path';
 import { HeadMovedError } from '../suggestions/suggestion-git.ts';
 import type { AppConfig, WorktreeContext } from '../types/index.ts';
@@ -8,6 +9,16 @@ import type { Logger } from '../utils/logger.ts';
 export type RebaseStep =
   | { kind: 'done'; head: string }
   | { kind: 'conflict'; commit: string; subject: string; files: string[] };
+
+/**
+ * A conflicted path no edit to its content can settle: `binary` (both sides
+ * present, but git cannot merge them as text), or `one-sided` (the stage-2 or
+ * stage-3 entry is missing: modify/delete, rename/delete, file/directory).
+ */
+export interface UnresolvableConflict {
+  path: string;
+  kind: 'binary' | 'one-sided';
+}
 
 export interface PrFixGit {
   /** Fetch source + target, check origin/<source> === headCommit (else HeadMovedError), add a locked worktree on branch `prfix/pr-<id>` at headCommit. */
@@ -19,8 +30,18 @@ export interface PrFixGit {
   /** Stage `files`, then `rebase --continue` (GIT_EDITOR=true). */
   continueRebase(path: string, files: string[]): Promise<RebaseStep>;
   abortRebase(path: string): Promise<void>;
-  /** Files of `files` that still contain a conflict marker line (^<<<<<<< , ^=======$, ^>>>>>>> ). */
+  /** Files of `files` that still contain a conflict marker line (^<<<<<<< , ^|||||||, ^=======$, ^>>>>>>> ). */
   filesWithMarkers(path: string, files: string[]): Promise<string[]>;
+  /** Unmerged paths (`ls-files -u`) that are not both-sides text conflicts. */
+  unresolvableConflicts(path: string): Promise<UnresolvableConflict[]>;
+  /** sha256 of each file's content; null when the file is missing or not a regular file. */
+  fingerprintFiles(path: string, files: string[]): Promise<Record<string, string | null>>;
+  /** Tracked files with unstaged edits (`git diff --name-only -z`). */
+  unstagedChanges(path: string): Promise<string[]>;
+  /** `git status --porcelain --untracked-files=all` entries; empty means the tree is exactly HEAD. */
+  dirtyPaths(path: string): Promise<string[]>;
+  /** `git rev-list --merges --count <from>..HEAD`. */
+  countMergeCommits(path: string, from: string): Promise<number>;
   headSha(path: string): Promise<string>;
   /** `git rev-list --count <from>..HEAD`. */
   countCommits(path: string, from: string): Promise<number>;
@@ -28,8 +49,16 @@ export interface PrFixGit {
   removeWorktree(wt: WorktreeContext): Promise<void>;
 }
 
-/** A conflict marker line; `\r?` because a CRLF checkout keeps the carriage return. */
-const MARKER_LINE = /^(<<<<<<< .*|=======|>>>>>>> .*)\r?$/m;
+/**
+ * A conflict marker line, diff3's `|||||||` base marker included; `\r?`
+ * because a CRLF checkout keeps the carriage return.
+ */
+const MARKER_LINE = /^(<<<<<<< .*|\|{7}(?: .*)?|=======|>>>>>>> .*)\r?$/m;
+
+/** Split `-z` output; NUL-separated names are never quoted or escaped. */
+function splitNul(out: string): string[] {
+  return out.split('\0').filter(Boolean);
+}
 
 /**
  * Every git call fix-pr makes. The clone is shared with the devops-coder
@@ -111,10 +140,8 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
       }
       return { kind: 'done', head: (await runGit(['rev-parse', 'HEAD'], path)).stdout.trim() };
     }
-    const files = (await runGit(['diff', '--name-only', '--diff-filter=U'], path)).stdout
-      .split('\n')
-      .map((f) => f.trim())
-      .filter(Boolean);
+    // -z: otherwise git quotes non-ASCII names, and trimming mangles edge whitespace.
+    const files = splitNul((await runGit(['diff', '--name-only', '--diff-filter=U', '-z'], path)).stdout);
     if (files.length === 0) {
       throw new Error(`git rebase stopped without conflicted files: ${redactPat(output.trim() || '(no output)', pat)}`);
     }
@@ -170,6 +197,64 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
         if (MARKER_LINE.test(readFileSync(full, 'utf8'))) hits.push(f);
       }
       return hits;
+    },
+
+    async unresolvableConflicts(path) {
+      // One `<mode> <sha> <stage>\t<path>` entry per stage present.
+      const stages = new Map<string, Set<string>>();
+      for (const entry of splitNul((await runGit(['ls-files', '-u', '-z'], path)).stdout)) {
+        const tab = entry.indexOf('\t');
+        if (tab < 0) continue;
+        const file = entry.slice(tab + 1);
+        const set = stages.get(file) ?? new Set<string>();
+        set.add(entry.slice(0, tab).split(' ')[2] ?? '');
+        stages.set(file, set);
+      }
+      const out: UnresolvableConflict[] = [];
+      const twoSided: string[] = [];
+      for (const [file, set] of stages) {
+        if (set.has('2') && set.has('3')) twoSided.push(file);
+        else out.push({ path: file, kind: 'one-sided' });
+      }
+      if (twoSided.length > 0) {
+        // Mid-rebase, HEAD is the target side and REBASE_HEAD the replayed
+        // commit; numstat prints `-\t-` for a binary pair (gitattributes included).
+        const numstat = (
+          await runGit(['diff', '--numstat', '-z', '--no-renames', 'HEAD', 'REBASE_HEAD', '--', ...twoSided], path)
+        ).stdout;
+        const binary = new Set(
+          splitNul(numstat)
+            .filter((e) => e.startsWith('-\t-\t'))
+            .map((e) => e.slice(4)),
+        );
+        for (const file of twoSided) if (binary.has(file)) out.push({ path: file, kind: 'binary' });
+      }
+      return out.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+    },
+
+    async fingerprintFiles(path, files) {
+      const out: Record<string, string | null> = {};
+      for (const f of files) {
+        const full = resolve(path, f);
+        out[f] =
+          existsSync(full) && statSync(full).isFile()
+            ? createHash('sha256').update(readFileSync(full)).digest('hex')
+            : null;
+      }
+      return out;
+    },
+
+    async unstagedChanges(path) {
+      return splitNul((await runGit(['diff', '--name-only', '-z'], path)).stdout);
+    },
+
+    async dirtyPaths(path) {
+      return splitNul((await runGit(['status', '--porcelain', '--untracked-files=all', '-z'], path)).stdout);
+    },
+
+    async countMergeCommits(path, from) {
+      const out = (await runGit(['rev-list', '--merges', '--count', `${from}..HEAD`], path)).stdout.trim();
+      return Number.parseInt(out, 10);
     },
 
     async headSha(path) {

@@ -2,7 +2,13 @@ import { describe, it, expect, mock } from 'bun:test';
 import { createRebaseStage } from '../../src/prfix/stages.ts';
 import type { PrFixGit, RebaseStep } from '../../src/prfix/prfix-git.ts';
 import type { PrFixConfig } from '../../src/prfix/config.ts';
-import { ConflictCapError, UnresolvedConflictError, type PrFixInput, type RebaseOutput } from '../../src/prfix/types.ts';
+import {
+  ConflictCapError,
+  MergeCommitsError,
+  UnresolvedConflictError,
+  type PrFixInput,
+  type RebaseOutput,
+} from '../../src/prfix/types.ts';
 import type { AgentRunArgs, AgentRunner } from '../../src/pipeline/agent-stage.ts';
 import type { PipelineContext } from '../../src/pipeline/stage.ts';
 import { CostExceededError, type PipelineState, type WorktreeContext } from '../../src/types/index.ts';
@@ -28,10 +34,18 @@ interface FakeGitOpts {
   continues?: RebaseStep[];
   markers?: string[];
   abortThrows?: boolean;
+  unresolvable?: { path: string; kind: 'binary' | 'one-sided' }[];
+  /** Successive fingerprintFiles results; by default every call returns fresh hashes (files changed). */
+  fingerprints?: Record<string, string | null>[];
+  unstaged?: string[];
+  dirty?: string[];
+  merges?: number;
 }
 
 function fakeGit(o: FakeGitOpts) {
   const continues = [...(o.continues ?? [])];
+  const fingerprints = [...(o.fingerprints ?? [])];
+  let fingerprintCalls = 0;
   const calls = {
     startRebase: mock(async (_p: string, _t: string) => o.start),
     continueRebase: mock(async (_p: string, _f: string[]) => {
@@ -45,6 +59,16 @@ function fakeGit(o: FakeGitOpts) {
     filesWithMarkers: mock(async (_p: string, _f: string[]) => o.markers ?? []),
     headSha: mock(async (_p: string) => PRE),
     countCommits: mock(async (_p: string, _from: string) => 4),
+    unresolvableConflicts: mock(async (_p: string) => o.unresolvable ?? []),
+    fingerprintFiles: mock(async (_p: string, files: string[]) => {
+      const next = fingerprints.shift();
+      if (next) return next;
+      fingerprintCalls += 1;
+      return Object.fromEntries(files.map((f) => [f, `hash-${f}-${fingerprintCalls}`]));
+    }),
+    unstagedChanges: mock(async (_p: string) => o.unstaged ?? []),
+    dirtyPaths: mock(async (_p: string) => o.dirty ?? []),
+    countMergeCommits: mock(async (_p: string, _from: string) => o.merges ?? 0),
   };
   const git = {
     ...calls,
@@ -275,6 +299,93 @@ describe('createRebaseStage', () => {
     const { git } = fakeGit({ start: done });
     const out = await stage(git, fakeRunner().runner).execute(makeState(), makeCtx());
     expect((out.outputs.worktree as WorktreeContext).baseSha).toBe(TARGET);
+  });
+
+  it('refuses a branch with merge commits before the rebase starts', async () => {
+    const { git, calls } = fakeGit({ start: done, merges: 2 });
+    const r = fakeRunner();
+    const err = await stage(git, r.runner).execute(makeState(), makeCtx()).catch((e) => e);
+
+    expect(err).toBeInstanceOf(MergeCommitsError);
+    expect((err as MergeCommitsError).count).toBe(2);
+    expect((err as Error).message).toBe('branch contains 2 merge commits; rebase it manually');
+    expect(calls.countMergeCommits).toHaveBeenCalledWith('/w/prfix-42', TARGET);
+    expect(calls.startRebase).not.toHaveBeenCalled();
+    expect(r.calls).toHaveLength(0);
+  });
+
+  it('a binary or one-sided conflict is unresolvable up front: no resolver call', async () => {
+    const { git, calls } = fakeGit({
+      start: conflict(1, ['a.al', 'Bin.dat', 'Gone.al']),
+      continues: [done],
+      unresolvable: [
+        { path: 'Bin.dat', kind: 'binary' },
+        { path: 'Gone.al', kind: 'one-sided' },
+      ],
+    });
+    const r = fakeRunner();
+    const err = await stage(git, r.runner).execute(makeState(), makeCtx()).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnresolvedConflictError);
+    expect((err as UnresolvedConflictError).files).toEqual(['Bin.dat', 'Gone.al']);
+    expect(r.calls).toHaveLength(0);
+    expect(calls.continueRebase).not.toHaveBeenCalled();
+    expect(calls.abortRebase).toHaveBeenCalledTimes(1);
+  });
+
+  it('a listed file the resolver left unchanged is unresolved, even without markers', async () => {
+    const { git, calls } = fakeGit({
+      start: conflict(1, ['a.al', 'b.al']),
+      continues: [done],
+      fingerprints: [
+        { 'a.al': 'h-a', 'b.al': 'h-b' },
+        { 'a.al': 'h-a2', 'b.al': 'h-b' },
+      ],
+    });
+    const err = await stage(git, fakeRunner().runner).execute(makeState(), makeCtx()).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnresolvedConflictError);
+    expect((err as UnresolvedConflictError).files).toEqual(['b.al']);
+    expect(calls.continueRebase).not.toHaveBeenCalled();
+    expect(calls.abortRebase).toHaveBeenCalledTimes(1);
+  });
+
+  it('a listed file the resolver deleted is unresolved', async () => {
+    const { git, calls } = fakeGit({
+      start: conflict(1, ['a.al']),
+      continues: [done],
+      fingerprints: [{ 'a.al': 'h-a' }, { 'a.al': null }],
+    });
+    const err = await stage(git, fakeRunner().runner).execute(makeState(), makeCtx()).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnresolvedConflictError);
+    expect((err as UnresolvedConflictError).files).toEqual(['a.al']);
+    expect(calls.continueRebase).not.toHaveBeenCalled();
+  });
+
+  it('tracked edits outside the conflicted files are refused before continueRebase, naming them', async () => {
+    const { git, calls } = fakeGit({ start: conflict(1, ['a.al']), continues: [done], unstaged: ['a.al', 'Other.al'] });
+    const err = await stage(git, fakeRunner().runner).execute(makeState(), makeCtx()).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnresolvedConflictError);
+    expect((err as UnresolvedConflictError).files).toEqual(['Other.al']);
+    expect((err as Error).message).toContain('Other.al');
+    expect(calls.continueRebase).not.toHaveBeenCalled();
+    expect(calls.abortRebase).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a finished rebase that leaves untracked or modified files (they would be verified, not pushed)', async () => {
+    const { git } = fakeGit({ start: conflict(1), continues: [done], dirty: ['?? Stray.al'] });
+    const err = await stage(git, fakeRunner().runner).execute(makeState(), makeCtx()).catch((e) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('Stray.al');
+  });
+
+  it('a clean worktree after the rebase passes the dirty check', async () => {
+    const { git, calls } = fakeGit({ start: done, dirty: [] });
+    await stage(git, fakeRunner().runner).execute(makeState(), makeCtx());
+    expect(calls.dirtyPaths).toHaveBeenCalledWith('/w/prfix-42');
   });
 
   it('throws when worktree or prFixInput is missing', async () => {

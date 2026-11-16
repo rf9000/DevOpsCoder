@@ -18,6 +18,7 @@ import { renderFailureComment } from './comment.ts';
 import type { PrFixGit } from './prfix-git.ts';
 import {
   ConflictCapError,
+  MergeCommitsError,
   PrUpToDateError,
   UnresolvedConflictError,
   type PrFixInput,
@@ -47,6 +48,7 @@ function statusOf(err: unknown): PrFixStatus {
   if (err instanceof HeadMovedError) return 'head-moved';
   if (err instanceof ConflictCapError) return 'conflict-cap';
   if (err instanceof UnresolvedConflictError) return 'unresolved-conflict';
+  if (err instanceof MergeCommitsError) return 'merge-commits';
   if (err instanceof VerificationFailedError) return 'verification-failed';
   if (err instanceof CostExceededError) return 'cost-cap';
   return 'error';

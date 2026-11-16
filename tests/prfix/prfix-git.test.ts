@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createPrFixGit } from '../../src/prfix/prfix-git.ts';
+import { applyWorktreeOverlay } from '../../src/services/worktree-overlay.ts';
 import { HeadMovedError } from '../../src/suggestions/suggestion-git.ts';
 import { makeTestConfig } from '../helpers/app-config.ts';
 
@@ -277,5 +278,136 @@ describe('push', () => {
     expect(err).not.toBeInstanceOf(HeadMovedError);
     expect((err as Error).message).toContain('TF402455');
     expect(await originSha('feat/x')).toBe(head);
+  });
+});
+
+async function commitBytes(dir: string, file: string, content: Uint8Array, message: string): Promise<string> {
+  writeFileSync(join(dir, file), content);
+  await runGit(['add', file], dir);
+  await runGit(['commit', '-m', message], dir);
+  return (await runGit(['rev-parse', 'HEAD'], dir)).trim();
+}
+
+describe('conflict listing', () => {
+  it('lists a non-ASCII conflicted file name verbatim (NUL-separated, not quoted)', async () => {
+    const name = 'Ünïcode file.al';
+    // Both sides add the file with different content: an add/add conflict.
+    head = await commitFile(dev, name, 'PR\n', 'pr adds unicode');
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    await advanceMain(name, 'MAIN\n');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const step = await g.startRebase(wt.path, wt.targetSha);
+    expect(step.kind).toBe('conflict');
+    if (step.kind === 'conflict') expect(step.files).toEqual([name]);
+  });
+});
+
+describe('unresolvableConflicts', () => {
+  it('reports a binary conflict, and not the text conflict beside it', async () => {
+    await commitBytes(dev, 'Bin.dat', new Uint8Array([97, 0, 80, 82]), 'pr adds binary');
+    head = await commitFile(dev, 'Shared.al', 'a\nPR\nc\n', 'pr edits shared');
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    await commitBytes(other, 'Bin.dat', new Uint8Array([97, 0, 77, 65, 73, 78]), 'main adds binary');
+    await advanceMain('Shared.al', 'a\nMAIN\nc\n');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const step = await g.startRebase(wt.path, wt.targetSha);
+    expect(step.kind).toBe('conflict');
+    expect(await g.unresolvableConflicts(wt.path)).toEqual([{ path: 'Bin.dat', kind: 'binary' }]);
+  });
+
+  it('reports a modify/delete conflict as one-sided', async () => {
+    await runGit(['rm', '-q', 'Shared.al'], dev);
+    await runGit(['commit', '-m', 'pr deletes shared'], dev);
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    await advanceMain('Shared.al', 'a\nMAIN\nc\n');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const step = await g.startRebase(wt.path, wt.targetSha);
+    expect(step.kind).toBe('conflict');
+    expect(await g.unresolvableConflicts(wt.path)).toEqual([{ path: 'Shared.al', kind: 'one-sided' }]);
+  });
+
+  it('reports nothing for a plain text conflict', async () => {
+    head = await commitFile(dev, 'Shared.al', 'a\nPR\nc\n', 'pr edits shared');
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    await advanceMain('Shared.al', 'a\nMAIN\nc\n');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    expect((await g.startRebase(wt.path, wt.targetSha)).kind).toBe('conflict');
+    expect(await g.unresolvableConflicts(wt.path)).toEqual([]);
+  });
+});
+
+describe('fingerprintFiles', () => {
+  it('hashes content and reports a missing file as null', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const before = await g.fingerprintFiles(wt.path, ['Shared.al', 'Missing.al']);
+    expect(typeof before['Shared.al']).toBe('string');
+    expect(before['Missing.al']).toBeNull();
+    writeFileSync(join(wt.path, 'Shared.al'), 'changed\n', 'utf-8');
+    const after = await g.fingerprintFiles(wt.path, ['Shared.al']);
+    expect(after['Shared.al']).not.toBe(before['Shared.al']);
+  });
+});
+
+describe('unstagedChanges', () => {
+  it('lists tracked files edited but not staged', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    expect(await g.unstagedChanges(wt.path)).toEqual([]);
+    writeFileSync(join(wt.path, 'README.md'), 'edited\n', 'utf-8');
+    writeFileSync(join(wt.path, 'Untracked.al'), 'new\n', 'utf-8');
+    expect(await g.unstagedChanges(wt.path)).toEqual(['README.md']);
+  });
+});
+
+describe('dirtyPaths', () => {
+  it('is empty after a clean rebase with the overlay applied, and names a stray untracked file', async () => {
+    await advanceMain('Main.al', 'm\n');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const overlayDir = join(root, 'overlay');
+    mkdirSync(join(overlayDir, 'Banking Rulesets'), { recursive: true });
+    writeFileSync(join(overlayDir, 'Banking Rulesets', '.cli-ruleset.json'), '{}', 'utf-8');
+    expect(applyWorktreeOverlay(overlayDir, wt.path)).toEqual(['Banking Rulesets/.cli-ruleset.json']);
+    expect((await g.startRebase(wt.path, wt.targetSha)).kind).toBe('done');
+    expect(await g.dirtyPaths(wt.path)).toEqual([]);
+    mkdirSync(join(wt.path, 'sub'), { recursive: true });
+    writeFileSync(join(wt.path, 'sub', 'Stray.al'), 'stray\n', 'utf-8');
+    expect(await g.dirtyPaths(wt.path)).toEqual(['?? sub/Stray.al']);
+  });
+});
+
+describe('countMergeCommits', () => {
+  it('counts a real merge commit on the PR branch, and zero without one', async () => {
+    await advanceMain('Main.al', 'm\n');
+    const g = git();
+    let wt = await g.createWorktree(args());
+    expect(await g.countMergeCommits(wt.path, wt.targetSha)).toBe(0);
+    await g.removeWorktree(wt);
+
+    await runGit(['checkout', '-q', '-b', 'side'], dev);
+    await commitFile(dev, 'Side.al', 'side\n', 'side work');
+    await runGit(['checkout', '-q', 'feat/x'], dev);
+    await commitFile(dev, 'More.al', 'more\n', 'more work');
+    await runGit(['merge', '--no-ff', '-q', '-m', 'merge side', 'side'], dev);
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    wt = await g.createWorktree(args());
+    expect(await g.countMergeCommits(wt.path, wt.targetSha)).toBe(1);
+  });
+});
+
+describe('filesWithMarkers (diff3)', () => {
+  it('detects a diff3 base marker line', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    writeFileSync(join(wt.path, 'Diff3.al'), 'x\r\n||||||| merged common ancestors\r\nbase\r\n', 'utf-8');
+    writeFileSync(join(wt.path, 'Bare.al'), 'x\n|||||||\ny\n', 'utf-8');
+    expect(await g.filesWithMarkers(wt.path, ['Diff3.al', 'Bare.al'])).toEqual(['Diff3.al', 'Bare.al']);
   });
 });

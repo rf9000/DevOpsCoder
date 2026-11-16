@@ -11,6 +11,7 @@ import type { PrFixGit, RebaseStep } from './prfix-git.ts';
 import { resolveConflict } from './resolver.ts';
 import {
   ConflictCapError,
+  MergeCommitsError,
   PrUpToDateError,
   UnresolvedConflictError,
   type ConflictResolution,
@@ -60,6 +61,11 @@ export function createRebaseStage(deps: {
       const { path, targetSha } = worktree;
 
       const preRebaseSha = await git.headSha(path);
+      // `git rebase` linearizes merges away, so the pushed branch would no
+      // longer be the PR's changes. Refused before anything starts.
+      const merges = await git.countMergeCommits(path, targetSha);
+      if (merges > 0) throw new MergeCommitsError(merges);
+
       const conflicts: ConflictResolution[] = [];
       let newHeadSha: string;
 
@@ -85,12 +91,24 @@ export function createRebaseStage(deps: {
               current.files,
             );
           }
+          // Binary, modify/delete, rename/delete and file/directory conflicts
+          // carry no markers, and staging picks a side silently: no content
+          // edit settles them, so no resolver call is spent on them.
+          const unresolvable = await git.unresolvableConflicts(path);
+          if (unresolvable.length > 0) {
+            throw new UnresolvedConflictError(
+              current.commit,
+              unresolvable.map((u) => u.path),
+              'binary or one-sided conflict (rebase it manually)',
+            );
+          }
           assertWithinCostCap(state, prfix.app.maxCostUsdPerWi, REBASE_STAGE);
 
           ctx.reportProgress?.(`conflict ${conflicts.length + 1} · ${current.commit.slice(0, 7)}`);
           ctx.logger.info(
             `${REBASE_STAGE}: resolving ${current.files.length} file(s) in ${current.commit.slice(0, 7)} "${current.subject}"`,
           );
+          const before = await git.fingerprintFiles(path, current.files);
           const resolved = await resolveConflict({
             runner: deps.runner,
             config: prfix.app,
@@ -106,6 +124,20 @@ export function createRebaseStage(deps: {
 
           const remaining = await git.filesWithMarkers(path, current.files);
           if (remaining.length > 0) throw new UnresolvedConflictError(current.commit, remaining);
+          // No markers is not proof of a resolution: a file the resolver never
+          // touched (or deleted, which the prompt forbids) still holds
+          // whatever git left there.
+          const after = await git.fingerprintFiles(path, current.files);
+          const untouched = current.files.filter((f) => after[f] == null || after[f] === before[f]);
+          if (untouched.length > 0) {
+            throw new UnresolvedConflictError(current.commit, untouched, 'resolver left conflicted files unchanged or deleted');
+          }
+          // continueRebase stages only the listed files; an edit anywhere else
+          // would make `rebase --continue` fail confusingly, or ride along unpushed.
+          const outside = (await git.unstagedChanges(path)).filter((f) => !current.files.includes(f));
+          if (outside.length > 0) {
+            throw new UnresolvedConflictError(current.commit, outside, 'resolver edited files outside the conflict');
+          }
 
           conflicts.push({
             commit: current.commit,
@@ -117,6 +149,14 @@ export function createRebaseStage(deps: {
           step = await git.continueRebase(path, current.files);
         }
         newHeadSha = step.head;
+        // Whatever is on disk is what gets verified, and only HEAD is pushed:
+        // they must be the same tree. Overlay files are in info/exclude.
+        const dirty = await git.dirtyPaths(path);
+        if (dirty.length > 0) {
+          throw new Error(
+            `rebase left files in the worktree that are not in the rebased commits (they would be verified but not pushed): ${dirty.join(', ')}`,
+          );
+        }
       } catch (err) {
         try {
           await git.abortRebase(path);
