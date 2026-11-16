@@ -11,6 +11,7 @@ import { redactPat } from '../utils/git-auth.ts';
 import {
   AL_OBJECT_TYPES,
   findCollisions,
+  maskAl,
   parseDeclaration,
   planRenumbers,
   type AlDeclaration,
@@ -366,16 +367,27 @@ function wholeWord(id: number, flags = ''): RegExp {
   return new RegExp(String.raw`\b${id}\b`, flags);
 }
 
-/** `idRanges` (`[{from,to}]`), else the singular `idRange`; an app with neither has no usable ID. */
-function readIdRanges(abs: string): { from: number; to: number }[] {
+interface AppSettings {
+  /** `idRanges` (`[{from,to}]`), else the singular `idRange`; an app with neither has no usable ID. */
+  ranges: { from: number; to: number }[];
+  /** `preprocessorSymbols`; case-sensitive, as AL is. */
+  symbols: ReadonlySet<string>;
+}
+
+function readAppSettings(abs: string): AppSettings {
   const json = JSON.parse(readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')) as {
     idRanges?: { from?: unknown; to?: unknown }[];
     idRange?: { from?: unknown; to?: unknown };
+    preprocessorSymbols?: unknown;
   };
   const raw = Array.isArray(json.idRanges) ? json.idRanges : json.idRange ? [json.idRange] : [];
-  return raw
+  const ranges = raw
     .map((r) => ({ from: Number(r?.from), to: Number(r?.to) }))
     .filter((r) => Number.isInteger(r.from) && Number.isInteger(r.to));
+  const symbols = Array.isArray(json.preprocessorSymbols)
+    ? json.preprocessorSymbols.filter((x): x is string => typeof x === 'string')
+    : [];
+  return { ranges, symbols: new Set(symbols) };
 }
 
 /** Deepest app directory that contains `file`; `''` is the repo root. */
@@ -395,11 +407,14 @@ const DECLARATION_LINE_RE = new RegExp(
 
 /**
  * Absolute offset of the ID on the object's declaration line. The first
- * declaration in the file must still be `<type> <oldId>`, and the first
- * whole-word `oldId` on that line must be the declaration's own ID. Anything
- * else throws rather than guessing.
+ * declaration the compiler sees (comments and inactive `#if` blocks masked
+ * per `symbols`) must still be `<type> <oldId>`, and the first whole-word
+ * `oldId` on that line must be the declaration's own ID. Anything else throws
+ * rather than guessing. The mask is length-preserving, so the offset is valid
+ * in the original `text`.
  */
-function declarationIdOffset(text: string, decl: AlDeclaration): number {
+function declarationIdOffset(text: string, decl: AlDeclaration, symbols: ReadonlySet<string>): number {
+  text = maskAl(text, symbols);
   const m = DECLARATION_LINE_RE.exec(text);
   if (!m || (m[1] as string).toLowerCase() !== decl.type || Number(m[2]) !== decl.id) {
     throw new Error(`${RENUMBER_STAGE}: declaration of ${decl.type} ${decl.id} not found in ${decl.file}; nothing rewritten`);
@@ -422,12 +437,20 @@ const OBJECT_KEYWORDS = new Set<string>([...AL_OBJECT_TYPES, 'tabledata']);
 const KEYWORD_BEFORE_RE = /(?:^|[^\w])([A-Za-z]+)\s+$/;
 
 /**
- * Every whole-word `id` in `text`, by the word before it:
+ * Every whole-word `id` in `text` the compiler sees, by the word before it:
  * - `replace`: qualified by `type` (or `tabledata` for a table), so it names this object;
  * - `bare`: no object-type keyword before it (`Codeunit.Run(5)`, `RunObject = 5`), so it is ambiguous.
  * One qualified by another object type is a different object and is not listed.
+ * One in a comment or an inactive `#if` block (per `symbols`) is not listed
+ * either; the offsets, from a length-preserving mask, are valid in `text`.
  */
-function classifyOccurrences(text: string, type: string, id: number): { replace: number[]; bare: number[] } {
+function classifyOccurrences(
+  text: string,
+  type: string,
+  id: number,
+  symbols: ReadonlySet<string>,
+): { replace: number[]; bare: number[] } {
+  text = maskAl(text, symbols);
   const out = { replace: [] as number[], bare: [] as number[] };
   for (const m of text.matchAll(wholeWord(id, 'g'))) {
     const keyword = KEYWORD_BEFORE_RE.exec(text.slice(0, m.index))?.[1]?.toLowerCase();
@@ -504,13 +527,31 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         .filter((f) => (f === 'app.json' || f.endsWith('/app.json')) && !isExcludedPath(f))
         .map((f) => (f === 'app.json' ? '' : f.slice(0, -'/app.json'.length)));
 
-      // 2-3. Declarations at HEAD. The rebase stage leaves the worktree exactly at HEAD.
+      // Per app: idRanges and preprocessorSymbols, read once.
+      const settingsByApp = new Map<string, AppSettings>();
+      const settingsOf = (app: string): AppSettings => {
+        let st = settingsByApp.get(app);
+        if (!st) {
+          st = readAppSettings(join(path, app, 'app.json'));
+          settingsByApp.set(app, st);
+        }
+        return st;
+      };
+      const NO_SYMBOLS: ReadonlySet<string> = new Set();
+      /** The preprocessor symbols of the app holding `file` (none outside every app). */
+      const symbolsFor = (file: string): ReadonlySet<string> => {
+        const app = appOf(file, appDirs);
+        return app === undefined ? NO_SYMBOLS : settingsOf(app).symbols;
+      };
+
+      // 2-3. Declarations at HEAD the compiler sees: comments and inactive #if
+      //      blocks do not count. The rebase stage leaves the worktree exactly at HEAD.
       const decls: AlDeclaration[] = [];
       for (const file of await git.listFiles(path, '*.al')) {
         if (isExcludedPath(file)) continue;
         const app = appOf(file, appDirs);
         if (app === undefined) continue;
-        const parsed = parseDeclaration(readFileSync(join(path, file), 'utf8'));
+        const parsed = parseDeclaration(readFileSync(join(path, file), 'utf8'), settingsOf(app).symbols);
         if (parsed) decls.push({ ...parsed, file, app });
       }
       const output: RenumberOutput = { commit: null, renumbered: [], reserved: [] };
@@ -532,7 +573,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         const app = appOf(c.file, appDirs);
         if (app === undefined) continue;
         const before = await git.showFileAtRef(path, targetSha, c.file);
-        const old = before === null ? null : parseDeclaration(before);
+        const old = before === null ? null : parseDeclaration(before, settingsOf(app).symbols);
         if (old) movedKeys.add(appKey(app, old.type, old.id));
       }
       const introduced = new Set<AlDeclaration>();
@@ -541,7 +582,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         if (status !== 'A' && status !== 'M') continue;
         if (status === 'A' && movedKeys.has(appKey(d.app, d.type, d.id))) continue;
         const before = await git.showFileAtRef(path, targetSha, d.file);
-        const old = before === null ? null : parseDeclaration(before);
+        const old = before === null ? null : parseDeclaration(before, settingsOf(d.app).symbols);
         if (!old || old.type !== d.type || old.id !== d.id) introduced.add(d);
       }
 
@@ -567,8 +608,8 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         };
         for (const file of rewriteSet(target)) {
           const text = file === target.file ? readText(join(path, file)) : readLatin1(join(path, file));
-          if (file === target.file) declarationIdOffset(text, target);
-          const bare = classifyOccurrences(text, target.type, target.id).bare[0];
+          if (file === target.file) declarationIdOffset(text, target, symbolsFor(file));
+          const bare = classifyOccurrences(text, target.type, target.id, symbolsFor(file)).bare[0];
           if (bare !== undefined) {
             refuse(file, text, bare, `mentions ${target.id} without an object type, so it is ambiguous which object it means`);
           }
@@ -576,7 +617,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         for (const file of modified) {
           if (file === target.file || appOf(file, appDirs) !== target.app) continue;
           const text = readLatin1(join(path, file));
-          const occ = classifyOccurrences(text, target.type, target.id);
+          const occ = classifyOccurrences(text, target.type, target.id, symbolsFor(file));
           const hit = [...occ.replace, ...occ.bare].sort((x, y) => x - y)[0];
           if (hit !== undefined) {
             refuse(file, text, hit, `(modified by the PR, not added) mentions ${target.id}, which may mean the existing object`);
@@ -590,7 +631,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
           const app = appOf(file, appDirs);
           if (app === undefined || app === target.app || declared.has(appKey(app, target.type, target.id))) continue;
           const text = readLatin1(join(path, file));
-          const occ = classifyOccurrences(text, target.type, target.id);
+          const occ = classifyOccurrences(text, target.type, target.id, symbolsFor(file));
           const hit = [...occ.replace, ...occ.bare].sort((x, y) => x - y)[0];
           if (hit !== undefined) {
             refuse(
@@ -603,15 +644,7 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
         }
       }
 
-      const rangesByApp = new Map<string, { from: number; to: number }[]>();
-      const rangesOf = (app: string) => {
-        let r = rangesByApp.get(app);
-        if (!r) {
-          r = readIdRanges(join(path, app, 'app.json'));
-          rangesByApp.set(app, r);
-        }
-        return r;
-      };
+      const rangesOf = (app: string) => settingsOf(app).ranges;
       // Declared at HEAD, plus whatever this run has already handed out.
       const taken = new Set(declared);
 
@@ -668,11 +701,12 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
             // Cheap byte-level pre-check, so binaries and unrelated files are never decoded.
             if (file !== target.file && !wholeWord(target.id).test(readLatin1(fileAbs))) continue;
             const text = readText(fileAbs);
-            const occ = classifyOccurrences(text, target.type, target.id);
+            const occ = classifyOccurrences(text, target.type, target.id, symbolsFor(file));
             if (occ.bare.length > 0) {
               throw new Error(`${RENUMBER_STAGE}: ${file} holds a bare ${target.id} it did not hold before; nothing more rewritten`);
             }
-            const offsets = file === target.file ? [declarationIdOffset(text, target), ...occ.replace] : occ.replace;
+            const offsets =
+              file === target.file ? [declarationIdOffset(text, target, symbolsFor(file)), ...occ.replace] : occ.replace;
             if (offsets.length === 0) continue;
             writeText(fileAbs, replaceAt(text, offsets, target.id, newId));
             touched.add(file);

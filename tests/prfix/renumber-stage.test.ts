@@ -505,7 +505,7 @@ describe('createRenumberStage', () => {
 
     it('rewrites a type-qualified self-reference in the PR-added target', async () => {
       baseFixture();
-      const text = 'codeunit 72918753 "CTS-CB Ponto Feature"\n{\n    // RunObject = codeunit 72918753\n}\n';
+      const text = 'codeunit 72918753 "CTS-CB Ponto Feature"\n{\n    var\n        Self: Codeunit 72918753;\n}\n';
       put(PONTO, text);
       const { git } = fakeGit();
       await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
@@ -660,5 +660,73 @@ describe('createRenumberStage', () => {
       return 72918790;
     });
     await expect(s.execute(makeState(), makeCtx())).rejects.toThrow(/declaration/);
+  });
+});
+
+describe('createRenumberStage: what the compiler does not see', () => {
+  const LLM = 'base-application/Logging/Codeunits/LLMUserPromptLog.Codeunit.al';
+  const LLM_TEXT = '#if US64044\ncodeunit 72918700 "CTS-CB LLM User Prompt Log"\n{\n}\n#endif\n';
+  const COPY_UT = 'base-application/Templates/CopyTemplateUT.Codeunit.al';
+  const COPY_UT_TEXT = '/* TODO: Check the errors coming up\ncodeunit 72918701 "CTS-CB Copy Template UT"\n{\n}\n*/\n';
+  const TEMPLATE_UT = 'base-application/Templates/TemplateValuesUT.Codeunit.al';
+  const TEMPLATE_UT_TEXT = 'codeunit 72918701 "CTS-CB Template Values UT"\n{\n}\n';
+  const DUP_A = 'base-application/src/DupA.Codeunit.al';
+  const DUP_B = 'base-application/src/DupB.Codeunit.al';
+
+  const infoLines = (ctx: PipelineContext) =>
+    (ctx.logger.info as ReturnType<typeof mock>).mock.calls.map((c) => String(c[0]));
+  const ignoring = (ctx: PipelineContext) => infoLines(ctx).filter((l) => l.includes('ignoring'));
+
+  /** PR 61400: one real collision, plus main-only duplicates that are gated, commented out, or active. */
+  function pr61400Fixture(appJson = APP_JSON): void {
+    baseFixture();
+    put('base-application/app.json', appJson);
+    put(LLM, LLM_TEXT);
+    put(COPY_UT, COPY_UT_TEXT);
+    put(TEMPLATE_UT, TEMPLATE_UT_TEXT);
+    put(DUP_A, 'codeunit 72918710 "CTS-CB Dup A"\n{\n}\n');
+    put(DUP_B, 'codeunit 72918710 "CTS-CB Dup B"\n{\n}\n');
+  }
+
+  it('a #if-gated object in the PR is not a collision', async () => {
+    baseFixture();
+    put(PONTO, `#if US64044\n${PONTO_TEXT}#endif\n`);
+    const { git, calls } = fakeGit();
+    const n = fakeNinja([]);
+    await stage(git, n.factory).execute(makeState(), makeCtx());
+    expect(n.factory).not.toHaveBeenCalled();
+    expect(calls.commitFiles).not.toHaveBeenCalled();
+  });
+
+  it('byte-exact rewrite: the old ID inside comments is neither replaced nor refused', async () => {
+    baseFixture();
+    const text =
+      'codeunit 72918753 "CTS-CB Ponto Feature"\r\n{\r\n' +
+      '    // was codeunit 72918753 before the move\r\n' +
+      '    /* Codeunit.Run(72918753);\r\n       codeunit 72918753 */\r\n' +
+      '    procedure Run()\r\n    begin\r\n    end;\r\n}\r\n';
+    put(PONTO, Buffer.from('﻿' + text, 'utf8'));
+    const { git } = fakeGit();
+    await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+    // Only the declaration changes; both comments keep the old ID.
+    const expected = '﻿' + text.replace('codeunit 72918753 "CTS', 'codeunit 72918790 "CTS');
+    expect(readFileSync(join(root, PONTO)).equals(Buffer.from(expected, 'utf8'))).toBe(true);
+  });
+
+  it('a PR-modified file that mentions the old ID only in a comment does not refuse', async () => {
+    baseFixture();
+    const MOD = 'base-application/src/Mod.Codeunit.al';
+    const modText = 'codeunit 72918702 "Mod"\n{\n    // calls codeunit 72918753\n    #if NEVER\n    var X: Codeunit 72918753;\n    #endif\n}\n';
+    put(MOD, modText);
+    const { git } = fakeGit({
+      changed: [
+        { status: 'A', file: PONTO },
+        { status: 'M', file: MOD },
+      ],
+      atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [MOD]: 'codeunit 72918702 "Mod"\n{\n}\n' },
+    });
+    await stage(git, fakeNinja([72918790]).factory).execute(makeState(), makeCtx());
+    expect(read(MOD)).toBe(modText);
+    expect(read(PONTO)).toContain('codeunit 72918790');
   });
 });
