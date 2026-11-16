@@ -28,9 +28,8 @@ Motivating case: PR 61400's `PontoFeature.Codeunit.al` declares codeunit 7291875
 
 **When to refuse instead of renumbering**
 - A collision group with **exactly one** PR-introduced declaration is renumbered.
-- Any other group throws `IdCollisionError`, which maps to the new status `id-collision`:
-  - all members are PR-introduced, or none are;
-  - two or more members are PR-introduced.
+- A group with **no** PR-introduced member is the target's own state: it is skipped and logged (`renumber-collisions: ignoring <type> <id> in <app> — no PR-introduced member`), not refused; verification catches a real one. (Controller ruling after smoke 1.)
+- A group with two or more PR-introduced members throws `IdCollisionError`, which maps to the new status `id-collision`.
 
 **What a renumber changes**
 - It edits the object's declaration line. It also replaces every whole-word occurrence (`\b<oldId>\b`) of the old ID in files the PR **added**.
@@ -38,6 +37,7 @@ Motivating case: PR 61400's `PontoFeature.Codeunit.al` declares codeunit 7291875
 
 **Getting the new ID**
 - New IDs come only from `ninja_assignObjectId` with `{ objectType, targetFilePath: <absolute path of the renumbered .al file> }`.
+- `rangeName` (smoke 2): the named ranges are the target app's `.objidconfig` entries with a `description` (`objectRanges[<type>]` before `idRanges`). Ask first for the range that holds the old ID, then the others in file order; a rejected ID retries the same range, an exhausted range (error result or `available: false`) moves to the next; no named ranges means no `rangeName`.
 - The returned ID must lie inside the app's `app.json` `idRanges` and must not be declared for that type anywhere in the app at `HEAD`.
   - On a violation, ask again, up to `NINJA_MAX_ASSIGN_ATTEMPTS = 5` times. Never unassign an ID that turned out to be in use.
   - After 5 attempts, throw `Error('ninja: no usable <type> ID for <file>')`.
@@ -123,7 +123,7 @@ Motivating case: PR 61400's `PontoFeature.Codeunit.al` declares codeunit 7291875
   - `planRenumbers`:
     - One PR-introduced plus one target member → plan with `target` = the PR member.
     - Two PR-introduced → throws `IdCollisionError`.
-    - None PR-introduced → throws `IdCollisionError`.
+    - None PR-introduced → ignored and reported, not thrown (controller ruling after smoke 1).
     - `modified declaration line counts as PR-introduced`: the predicate is the caller's, so assert that `planRenumbers` uses only the predicate. Pass a member whose file existed at the target and get it as `target`.
 - [ ] **Step 2: Run** `bun test tests/prfix/al-objects.test.ts`. Expected: FAIL, module not found.
 - [ ] **Step 3: Implement.** Use `parseDeclaration` with a multiline regex anchored at line start, case-insensitive on the keyword, and output the type lowercased: `^\s*(table|tableextension|…)\s+(\d+)\s+("[^"]+"|[A-Za-z_][\w]*)` with the `m` and `i` flags. Strip quotes from the name. The 13 types come from `AL_OBJECT_TYPES`; build the alternation from it with the longer names first.
