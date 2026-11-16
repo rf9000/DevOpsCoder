@@ -7,7 +7,7 @@ import {
   STRUCTURED_OUTPUT_DENIED_TOOLS,
 } from '../pipeline/stages/_stage-helpers.ts';
 import type { AppConfig, PipelineState } from '../types/index.ts';
-import { createBashAllowlist } from '../utils/bash-allowlist.ts';
+import { createBashAllowlist, FILE_WRITE_FLAG_DENY } from '../utils/bash-allowlist.ts';
 import { createCostTracker } from '../utils/cost-tracker.ts';
 import { effortFor, modelFor } from '../utils/model-selection.ts';
 import { createPathEscapeFilter } from '../utils/path-escape-filter.ts';
@@ -26,6 +26,8 @@ export const RESOLVER_BASH_ALLOW: RegExp[] = [
   /^cat\b/,
   /^pwd\b/,
 ];
+
+export const RESOLVER_BASH_DENY: RegExp[] = [...FILE_WRITE_FLAG_DENY];
 
 export const resolverOutputSchema = z.object({
   files: z.array(z.object({ path: z.string(), resolution: z.string() })),
@@ -87,7 +89,7 @@ export async function resolveConflict(a: {
     prTitle: a.prTitle,
   });
   const canUseTool = composeCanUseTool([
-    createBashAllowlist({ allow: RESOLVER_BASH_ALLOW, deny: [] }),
+    createBashAllowlist({ allow: RESOLVER_BASH_ALLOW, deny: RESOLVER_BASH_DENY }),
     createPathEscapeFilter(a.worktreePath),
   ]);
   const cost = createCostTracker(a.state);

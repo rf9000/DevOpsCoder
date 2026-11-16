@@ -26,6 +26,13 @@ export interface BashAllowlistConfig {
 const SHELL_COMPOSITION_RE = /(?:&&|\|\||;|\||`|\$\(|>|<|\n|\r)/;
 
 /**
+ * Deny patterns every Bash policy carries. `git diff/log/show --output=<path>`
+ * writes any file the process can reach — the shared clone's `.git/hooks`
+ * included — under a verb the read-only allowlists admit.
+ */
+export const FILE_WRITE_FLAG_DENY: RegExp[] = [/--output\b/];
+
+/**
  * Build a `CanUseToolFn` that enforces a strict allowlist + denylist on Bash tool calls.
  *
  * Semantics:

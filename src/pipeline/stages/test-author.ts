@@ -12,7 +12,7 @@ import type {
 import type { WorkItemContext } from '../../services/wi-context.ts';
 import type { DiscoveredSkill } from '../../services/skill-loader.ts';
 import type { AnalyzerOutput } from './analyzer.ts';
-import { createBashAllowlist } from '../../utils/bash-allowlist.ts';
+import { createBashAllowlist, FILE_WRITE_FLAG_DENY } from '../../utils/bash-allowlist.ts';
 import { createPathEscapeFilter } from '../../utils/path-escape-filter.ts';
 import {
   MAX_TRANSIENT_RETRIES,
@@ -34,7 +34,7 @@ export const testAuthorOutputSchema = z.object({
   commits: z.array(z.string()),
 }) satisfies z.ZodType<TestAuthorOutput>;
 
-const TEST_AUTHOR_BASH_ALLOW: RegExp[] = [
+export const TEST_AUTHOR_BASH_ALLOW: RegExp[] = [
   /^git (status|diff|log|show|blame)\b/,
   /^git add (?!-A\b|\.\s*$|--all\b|:\/)/,
   /^git commit\b/,
@@ -63,7 +63,8 @@ const TEST_AUTHOR_BASH_ALLOW: RegExp[] = [
   /^pwd\b/,
 ];
 
-const TEST_AUTHOR_BASH_DENY: RegExp[] = [
+export const TEST_AUTHOR_BASH_DENY: RegExp[] = [
+  ...FILE_WRITE_FLAG_DENY,
   /^git push\b/,
   /^git checkout\b/,
   /^git switch\b/,
