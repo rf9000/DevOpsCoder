@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { loadConfig } from '../config/index.ts';
 import type { AppConfig } from '../types/index.ts';
+import { NINJA_MAX_ASSIGN_ATTEMPTS } from './ninja.ts';
 
 export interface PrFixConfig {
   app: AppConfig;
@@ -50,6 +51,7 @@ export function splitNinjaCommand(raw: string, platform: NodeJS.Platform): { com
 }
 
 const REBASE_PER_COMMIT_BUDGET_MS = 1_800_000;
+const RENUMBER_MIN_BUDGET_MS = 300_000;
 
 function explicitMs(env: Record<string, string | undefined>, key: string): number | undefined {
   const raw = env[key]?.trim();
@@ -88,6 +90,11 @@ export function loadPrFixConfig(env: Record<string, string | undefined>): PrFixC
     'rebase-onto-target':
       explicitMs(env, 'STAGE_TIMEOUT_MS_REBASE_ONTO_TARGET') ??
       (k.PRFIX_MAX_CONFLICT_COMMITS + 1) * REBASE_PER_COMMIT_BUDGET_MS,
+    // Every assign attempt may take a full call timeout, and the first `npx -y`
+    // connect alone can take up to 120s; never less than 5 minutes.
+    'renumber-collisions':
+      explicitMs(env, 'STAGE_TIMEOUT_MS_RENUMBER_COLLISIONS') ??
+      Math.max(RENUMBER_MIN_BUDGET_MS, 2 * k.NINJA_CALL_TIMEOUT_MS * NINJA_MAX_ASSIGN_ATTEMPTS),
     'push-rebased': explicitMs(env, 'STAGE_TIMEOUT_MS_PUSH_REBASED') ?? 300_000,
     'pr-comment': explicitMs(env, 'STAGE_TIMEOUT_MS_PR_COMMENT') ?? 120_000,
   };

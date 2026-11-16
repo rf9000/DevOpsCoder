@@ -48,6 +48,18 @@ export interface RenumberOutput {
   reserved: { type: string; id: number; /** Absolute path of the .al file. */ file: string }[];
 }
 
+/**
+ * The sha the branch ends at: what push-rebased pushed (or would have, in a
+ * dry run), else the renumber commit, else the rebase's head. The outcome's
+ * `newHead` and the success comment both use it.
+ */
+export function finalHeadSha(outputs: Record<string, unknown>): string | null {
+  if (typeof outputs.pushedCommit === 'string') return outputs.pushedCommit;
+  const renumber = outputs.renumber as RenumberOutput | undefined;
+  if (renumber?.commit) return renumber.commit;
+  return (outputs.rebase as RebaseOutput | undefined)?.newHeadSha ?? null;
+}
+
 export type PrFixStatus =
   | 'rebased'
   | 'up-to-date'

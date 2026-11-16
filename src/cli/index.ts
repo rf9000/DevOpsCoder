@@ -5,7 +5,7 @@ import { PipelineStateStore } from '../state/state-store.ts';
 import { buildPipeline, buildPrFixPipeline, buildSuggestionPipeline } from '../services/pipeline-builder.ts';
 import { loadPrFixConfig } from '../prfix/config.ts';
 import { createPrFixGit } from '../prfix/prfix-git.ts';
-import { fixPr } from '../prfix/fix-pr.ts';
+import { fixPr, ninjaFactoryFor } from '../prfix/fix-pr.ts';
 import { applySuggestions, failureOutcome, loadSuggestionConfig } from '../services/apply-suggestions.ts';
 import { parseSuggestionInput } from '../suggestions/input.ts';
 import { createSuggestionGit } from '../suggestions/suggestion-git.ts';
@@ -337,6 +337,9 @@ async function runFixPrCommand(): Promise<void> {
   const git = createPrFixGit({ config, logger });
   const continiaCli = createContiniaCli({ config, onRetry: (message) => logger.warn(message) });
   const keepEnv = process.argv.includes('--keep-env');
+  // One factory for the stage and for fixPr's release of unpushed IDs; every
+  // call is a fresh client, since the stage closes its own.
+  const ninja = ninjaFactoryFor(prfix);
   // Abort so the runner's finally still deletes the environment.
   const abortFlag = { aborted: false };
   const onSignal = (sig: string) => {
@@ -351,11 +354,12 @@ async function runFixPrCommand(): Promise<void> {
     ado,
     git,
     continiaCli,
-    stages: buildPrFixPipeline({ prfix, logger, ado, git, continiaCli, keepEnv }),
+    stages: buildPrFixPipeline({ prfix, logger, ado, git, continiaCli, keepEnv, ninja }),
     store: new PipelineStateStore(join(config.stateDir, 'prfix')),
     pullRequestId,
     keepEnv,
     abortFlag,
+    ninja,
   });
   console.log(JSON.stringify(outcome));
   process.exitCode = outcome.ok ? 0 : 1;

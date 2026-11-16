@@ -605,11 +605,12 @@ describe('buildPrFixPipeline', () => {
 
   it('buildPrFixPipeline stage order with and without SKIP_BUILD_TEST', () => {
     expect(buildPrFixPipeline(deps(prfixFor())).map((s) => s.name)).toEqual([
-      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'push-rebased', 'pr-comment',
+      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'renumber-collisions', 'push-rebased', 'pr-comment',
     ]);
     const verified = prfixFor({ SKIP_BUILD_TEST: 'false', CONTINIA_API_TOKEN: 'tok' });
     expect(buildPrFixPipeline(deps(verified)).map((s) => s.name)).toEqual([
-      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'env-provision', 'build-and-test', 'push-rebased', 'pr-comment',
+      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'renumber-collisions', 'env-provision', 'build-and-test',
+      'push-rebased', 'pr-comment',
     ]);
   });
 

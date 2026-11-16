@@ -245,6 +245,24 @@ describe('pr-comment', () => {
     expect((createPullRequestThread.mock.calls[0]?.[0] as { content: string }).content).toContain('Not verified');
   });
 
+  it('names the pushed sha (renumber commit included) and lists renumbered objects', async () => {
+    const { ado, createPullRequestThread } = fakeAdo(PR);
+    const renumbered = [{ type: 'codeunit', name: 'P', file: 'app/P.al', app: 'app', oldId: 5, newId: 6 }];
+    const s = makeState({
+      prFixInput: FULL_INPUT,
+      rebase: REBASE,
+      renumber: { commit: 'renum99aaaa', renumbered, reserved: [] },
+      pushedCommit: 'renum99aaaa',
+    });
+    await createPrCommentStage({ ado }).execute(s, makeCtx());
+    const content = (createPullRequestThread.mock.calls[0]?.[0] as { content: string }).content;
+    expect(content).toBe(
+      renderSuccessComment({ pr: PR, rebase: REBASE, newHead: 'renum99aaaa', renumbered, skippedVerification: false, keepEnv: false }),
+    );
+    expect(content).toContain('`renum99`');
+    expect(content).toContain('codeunit P: 5 → 6');
+  });
+
   it('posts nothing in a dry run', async () => {
     const { ado, createPullRequestThread } = fakeAdo(PR);
     await createPrCommentStage({ ado }).execute(state(), makeCtx(true));

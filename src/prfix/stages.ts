@@ -24,6 +24,7 @@ import { resolveConflict } from './resolver.ts';
 import {
   ConflictCapError,
   IdCollisionError,
+  finalHeadSha,
   MergeCommitsError,
   PrUpToDateError,
   UnresolvedConflictError,
@@ -312,6 +313,8 @@ export function createPrCommentStage(deps: {
       const content = renderSuccessComment({
         pr: input.pr,
         rebase,
+        newHead: finalHeadSha(state.outputs) ?? rebase.newHeadSha,
+        renumbered: (state.outputs.renumber as RenumberOutput | undefined)?.renumbered ?? [],
         verification: state.outputs.verification as VerificationOutput | undefined,
         environment: state.outputs.environment as EnvironmentOutput | undefined,
         skippedVerification: ctx.config.skipBuildTest,

@@ -176,4 +176,73 @@ describe('renderFailureComment', () => {
     expect(c).toContain('app/A.al');
     expect(c).toContain('app/B.al');
   });
+
+  it('lists the AL error lines of a verification failure in a fenced block', () => {
+    const c = renderFailureComment({
+      pr,
+      outcome: {
+        ...outcome,
+        status: 'verification-failed',
+        error:
+          'verification failed after 0 fix attempt(s): compile failed\n' +
+          "Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: The object 'X' with ID 72918753 is already declared\n" +
+          'Export\\Hash.Codeunit.al(2,5): error AL0264: Another',
+      },
+    });
+    expect(c).toContain('verification failed after 0 fix attempt(s): compile failed');
+    expect(c).toContain(
+      "```\nFeature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: The object 'X' with ID 72918753 is already declared\nExport\\Hash.Codeunit.al(2,5): error AL0264: Another\n```",
+    );
+    // The message line does not repeat the AL lines.
+    expect(c.split('\n').filter((l) => l.includes('Export\\Hash.Codeunit.al')).length).toBe(1);
+  });
+
+  it('id-collision: names the manual fix and lists each group with its members', () => {
+    const c = renderFailureComment({
+      pr,
+      outcome: { ...outcome, status: 'id-collision', error: 'codeunit 5 collides' },
+      collisions: [
+        {
+          app: 'base-application',
+          type: 'codeunit',
+          id: 72918753,
+          members: [
+            { type: 'codeunit', id: 72918753, name: 'A', file: 'base-application/A.Codeunit.al', app: 'base-application' },
+            { type: 'codeunit', id: 72918753, name: 'B', file: 'base-application/B.Codeunit.al', app: 'base-application' },
+          ],
+        },
+      ],
+    });
+    expect(c).toContain('## Object ID collision needs a manual fix');
+    expect(c).not.toContain('Could not rebase');
+    expect(c).toContain('id-collision');
+    expect(c).toContain('codeunit 5 collides');
+    expect(c).toContain('`base-application`: codeunit 72918753');
+    expect(c).toContain('- `base-application/A.Codeunit.al`');
+    expect(c).toContain('- `base-application/B.Codeunit.al`');
+  });
+});
+
+describe('renderSuccessComment renumber section', () => {
+  it('lists renumbered objects and uses the given new head', () => {
+    const c = renderSuccessComment({
+      pr,
+      rebase: clean,
+      newHead: 'ddddddd4444444',
+      renumbered: [
+        { type: 'codeunit', name: 'CTS-CB Ponto Feature', file: 'base-application/P.al', app: 'base-application', oldId: 72918753, newId: 72918790 },
+      ],
+      verification: verified,
+      skippedVerification: false,
+      keepEnv: false,
+    });
+    expect(c).toContain('### Renumbered object IDs');
+    expect(c).toContain('codeunit CTS-CB Ponto Feature: 72918753 → 72918790');
+    expect(c).toContain('`aaaaaaa` → `ddddddd`');
+  });
+
+  it('has no renumber section when nothing was renumbered', () => {
+    const c = renderSuccessComment({ pr, rebase: clean, renumbered: [], verification: verified, skippedVerification: false, keepEnv: false });
+    expect(c).not.toContain('Renumbered');
+  });
 });

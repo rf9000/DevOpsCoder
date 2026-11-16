@@ -71,6 +71,16 @@ describe('loadPrFixConfig', () => {
       1000, 2000, 3000, 4000, 5000,
     ]);
   });
+
+  it('renumber-collisions timeout: max(300000, 2 * NINJA_CALL_TIMEOUT_MS * 5), explicit value wins', () => {
+    expect(loadPrFixConfig(env).app.stageTimeoutMs['renumber-collisions']).toBe(600_000);
+    expect(loadPrFixConfig({ ...env, NINJA_CALL_TIMEOUT_MS: '10000' }).app.stageTimeoutMs['renumber-collisions']).toBe(300_000);
+    expect(loadPrFixConfig({ ...env, NINJA_CALL_TIMEOUT_MS: '90000' }).app.stageTimeoutMs['renumber-collisions']).toBe(900_000);
+    expect(
+      loadPrFixConfig({ ...env, STAGE_TIMEOUT_MS_RENUMBER_COLLISIONS: '7000' }).app.stageTimeoutMs['renumber-collisions'],
+    ).toBe(7000);
+  });
+
   it('defaults the Ninja knobs', () => {
     const c = loadPrFixConfig(env);
     expect(c.renumberCollisions).toBe(true);

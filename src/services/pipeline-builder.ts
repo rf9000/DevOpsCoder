@@ -43,6 +43,8 @@ import {
   createSuggestionWorktreeStage,
 } from '../pipeline/stages/suggestions.ts';
 import type { PrFixConfig } from '../prfix/config.ts';
+import { ninjaFactoryFor } from '../prfix/fix-pr.ts';
+import type { NinjaClient } from '../prfix/ninja.ts';
 import type { PrFixGit } from '../prfix/prfix-git.ts';
 import {
   createPrCommentStage,
@@ -50,6 +52,7 @@ import {
   createPrWorktreeStage,
   createPushRebasedStage,
   createRebaseStage,
+  createRenumberStage,
 } from '../prfix/stages.ts';
 
 const ANALYZER_PROMPT_PATH = `${import.meta.dir}/../prompts/analyzer.md`;
@@ -418,11 +421,18 @@ export interface PrFixPipelineDeps {
   discoverTestCodeunits?: PipelineBuilderDeps['discoverTestCodeunits'];
   /** `--keep-env`: the environment outlives the run, so pr-comment links it. */
   keepEnv?: boolean;
+  /**
+   * Object ID Ninja client factory for renumber-collisions. Each call must
+   * return a fresh client (the stage closes the one it gets). Default: a lazily
+   * connecting client from `prfix.ninjaCommand` / `prfix.ninjaCallTimeoutMs`.
+   */
+  ninja?: () => NinjaClient;
 }
 
 /**
- * fix-pr: [pr-intake, pr-worktree, rebase-onto-target, (env-provision,
- * build-and-test), push-rebased, pr-comment]. build-and-test runs with no fix
+ * fix-pr: [pr-intake, pr-worktree, rebase-onto-target, renumber-collisions,
+ * (env-provision, build-and-test), push-rebased, pr-comment]. Renumbering runs
+ * before the gate, so it compiles the renumbered tree. build-and-test runs with no fix
  * budget whatever the config says: the PR is rebased, not rewritten, so a red
  * gate means no push. Worktree and environment cleanup run in `fixPr`'s
  * finally, because the orchestrator stops at the first failing stage.
@@ -461,6 +471,7 @@ export function buildPrFixPipeline(deps: PrFixPipelineDeps): Stage[] {
       runner,
       promptTemplate: deps.resolverPromptTemplate ?? readFileSync(REBASE_RESOLVER_PROMPT_PATH, 'utf-8'),
     }),
+    createRenumberStage({ git: deps.git, prfix: deps.prfix, ninja: deps.ninja ?? ninjaFactoryFor(deps.prfix) }),
     ...verifyStages,
     createPushRebasedStage({ git: deps.git }),
     createPrCommentStage({ ado: deps.ado, keepEnv: deps.keepEnv ?? false }),

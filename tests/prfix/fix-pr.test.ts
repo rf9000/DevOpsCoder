@@ -2,11 +2,13 @@ import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { fixPr } from '../../src/prfix/fix-pr.ts';
+import { alErrorLines, fixPr } from '../../src/prfix/fix-pr.ts';
 import type { PrFixConfig } from '../../src/prfix/config.ts';
 import type { PrFixGit } from '../../src/prfix/prfix-git.ts';
+import type { NinjaClient } from '../../src/prfix/ninja.ts';
 import {
   ConflictCapError,
+  IdCollisionError,
   MergeCommitsError,
   PrUpToDateError,
   UnresolvedConflictError,
@@ -74,7 +76,14 @@ const comment = stage('pr-comment', () => {});
 
 function setup(
   stages: Stage[],
-  opts: { dryRun?: boolean; keepEnv?: boolean; commentFails?: boolean; deleteFails?: boolean; abortFlag?: { aborted: boolean } } = {},
+  opts: {
+    dryRun?: boolean;
+    keepEnv?: boolean;
+    commentFails?: boolean;
+    deleteFails?: boolean;
+    abortFlag?: { aborted: boolean };
+    unassignFails?: boolean;
+  } = {},
 ) {
   const app = makeTestConfig(
     { STATE_DIR: mkdtempSync(join(tmpdir(), 'prfix-')) },
@@ -100,6 +109,11 @@ function setup(
   });
   const warn = mock((_m: string) => {});
   const logger = { info: () => {}, warn, error: () => {} };
+  const unassign = mock(async (_type: string, _id: number, _file: string) => {
+    if (opts.unassignFails) throw new Error('ninja down');
+  });
+  const close = mock(async () => {});
+  const ninjaFactory = mock(() => ({ assign: async () => 0, unassign, close }) as unknown as NinjaClient);
   const outcome = fixPr({
     prfix,
     logger,
@@ -112,8 +126,9 @@ function setup(
     keepEnv: opts.keepEnv ?? false,
     ...(opts.abortFlag ? { abortFlag: opts.abortFlag } : {}),
     now: () => new Date('2026-11-16T00:00:00.000Z'),
+    ninja: ninjaFactory,
   });
-  return { outcome, removeWorktree, createPullRequestThread, deleteEnvironment, warn };
+  return { outcome, removeWorktree, createPullRequestThread, deleteEnvironment, warn, unassign, close, ninjaFactory };
 }
 
 describe('fixPr', () => {
@@ -310,5 +325,160 @@ describe('fixPr', () => {
     const upToDate = setup([intake, { name: 'pr-worktree', costFree: true, canRun: () => true, async execute(s) { s.outputs.worktree = WT; throw new PrUpToDateError('already'); } }]);
     await upToDate.outcome;
     expect(upToDate.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  const RESERVED = [
+    { type: 'codeunit', id: 72918790, file: '/wt/prfix-42/app/P.al' },
+    { type: 'codeunit', id: 72918791, file: '/wt/prfix-42/app/Q.al' },
+  ];
+  const RENUMBERED = [
+    { type: 'codeunit', name: 'P', file: 'app/P.al', app: 'app', oldId: 72918753, newId: 72918790 },
+  ];
+  const renumber = stage('renumber-collisions', (o) => {
+    o.renumber = { commit: 'renum00', renumbered: RENUMBERED, reserved: RESERVED };
+  });
+
+  it('IdCollisionError maps to id-collision and the failure comment lists the group', async () => {
+    const group = {
+      app: 'app',
+      type: 'codeunit',
+      id: 5,
+      members: [
+        { type: 'codeunit', id: 5, name: 'A', file: 'app/A.al', app: 'app' },
+        { type: 'codeunit', id: 5, name: 'B', file: 'app/B.al', app: 'app' },
+      ],
+    };
+    const r = setup([intake, worktree, rebase, throwing('renumber-collisions', new IdCollisionError([group], `bad ${PAT}`))]);
+    const o = await r.outcome;
+    expect(o).toMatchObject({ ok: false, status: 'id-collision', error: 'bad <redacted>' });
+    const content = r.createPullRequestThread.mock.calls[0]?.[0].content ?? '';
+    expect(content).toContain('Object ID collision needs a manual fix');
+    expect(content).toContain('`app/A.al`');
+  });
+
+  it('dry run releases reserved IDs', async () => {
+    const r = setup([intake, worktree, rebase, renumber, push, comment], { dryRun: true });
+    const o = await r.outcome;
+    expect(o.status).toBe('rebased');
+    expect(r.unassign.mock.calls).toEqual(RESERVED.map((x) => [x.type, x.id, x.file]));
+    expect(r.close).toHaveBeenCalledTimes(1);
+    expect(r.ninjaFactory).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases reserved IDs before the worktree is removed', async () => {
+    const order: string[] = [];
+    const r = setup([intake, worktree, rebase, renumber, push, comment], { dryRun: true });
+    r.unassign.mockImplementation(async () => {
+      order.push('unassign');
+    });
+    r.removeWorktree.mockImplementation(async () => {
+      order.push('remove');
+    });
+    await r.outcome;
+    expect(order).toEqual(['unassign', 'unassign', 'remove']);
+  });
+
+  it('failure before push releases reserved IDs', async () => {
+    const r = setup([intake, worktree, rebase, renumber, env, throwing('build-and-test', new Error('boom'))]);
+    await r.outcome;
+    expect(r.unassign).toHaveBeenCalledTimes(2);
+    expect(r.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushed run keeps reserved IDs', async () => {
+    const r = setup([intake, worktree, rebase, renumber, stage('push-rebased', (o) => { o.pushed = true; }), comment]);
+    await r.outcome;
+    expect(r.unassign).not.toHaveBeenCalled();
+    expect(r.ninjaFactory).not.toHaveBeenCalled();
+  });
+
+  it('no reserved IDs: the Ninja client is never created', async () => {
+    const none = stage('renumber-collisions', (o) => {
+      o.renumber = { commit: null, renumbered: [], reserved: [] };
+    });
+    const r = setup([intake, worktree, rebase, none, push, comment], { dryRun: true });
+    await r.outcome;
+    expect(r.ninjaFactory).not.toHaveBeenCalled();
+  });
+
+  it('unassign failure only warns', async () => {
+    const r = setup([intake, worktree, rebase, renumber, push, comment], { dryRun: true, unassignFails: true });
+    const o = await r.outcome;
+    expect(o.status).toBe('rebased');
+    expect(r.unassign).toHaveBeenCalledTimes(2);
+    expect(r.close).toHaveBeenCalledTimes(1);
+    expect(r.warn.mock.calls.filter((c) => String(c[0]).includes('ninja down')).length).toBe(2);
+  });
+
+  it('verification-failed outcome error carries AL error lines', async () => {
+    const alc = [
+      'Microsoft (R) AL Compiler version 18.1',
+      'C:\\wt\\prfix-42\\base-application\\Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A',
+      'C:\\wt\\prfix-42\\base-application\\Feature Management\\Other.al(3,1): info AL0749: noise',
+      'C:\\wt\\prfix-42\\base-application\\Export\\Hash.Codeunit.al(1,10): error AL0264: Already declared B',
+      'C:\\wt\\prfix-42\\base-application\\Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A',
+      'Compilation ended',
+    ].join('\r\n');
+    const verify = stage('build-and-test', (o) => {
+      o.verification = {
+        attempts: 0,
+        compiled: false,
+        deploy: [
+          { app: 'base-application', compiled: false, published: false, error: alc, code: 'compile-failed' },
+          { app: 'tests', compiled: true, published: true, error: 'x(1,1): error AL0001: ignored, row succeeded' },
+        ],
+        testRuns: [],
+        passed: false,
+      };
+      throw new VerificationFailedError(0, false, 'compile failed');
+    });
+    const o = await setup([intake, worktree, rebase, env, verify]).outcome;
+    expect(o.status).toBe('verification-failed');
+    expect(o.error).toBe(
+      'verification failed after 0 fix attempt(s): compile failed\n' +
+        'Feature Management\\PontoFeature.Codeunit.al(1,10): error AL0264: Already declared A\n' +
+        'Export\\Hash.Codeunit.al(1,10): error AL0264: Already declared B',
+    );
+  });
+
+  it('outcome carries renumbered, and newHead is the renumber commit when nothing was pushed', async () => {
+    const o = await setup([intake, worktree, rebase, renumber], { dryRun: true }).outcome;
+    expect(o.renumbered).toEqual(RENUMBERED);
+    expect(o.newHead).toBe('renum00');
+  });
+
+  it('newHead prefers the pushed commit', async () => {
+    const pushedCommit = stage('push-rebased', (out) => {
+      out.pushedCommit = 'pushed0';
+    });
+    const o = await setup([intake, worktree, rebase, renumber, pushedCommit, comment], { dryRun: true }).outcome;
+    expect(o.newHead).toBe('pushed0');
+  });
+});
+
+describe('alErrorLines', () => {
+  const v = (deploy: { app: string; compiled: boolean; published: boolean; error?: string }[]) => ({
+    attempts: 0,
+    compiled: false,
+    deploy,
+    testRuns: [],
+    passed: false,
+  });
+
+  it('returns [] without a verification', () => {
+    expect(alErrorLines(undefined)).toEqual([]);
+  });
+
+  it('caps at max and reads published === false rows too', () => {
+    const lines = Array.from({ length: 5 }, (_, i) => `f${i}.al(1,1): error AL000${i}: e`).join('\n');
+    const out = alErrorLines(v([{ app: 'App', compiled: true, published: false, error: lines }]), 3);
+    expect(out).toEqual(['f0.al(1,1): error AL0000: e', 'f1.al(1,1): error AL0001: e', 'f2.al(1,1): error AL0002: e']);
+  });
+
+  it('strips an absolute path up to the app dir, with either separator', () => {
+    const out = alErrorLines(
+      v([{ app: 'apps/App', compiled: false, published: false, error: '/home/x/wt/apps/App/src/F.al(2,3): error AL0118: n' }]),
+    );
+    expect(out).toEqual(['src/F.al(2,3): error AL0118: n']);
   });
 });
