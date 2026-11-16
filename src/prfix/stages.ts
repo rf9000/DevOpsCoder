@@ -367,7 +367,7 @@ function wholeWord(id: number, flags = ''): RegExp {
 
 /** `idRanges` (`[{from,to}]`), else the singular `idRange`; an app with neither has no usable ID. */
 function readIdRanges(abs: string): { from: number; to: number }[] {
-  const json = JSON.parse(readFileSync(abs, 'utf8').replace(/^﻿/, '')) as {
+  const json = JSON.parse(readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')) as {
     idRanges?: { from?: unknown; to?: unknown }[];
     idRange?: { from?: unknown; to?: unknown };
   };
@@ -388,7 +388,7 @@ function appOf(file: string, appDirs: string[]): string | undefined {
 }
 
 const DECLARATION_LINE_RE = new RegExp(
-  String.raw`^﻿?[ \t]*(${[...AL_OBJECT_TYPES].sort((a, b) => b.length - a.length).join('|')})[ \t]+(\d+)\b`,
+  String.raw`^\uFEFF?[ \t]*(${[...AL_OBJECT_TYPES].sort((a, b) => b.length - a.length).join('|')})[ \t]+(\d+)\b`,
   'im',
 );
 
