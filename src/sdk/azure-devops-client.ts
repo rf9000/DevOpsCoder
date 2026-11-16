@@ -3,6 +3,7 @@ import type {
   CreatePullRequestArgs,
   CreatePullRequestThreadArgs,
   PullRequest,
+  PullRequestDetails,
   PullRequestStatus,
   WiqlQueryResponse,
   WorkItem,
@@ -39,9 +40,19 @@ export interface AdoClient {
     pullRequestId: number,
     opts?: { signal?: AbortSignal },
   ): Promise<PullRequestStatus>;
+  /** Source/target refs, head commit and draft flag of one pull request. */
+  getPullRequest(
+    repositoryName: string,
+    pullRequestId: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<PullRequestDetails>;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+function normalizePrStatus(status: string | undefined): PullRequestStatus {
+  return status === 'active' || status === 'completed' || status === 'abandoned' ? status : 'notSet';
+}
 
 function authHeader(pat: string): string {
   return `Basic ${Buffer.from(`:${pat}`).toString('base64')}`;
@@ -280,7 +291,41 @@ export function createAdoClient(
         opts.signal !== undefined ? { signal: opts.signal } : undefined,
       );
       const status = response.status;
-      return status === 'active' || status === 'completed' || status === 'abandoned' ? status : 'notSet';
+      return normalizePrStatus(status);
+    },
+
+    async getPullRequest(
+      repositoryName: string,
+      pullRequestId: number,
+      opts: { signal?: AbortSignal } = {},
+    ): Promise<PullRequestDetails> {
+      const r = await adoFetchWithRetry<{
+        pullRequestId?: number;
+        status?: string;
+        title?: string;
+        sourceRefName?: string;
+        targetRefName?: string;
+        lastMergeSourceCommit?: { commitId?: string };
+        isDraft?: boolean;
+        url?: string;
+      }>(
+        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(repositoryName)}/pullrequests/${pullRequestId}?api-version=7.1`,
+        opts.signal !== undefined ? { signal: opts.signal } : undefined,
+      );
+      const headCommit = r.lastMergeSourceCommit?.commitId;
+      if (!headCommit) {
+        throw new Error(`PR ${pullRequestId}: response has no lastMergeSourceCommit`);
+      }
+      return {
+        id: r.pullRequestId ?? pullRequestId,
+        status: normalizePrStatus(r.status),
+        title: r.title ?? '',
+        sourceRefName: r.sourceRefName ?? '',
+        targetRefName: r.targetRefName ?? '',
+        headCommit,
+        isDraft: r.isDraft ?? false,
+        url: r.url ?? '',
+      };
     },
   };
 }

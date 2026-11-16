@@ -29,6 +29,7 @@ export function createReadOnlyAdoClient(inner: AdoClient): AdoClient {
     getWorkItemComments: (id, opts) => inner.getWorkItemComments(id, opts),
     getWorkItemUpdates: (id, opts) => inner.getWorkItemUpdates(id, opts),
     getPullRequestStatus: (repo, id, opts) => inner.getPullRequestStatus(repo, id, opts),
+    getPullRequest: (repo, id, opts) => inner.getPullRequest(repo, id, opts),
     addTagToWorkItem: blocked('addTagToWorkItem'),
     removeTagFromWorkItem: blocked('removeTagFromWorkItem'),
     addWorkItemComment: blocked('addWorkItemComment'),

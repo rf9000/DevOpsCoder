@@ -17,6 +17,7 @@ describe('createReadOnlyAdoClient', () => {
     createPullRequest: mock(async () => ({})),
     createPullRequestThread: mock(async () => {}),
     getPullRequestStatus: async () => 'active' as const,
+    getPullRequest: mock(async () => ({ id: 7 })),
   };
   const ado = createReadOnlyAdoClient(inner as unknown as AdoClient);
 
@@ -26,6 +27,11 @@ describe('createReadOnlyAdoClient', () => {
     await ado.getWorkItemComments(1);
     await ado.getWorkItemUpdates(1);
     expect(inner.getWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('getPullRequest passes through', async () => {
+    expect(await ado.getPullRequest('r', 7)).toEqual({ id: 7 } as never);
+    expect(inner.getPullRequest).toHaveBeenCalledTimes(1);
   });
 
   it('throws on every write and never reaches the inner client', async () => {

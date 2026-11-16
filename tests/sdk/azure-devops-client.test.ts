@@ -76,6 +76,52 @@ describe('createAdoClient', () => {
     });
   });
 
+  describe('getPullRequest', () => {
+    it('maps the REST payload', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(200, {
+          pullRequestId: 7,
+          status: 'active',
+          title: 'T',
+          sourceRefName: 'refs/heads/feat/x',
+          targetRefName: 'refs/heads/main',
+          lastMergeSourceCommit: { commitId: 'abc' },
+          isDraft: true,
+          url: 'u',
+        }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      expect(await client.getPullRequest('My Repo', 7)).toEqual({
+        id: 7,
+        status: 'active',
+        title: 'T',
+        sourceRefName: 'refs/heads/feat/x',
+        targetRefName: 'refs/heads/main',
+        headCommit: 'abc',
+        isDraft: true,
+        url: 'u',
+      });
+      expect(calls[0]!.url).toBe(
+        'https://dev.azure.com/my-org/my-project/_apis/git/repositories/My%20Repo/pullrequests/7?api-version=7.1',
+      );
+    });
+
+    it('throws when lastMergeSourceCommit is missing', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(200, {
+          pullRequestId: 7,
+          status: 'active',
+          title: 'T',
+          sourceRefName: 'refs/heads/feat/x',
+          targetRefName: 'refs/heads/main',
+          url: 'u',
+        }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      await expect(client.getPullRequest('My Repo', 7)).rejects.toThrow(/lastMergeSourceCommit/);
+    });
+  });
+
   describe('queryWorkItemsByTag', () => {
     it('POSTs WIQL with the trigger tag and returns work item IDs', async () => {
       const fetchImpl = setupFetch([
