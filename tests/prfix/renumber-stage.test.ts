@@ -900,6 +900,23 @@ describe('createRenumberStage: Ninja rangeName from .objidconfig', () => {
     expect(r.reserved).toEqual([{ type: 'codeunit', id: 71553600, file: join(root, PONTO), status: 'used' }]);
   });
 
+  it('an auth refusal (403 USER_NOT_AUTHORIZED) stops at once and names the git email', async () => {
+    fixture();
+    const n = fakeNinja([]);
+    const text =
+      'Error: Failed to commit codeunit ID: Backend request failed: HTTP 403: Forbidden - {"error":{"code":"USER_NOT_AUTHORIZED","gitEmail":"claude-agent@continia.local"}}';
+    n.calls.assign.mockImplementationOnce(async () => {
+      throw new NinjaAssignRefusedError(text, `ninja: ${text}`);
+    });
+    const state = makeState();
+    const err = (await stage(fakeGit().git, n.factory).execute(state, makeCtx()).catch((e: unknown) => e)) as Error;
+    expect(n.calls.assign).toHaveBeenCalledTimes(1);
+    expect(err.message).toContain('refused claude-agent@continia.local');
+    expect(err.message).toContain('NINJA_GIT_EMAIL');
+    expect(err.message).not.toContain('no usable');
+    expect((state.outputs.renumber as RenumberOutput).reserved).toEqual([]);
+  });
+
   it('a rejected ID retries the same range', async () => {
     fixture();
     const n = fakeNinja([72918700, 72918790]);

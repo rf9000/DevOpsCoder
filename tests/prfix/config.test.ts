@@ -127,3 +127,17 @@ describe('splitNinjaCommand', () => {
     });
   });
 });
+
+describe('NINJA_GIT_EMAIL / NINJA_GIT_NAME', () => {
+  const base = env;
+  it('absent: no identity', () => {
+    expect(loadPrFixConfig(base).ninjaGitIdentity).toBeUndefined();
+  });
+  it('email and name are read; blank name is dropped', () => {
+    expect(loadPrFixConfig({ ...base, NINJA_GIT_EMAIL: ' ninja@x ', NINJA_GIT_NAME: 'Ninja' }).ninjaGitIdentity).toEqual({ email: 'ninja@x', name: 'Ninja' });
+    expect(loadPrFixConfig({ ...base, NINJA_GIT_EMAIL: 'ninja@x', NINJA_GIT_NAME: ' ' }).ninjaGitIdentity).toEqual({ email: 'ninja@x' });
+  });
+  it('a name without an email is rejected', () => {
+    expect(() => loadPrFixConfig({ ...base, NINJA_GIT_NAME: 'Ninja' })).toThrow(/NINJA_GIT_EMAIL/);
+  });
+});

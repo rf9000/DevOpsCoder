@@ -19,7 +19,19 @@ import {
 } from './al-objects.ts';
 import type { PrFixConfig } from './config.ts';
 import { renderSuccessComment } from './comment.ts';
-import { NINJA_MAX_ASSIGN_ATTEMPTS, NinjaAssignRefusedError, type NinjaClient } from './ninja.ts';
+import { NINJA_MAX_ASSIGN_ATTEMPTS, NinjaAssignRefusedError, isNinjaAuthError, type NinjaClient } from './ninja.ts';
+
+/**
+ * Ninja refused the caller. The backend authorizes by git email and says which
+ * one it saw (`"gitEmail":"…"`), so the message names it and the two fixes.
+ */
+function ninjaAuthError(serverText: string): Error {
+  const seen = /"gitEmail"\s*:\s*"([^"]+)"/.exec(serverText)?.[1];
+  return new Error(
+    `ninja: the Object ID Ninja backend refused ${seen ?? 'this caller'} — authorize that git email for the app ` +
+      `in Object ID Ninja, or set NINJA_GIT_EMAIL to an authorized one. Server said: ${serverText}`,
+  );
+}
 import type { PrFixGit, RebaseStep } from './prfix-git.ts';
 import { resolveConflict } from './resolver.ts';
 import {
@@ -777,6 +789,10 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
             try {
               id = rangeName === undefined ? await client.assign(target.type, abs) : await client.assign(target.type, abs, rangeName);
             } catch (err) {
+              // The backend refused the caller, not the range: no other range can help.
+              if (err instanceof NinjaAssignRefusedError && isNinjaAuthError(err.serverText)) {
+                throw ninjaAuthError(err.serverText);
+              }
               // Without a range name there is nothing else to ask for: the error stands as it is.
               if (!(err instanceof NinjaAssignRefusedError) || rangeName === undefined) throw err;
               if (rangeIdx + 1 >= order.length) throw giveUp(`Ninja refused the last range: ${err.serverText}`);

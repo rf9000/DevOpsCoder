@@ -62,6 +62,7 @@ export function ninjaFactoryFor(prfix: PrFixConfig): () => NinjaClient {
       command: prfix.ninjaCommand.command,
       args: prfix.ninjaCommand.args,
       timeoutMs: prfix.ninjaCallTimeoutMs,
+      ...(prfix.ninjaGitIdentity ? { gitIdentity: prfix.ninjaGitIdentity } : {}),
     });
 }
 

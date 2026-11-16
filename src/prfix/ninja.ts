@@ -168,6 +168,50 @@ export const NINJA_ENV_ALLOWLIST: readonly string[] = [
 export const NINJA_ENV_ALLOWED_PREFIXES: readonly string[] = ['npm_config_', 'NPM_CONFIG_'];
 
 /**
+ * The git identity the Ninja server reports to its backend. The backend
+ * authorizes by the caller's git email (`USER_NOT_AUTHORIZED` with `gitEmail`),
+ * which the server reads from git config. Without this it reads whatever the
+ * shared target clone or the container's global config says, which on the VM
+ * is the agents' `claude-agent@continia.local`.
+ */
+export interface NinjaGitIdentity {
+  email: string;
+  name?: string;
+}
+
+/**
+ * `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` (git >= 2.31) outrank every git config
+ * file, so `git config user.email` in any repo answers with this identity; the
+ * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` pair covers a server that reads those
+ * instead. Only the child sees them — the shared clone is never touched.
+ */
+function gitIdentityEnv(identity: NinjaGitIdentity): Record<string, string> {
+  const entries: [string, string][] = [['user.email', identity.email]];
+  if (identity.name) entries.push(['user.name', identity.name]);
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(entries.length) };
+  entries.forEach(([k, v], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = k;
+    env[`GIT_CONFIG_VALUE_${i}`] = v;
+  });
+  env.GIT_AUTHOR_EMAIL = identity.email;
+  env.GIT_COMMITTER_EMAIL = identity.email;
+  if (identity.name) {
+    env.GIT_AUTHOR_NAME = identity.name;
+    env.GIT_COMMITTER_NAME = identity.name;
+  }
+  return env;
+}
+
+/**
+ * The backend refused the caller rather than the range: HTTP 401/403, Ninja's
+ * `USER_NOT_AUTHORIZED`, or a missing/invalid auth key. Trying another range
+ * cannot help, so the stage stops on it instead of reporting the ranges as full.
+ */
+export function isNinjaAuthError(text: string): boolean {
+  return /\bHTTP 40[13]\b|USER_NOT_AUTHORIZED|\bunauthori[sz]ed\b|\bforbidden\b|auth(?:orization)? key/i.test(text);
+}
+
+/**
  * Spawn parameters for the stdio server. The child is a third-party package
  * fetched by `npx -y`, so it gets an allowlisted environment — never the whole
  * process env, which holds AZURE_DEVOPS_PAT, ANTHROPIC_*, CONTINIA_API_TOKEN
@@ -177,8 +221,10 @@ export function ninjaStdioParams(
   command: string,
   args: string[],
   env: Record<string, string | undefined> = process.env,
+  gitIdentity?: NinjaGitIdentity,
 ): StdioServerParameters {
   const passed: Record<string, string> = {};
+  if (gitIdentity) Object.assign(passed, gitIdentityEnv(gitIdentity));
   // Named lookups, not an iteration, so Windows' case-insensitive process.env still finds `Path` as PATH.
   for (const key of [...DEFAULT_INHERITED_ENV_VARS, ...NINJA_ENV_ALLOWLIST]) {
     const v = env[key];
@@ -195,6 +241,8 @@ export function createNinjaClient(opts: {
   command: string;
   args: string[];
   timeoutMs: number;
+  /** The git identity the server reports to the Ninja backend (`NINJA_GIT_EMAIL`). */
+  gitIdentity?: NinjaGitIdentity;
   /** Test seam: replaces the stdio transport that would spawn `command args`. */
   transport?: Transport;
 }): NinjaClient {
@@ -211,7 +259,7 @@ export function createNinjaClient(opts: {
         if (opts.transport) {
           transport = opts.transport;
         } else {
-          const stdio = new StdioClientTransport(ninjaStdioParams(opts.command, opts.args));
+          const stdio = new StdioClientTransport(ninjaStdioParams(opts.command, opts.args, process.env, opts.gitIdentity));
           // Piped stderr must be drained or a chatty child blocks on a full pipe;
           // the tail is kept for the connect-failure message.
           stdio.stderr?.on('data', (chunk: Buffer | string) => {

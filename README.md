@@ -162,6 +162,7 @@ Settings:
 | `PRFIX_RENUMBER_COLLISIONS` | true | Run `renumber-collisions`; `false` skips it |
 | `NINJA_MCP_COMMAND` | `npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2` | How to launch the Object ID Ninja MCP server, split on whitespace (`cmd /c` is prefixed on Windows) |
 | `NINJA_CALL_TIMEOUT_MS` | 60000 | Timeout of one Ninja tool call |
+| `NINJA_GIT_EMAIL` / `NINJA_GIT_NAME` | unset | Git identity the Ninja server reports to its backend, which authorizes by that email (`HTTP 403 USER_NOT_AUTHORIZED` otherwise). Unset: the server reads the target clone's git config (on the VM, the agents' `claude-agent@continia.local`). The email must be authorized for the app in Object ID Ninja. Only the Ninja child sees it; the clone is untouched |
 | `STAGE_TIMEOUT_MS_RENUMBER_COLLISIONS` | max(300000, 10 × `NINJA_CALL_TIMEOUT_MS`) | Timeout of the whole `renumber-collisions` stage |
 
 It also needs `BOT_GIT_NAME` / `BOT_GIT_EMAIL` (the committer of the rebased commits) and the variables the main pipeline needs. `MAX_COST_USD_PER_WI` caps the run's spend.

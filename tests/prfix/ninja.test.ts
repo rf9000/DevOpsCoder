@@ -7,6 +7,7 @@ import {
   NinjaAssignRefusedError,
   createNinjaClient,
   ninjaStdioParams,
+  isNinjaAuthError,
   parseAssignedId,
 } from '../../src/prfix/ninja.ts';
 
@@ -321,5 +322,56 @@ describe('parseAssignedId', () => {
   it('throws when no id can be found', () => {
     expect(() => parseAssignedId({ content: [{ type: 'text', text: 'done' }] })).toThrow(/ninja/);
     expect(() => parseAssignedId({})).toThrow(/ninja/);
+  });
+});
+
+describe('ninjaStdioParams git identity', () => {
+  it('gives the child a git identity via GIT_CONFIG_* and GIT_AUTHOR/COMMITTER vars', () => {
+    const p = ninjaStdioParams('npx', ['x'], { PATH: '/usr/bin' }, { email: 'ninja-bot@continia.com', name: 'Ninja Bot' });
+    expect(p.env).toEqual({
+      PATH: '/usr/bin',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'user.email',
+      GIT_CONFIG_VALUE_0: 'ninja-bot@continia.com',
+      GIT_CONFIG_KEY_1: 'user.name',
+      GIT_CONFIG_VALUE_1: 'Ninja Bot',
+      GIT_AUTHOR_EMAIL: 'ninja-bot@continia.com',
+      GIT_COMMITTER_EMAIL: 'ninja-bot@continia.com',
+      GIT_AUTHOR_NAME: 'Ninja Bot',
+      GIT_COMMITTER_NAME: 'Ninja Bot',
+    });
+  });
+
+  it('email only: one GIT_CONFIG entry, no name vars', () => {
+    const p = ninjaStdioParams('npx', ['x'], {}, { email: 'ninja-bot@continia.com' });
+    expect(p.env).toEqual({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'user.email',
+      GIT_CONFIG_VALUE_0: 'ninja-bot@continia.com',
+      GIT_AUTHOR_EMAIL: 'ninja-bot@continia.com',
+      GIT_COMMITTER_EMAIL: 'ninja-bot@continia.com',
+    });
+  });
+
+  it('no identity: no git variables, even if the parent has them', () => {
+    const p = ninjaStdioParams('npx', ['x'], { GIT_AUTHOR_EMAIL: 'parent@x', GIT_CONFIG_COUNT: '1' });
+    expect(p.env).toEqual({});
+  });
+});
+
+describe('isNinjaAuthError', () => {
+  it('recognises the backend 403', () => {
+    expect(
+      isNinjaAuthError(
+        'Error: Failed to commit codeunit ID: Backend request failed: HTTP 403: Forbidden - {"error":{"code":"USER_NOT_AUTHORIZED","gitEmail":"claude-agent@continia.local"}}',
+      ),
+    ).toBe(true);
+    expect(isNinjaAuthError('Backend request failed: HTTP 401: Unauthorized')).toBe(true);
+    expect(isNinjaAuthError('An auth key is required for this app')).toBe(true);
+  });
+
+  it('does not treat range exhaustion or a range-name request as auth', () => {
+    expect(isNinjaAuthError('No more IDs available in range "From 72918625 to 72918824"')).toBe(false);
+    expect(isNinjaAuthError('Error: Multiple ranges available for codeunit. You must specify which range to use via the rangeName parameter.')).toBe(false);
   });
 });

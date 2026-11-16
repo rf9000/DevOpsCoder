@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { loadConfig } from '../config/index.ts';
 import type { AppConfig } from '../types/index.ts';
-import { NINJA_MAX_ASSIGN_ATTEMPTS } from './ninja.ts';
+import { NINJA_MAX_ASSIGN_ATTEMPTS, type NinjaGitIdentity } from './ninja.ts';
 
 export interface PrFixConfig {
   app: AppConfig;
@@ -14,6 +14,12 @@ export interface PrFixConfig {
   ninjaCommand: { command: string; args: string[] };
   /** Per-tool-call timeout for the Ninja MCP server (`NINJA_CALL_TIMEOUT_MS`). */
   ninjaCallTimeoutMs: number;
+  /**
+   * The git identity the Ninja server reports (`NINJA_GIT_EMAIL` /
+   * `NINJA_GIT_NAME`); the backend authorizes by that email. Unset: the server
+   * reads the git config it finds, as before.
+   */
+  ninjaGitIdentity?: NinjaGitIdentity;
 }
 
 const DEFAULT_NINJA_MCP_COMMAND = 'npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2';
@@ -38,6 +44,8 @@ const knobSchema = z.object({
     .optional()
     .transform((v) => (v === undefined || v.trim() === '' ? DEFAULT_NINJA_MCP_COMMAND : v)),
   NINJA_CALL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  NINJA_GIT_EMAIL: z.string().optional().transform((v) => v?.trim() || undefined),
+  NINJA_GIT_NAME: z.string().optional().transform((v) => v?.trim() || undefined),
 });
 
 /**
@@ -82,6 +90,9 @@ export function loadPrFixConfig(env: Record<string, string | undefined>): PrFixC
   if (missing.length > 0) {
     throw new Error(`Invalid configuration:\n${missing.map((key) => `  - ${key}: required for fix-pr`).join('\n')}`);
   }
+  if (k.NINJA_GIT_NAME && !k.NINJA_GIT_EMAIL) {
+    throw new Error('Invalid configuration:\n  - NINJA_GIT_EMAIL: required when NINJA_GIT_NAME is set');
+  }
   app.maxTestFixAttempts = 0;
   app.stageTimeoutMs = {
     ...app.stageTimeoutMs,
@@ -106,5 +117,8 @@ export function loadPrFixConfig(env: Record<string, string | undefined>): PrFixC
     renumberCollisions: k.PRFIX_RENUMBER_COLLISIONS,
     ninjaCommand: splitNinjaCommand(k.NINJA_MCP_COMMAND, process.platform),
     ninjaCallTimeoutMs: k.NINJA_CALL_TIMEOUT_MS,
+    ...(k.NINJA_GIT_EMAIL
+      ? { ninjaGitIdentity: { email: k.NINJA_GIT_EMAIL, ...(k.NINJA_GIT_NAME ? { name: k.NINJA_GIT_NAME } : {}) } }
+      : {}),
   };
 }
