@@ -513,6 +513,20 @@ describe('alErrorLines', () => {
     expect(alErrorLines(undefined)).toEqual([]);
   });
 
+  it('keeps analyzer errors (AA0210) as well as compiler errors, and no warning or info lines', () => {
+    const error = [
+      'General\\Codeunits\\NoSeriesIntegrity.Codeunit.al(61,9): warning AA0210: The table X does not contain a key with the field Y.',
+      'General\\Codeunits\\NoSeriesIntegrity.Codeunit.al(61,9): error AA0210: The table Gen. Journal Line does not contain a key with the field Check Printed.',
+      'Export\\Hash.Codeunit.al(3,1): info AL0749: noise',
+      'Export\\Hash.Codeunit.al(1,10): error AL0264: Already declared',
+      'Export\\Hash.Codeunit.al(4,1): warning AL0432: noise',
+    ].join('\n');
+    expect(alErrorLines(v([{ app: 'App', compiled: false, published: false, error }]))).toEqual([
+      'General\\Codeunits\\NoSeriesIntegrity.Codeunit.al(61,9): error AA0210: The table Gen. Journal Line does not contain a key with the field Check Printed.',
+      'Export\\Hash.Codeunit.al(1,10): error AL0264: Already declared',
+    ]);
+  });
+
   it('caps at max and reads published === false rows too', () => {
     const lines = Array.from({ length: 5 }, (_, i) => `f${i}.al(1,1): error AL000${i}: e`).join('\n');
     const out = alErrorLines(v([{ app: 'App', compiled: true, published: false, error: lines }]), 3);

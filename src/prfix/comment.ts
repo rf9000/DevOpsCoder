@@ -23,8 +23,12 @@ function truncate(text: string, max: number): string {
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** An alc diagnostic of severity error: `<file>(<line>,<col>): error AL0264: ...`. */
-export const AL_ERROR_LINE = /: error AL\d{4}:/;
+/**
+ * An alc diagnostic of severity error, from the compiler or an analyzer:
+ * `<file>(<line>,<col>): error AL0264: ...`, `... error AA0210: ...` (CodeCop),
+ * `AS` (AppSourceCop), `AW` (UICop), `PTE`, `LC` and the like.
+ */
+export const AL_ERROR_LINE = /: error [A-Z]{2,}\d{4}:/;
 
 /** One AL error line in a comment is capped; alc's messages are short, a pathological one is not. */
 const MAX_AL_LINE_LENGTH = 500;

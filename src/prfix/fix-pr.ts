@@ -66,7 +66,7 @@ export function ninjaFactoryFor(prfix: PrFixConfig): () => NinjaClient {
 }
 
 /**
- * The compiler's own error lines from the failed deploy rows, for a reader who
+ * The compiler's and analyzers' error lines from the failed deploy rows, for a reader who
  * has only the outcome or the PR comment. alc usually prints project-relative
  * paths (`Feature Management\PontoFeature.Codeunit.al(1,10): error AL0264: ...`),
  * which are kept as they are. An absolute path loses its leading worktree root

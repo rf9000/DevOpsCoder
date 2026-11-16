@@ -197,6 +197,16 @@ describe('renderFailureComment', () => {
     expect(c.split('\n').filter((l) => l.includes('Export\\Hash.Codeunit.al')).length).toBe(1);
   });
 
+  it('an analyzer error line (AA0210) goes in the fenced block too', () => {
+    const aa =
+      'General\\Codeunits\\NoSeriesIntegrity.Codeunit.al(61,9): error AA0210: The table Gen. Journal Line does not contain a key with the field Check Printed.';
+    const c = renderFailureComment({
+      pr,
+      outcome: { ...outcome, status: 'verification-failed', error: `verification failed: compile failed\n${aa}` },
+    });
+    expect(c).toContain(`\`\`\`\n${aa}\n\`\`\``);
+  });
+
   it('id-collision: names the manual fix and lists each group with its members', () => {
     const c = renderFailureComment({
       pr,

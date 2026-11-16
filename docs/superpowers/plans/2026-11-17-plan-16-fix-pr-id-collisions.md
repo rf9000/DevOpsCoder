@@ -58,7 +58,7 @@ Motivating case: PR 61400's `PontoFeature.Codeunit.al` declares codeunit 7291875
 - The Ninja server is started lazily: only when there is at least one collision to renumber. A run with no collisions spawns nothing.
 
 **Surfacing AL errors**
-- On `verification-failed`, the outcome `error` and the PR failure comment carry up to `10` lines matching `/: error AL\d{4}:/` taken from the failed deploy rows. The surrounding comment text is unchanged.
+- On `verification-failed`, the outcome `error` and the PR failure comment carry up to `10` lines matching `/: error [A-Z]{2,}\d{4}:/` (compiler and analyzer errors; widened from `error AL` after smoke 3) taken from the failed deploy rows. The surrounding comment text is unchanged.
 
 ## Review Focus
 
