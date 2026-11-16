@@ -1,4 +1,5 @@
 import type { PullRequestDetails } from '../types/index.ts';
+import type { CollisionGroup } from './al-objects.ts';
 
 export interface PrFixInput {
   pullRequestId: number;
@@ -88,5 +89,19 @@ export class MergeCommitsError extends Error {
   override readonly name = 'MergeCommitsError';
   constructor(readonly count: number) {
     super(`branch contains ${count} merge commit${count === 1 ? '' : 's'}; rebase it manually`);
+  }
+}
+
+/**
+ * AL object ID collisions that cannot be resolved by renumbering a single
+ * PR-introduced object.
+ */
+export class IdCollisionError extends Error {
+  override readonly name = 'IdCollisionError';
+  constructor(
+    readonly groups: CollisionGroup[],
+    reason: string,
+  ) {
+    super(reason);
   }
 }
