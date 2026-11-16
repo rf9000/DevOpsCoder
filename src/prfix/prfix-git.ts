@@ -82,7 +82,7 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
   async function runGit(
     args: string[],
     cwd: string,
-    opts: { allowExit?: number[] } = {},
+    opts: { allowExit?: number[]; rawStdout?: boolean } = {},
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const describe = redactPat(`git ${args.join(' ')}`, pat);
     let proc: ReturnType<typeof Bun.spawn>;
@@ -98,7 +98,10 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
       const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
       throw new Error(`${describe} failed (spawn error): ${redactPat(msg, pat)}`);
     }
-    const stdout = await new Response(proc.stdout as ReadableStream).text();
+    // Response.text() strips a leading UTF-8 BOM; rawStdout keeps it (file content).
+    const stdout = opts.rawStdout
+      ? new TextDecoder('utf-8', { ignoreBOM: true }).decode(await new Response(proc.stdout as ReadableStream).arrayBuffer())
+      : await new Response(proc.stdout as ReadableStream).text();
     const stderr = await new Response(proc.stderr as ReadableStream).text();
     const exitCode = await proc.exited;
     if (exitCode !== 0 && !(opts.allowExit ?? []).includes(exitCode)) {
@@ -286,7 +289,7 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
     },
 
     async showFileAtRef(path, ref, file) {
-      const r = await runGit(['-c', 'core.autocrlf=false', 'show', `${ref}:${file}`], path, { allowExit: [128] });
+      const r = await runGit(['-c', 'core.autocrlf=false', 'show', `${ref}:${file}`], path, { allowExit: [128], rawStdout: true });
       if (r.exitCode === 0) return r.stdout;
       if (/does not exist|exists on disk, but not in/i.test(r.stderr)) return null;
       throw new Error(`git show ${ref}:${file} failed (exit ${r.exitCode}): ${redactPat(r.stderr.trim() || '(no output)', pat)}`);

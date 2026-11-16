@@ -457,6 +457,23 @@ describe('showFileAtRef', () => {
   });
 });
 
+describe('showFileAtRef BOM', () => {
+  it('showFileAtRef keeps a leading BOM', async () => {
+    await runGit(['checkout', '-q', 'feat/x'], dev);
+    writeFileSync(join(dev, 'Bom.al'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('aæ\n', 'utf-8')]));
+    await runGit(['add', 'Bom.al'], dev);
+    await runGit(['commit', '-m', 'bom'], dev);
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const text = await g.showFileAtRef(wt.path, 'HEAD', 'Bom.al');
+    expect(text).not.toBeNull();
+    expect(text!.charCodeAt(0)).toBe(0xfeff);
+    expect(text).toBe('﻿aæ\n');
+  });
+});
+
 describe('commitFiles', () => {
   it('commitFiles commits only the listed files with the bot as author and committer', async () => {
     const g = git();
