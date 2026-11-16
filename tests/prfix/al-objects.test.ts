@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   findCollisions,
+  maskAl,
   parseDeclaration,
   planRenumbers,
   type AlDeclaration,
@@ -38,6 +39,93 @@ describe('parseDeclaration', () => {
   });
   test('Codeunit.Run(5) in a body is not a declaration', () => {
     expect(parseDeclaration('    Codeunit.Run(5);\n')).toBeNull();
+  });
+});
+
+describe('parseDeclaration: comments', () => {
+  test('a declaration inside a block comment that starts on line 1 is ignored', () => {
+    const text = '/* TODO: Check the errors coming up\ncodeunit 95285 "Copy Template UT"\n{\n}\n*/\n';
+    expect(parseDeclaration(text)).toBeNull();
+  });
+  test('the declaration after a closed block comment is found', () => {
+    expect(parseDeclaration('/*\ncodeunit 1 Old\n*/\ncodeunit 2 New\n{\n}\n')).toEqual({
+      type: 'codeunit',
+      id: 2,
+      name: 'New',
+    });
+  });
+  test('a declaration after // is ignored', () => {
+    const text = 'x; // codeunit 5 Old\nok';
+    expect(maskAl(text)).toBe(`x;${' '.repeat(text.indexOf('\n') - 2)}\nok`);
+    expect(parseDeclaration('// codeunit 5 Old\n')).toBeNull();
+    // A /* after // is comment text, not the start of a block comment.
+    expect(parseDeclaration('// old /*\ncodeunit 5 New\n')?.id).toBe(5);
+    expect(parseDeclaration('    // codeunit 5 Old\npage 6 P\n')).toEqual({ type: 'page', id: 6, name: 'P' });
+  });
+  test('/* inside a string literal does not start a comment', () => {
+    const text = "x := 'a /* b';\ncodeunit 2 B\n{\n}\n";
+    expect(maskAl(text)).toBe(text);
+    expect(parseDeclaration(text)?.id).toBe(2);
+  });
+  test("an escaped '' quote keeps the string open", () => {
+    const text = "x := 'it''s /* not a comment';\ncodeunit 3 C\n";
+    expect(maskAl(text)).toBe(text);
+    expect(parseDeclaration(text)?.id).toBe(3);
+  });
+  test('/* inside a quoted identifier does not start a comment', () => {
+    const text = 'x := "A /* B";\ncodeunit 4 D\n{\n}\n';
+    expect(maskAl(text)).toBe(text);
+    expect(parseDeclaration(text)?.id).toBe(4);
+  });
+  test('the mask keeps length and newlines', () => {
+    const text = 'a /* b\r\nc */ d // e\r\nf';
+    const masked = maskAl(text);
+    expect(masked.length).toBe(text.length);
+    expect(masked).toBe('a     \r\n     d     \r\nf');
+  });
+});
+
+describe('parseDeclaration: preprocessor', () => {
+  const gated = '#if US64044\ncodeunit 71553834 "LLM User Prompt Log"\n{\n}\n#endif\n';
+  test('#if X is skipped when X is not a preprocessor symbol', () => {
+    expect(parseDeclaration(gated)).toBeNull();
+    expect(parseDeclaration(gated, new Set(['RUNTIME17', 'RUNTIME18']))).toBeNull();
+  });
+  test('#if X is kept when the app defines X', () => {
+    expect(parseDeclaration(gated, new Set(['US64044']))?.id).toBe(71553834);
+  });
+  test('symbols are case-sensitive', () => {
+    expect(parseDeclaration(gated, new Set(['us64044']))).toBeNull();
+  });
+  test('#if not X / #else', () => {
+    const text = '#if not CLEAN\ncodeunit 1 Old\n#else\ncodeunit 2 New\n#endif\n';
+    expect(parseDeclaration(text)?.id).toBe(1);
+    expect(parseDeclaration(text, new Set(['CLEAN']))?.id).toBe(2);
+  });
+  test('#elif picks the first true branch', () => {
+    const text = '#if A\ncodeunit 1 One\n#elif B\ncodeunit 2 Two\n#else\ncodeunit 3 Three\n#endif\n';
+    expect(parseDeclaration(text, new Set(['A', 'B']))?.id).toBe(1);
+    expect(parseDeclaration(text, new Set(['B']))?.id).toBe(2);
+    expect(parseDeclaration(text)?.id).toBe(3);
+  });
+  test('nested blocks inside an inactive block stay inactive', () => {
+    const text = '#if A\n#if B\ncodeunit 1 One\n#else\ncodeunit 2 Two\n#endif\n#endif\ncodeunit 3 Three\n';
+    expect(parseDeclaration(text, new Set(['B']))?.id).toBe(3);
+  });
+  test('a complex expression counts as active, and so does its #else', () => {
+    expect(parseDeclaration('#if A and B\ncodeunit 1 One\n#endif\n')?.id).toBe(1);
+    expect(parseDeclaration('#if (A)\ncodeunit 1 One\n#endif\n')?.id).toBe(1);
+    expect(parseDeclaration('#if A or B\n#else\ncodeunit 2 Two\n#endif\n')?.id).toBe(2);
+  });
+  test('a #if inside a block comment is not a directive', () => {
+    expect(parseDeclaration('/*\n#if X\n*/\ncodeunit 1 One\n')?.id).toBe(1);
+  });
+  test('inactive lines are masked length-preserving', () => {
+    const text = '#if X\r\ncodeunit 1 A\r\n#endif\r\nok';
+    const masked = maskAl(text);
+    expect(masked.length).toBe(text.length);
+    expect(masked.endsWith('\r\nok')).toBe(true);
+    expect(masked).not.toContain('codeunit');
   });
 });
 

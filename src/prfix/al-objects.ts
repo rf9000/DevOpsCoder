@@ -32,11 +32,121 @@ const DECLARATION_RE = new RegExp(
   'im',
 );
 
-/** First object declaration in an .al file's text, or null. */
+const DIRECTIVE_RE = /^[ \t]*#[ \t]*(if|elif|else|endif)\b(.*)$/i;
+/** `X` or `not X`, optionally followed by a line comment; anything else is not evaluated. */
+const SIMPLE_CONDITION_RE = /^[ \t]+(not[ \t]+)?([A-Za-z_]\w*)[ \t]*(?:\/\/.*)?$/i;
+
+interface ConditionalFrame {
+  /** Whether the enclosing code is active. */
+  parentActive: boolean;
+  /** A branch of this block was known to be true, so later branches are inactive. */
+  taken: boolean;
+  active: boolean;
+}
+
+/** true / false for `X` / `not X`; null for any other expression. */
+function evaluateCondition(rest: string, symbols: ReadonlySet<string>): boolean | null {
+  const m = SIMPLE_CONDITION_RE.exec(rest.replace(/\r$/, ''));
+  if (!m) return null;
+  const defined = symbols.has(m[2] as string);
+  return m[1] ? !defined : defined;
+}
+
+/**
+ * `text` with everything the AL compiler does not see replaced by spaces:
+ * `/* … *\/` and `// …` comments (not inside a `'…'` string, where `''` is an
+ * escaped quote, or a `"…"` quoted identifier), preprocessor directive lines,
+ * and the lines of inactive `#if` / `#elif` / `#else` blocks. A condition is
+ * evaluated only when it is a single symbol, optionally negated with `not`,
+ * against `symbols` (the app's `preprocessorSymbols`, case-sensitive); any
+ * other expression counts as active, and does not make a later `#elif` or
+ * `#else` inactive either, so nothing the compiler might see is ever hidden.
+ *
+ * Length-preserving, and `\r` / `\n` are kept: an offset into the result is
+ * the same offset into `text`, so a rewrite can work on the original.
+ */
+export function maskAl(text: string, symbols: ReadonlySet<string> = new Set()): string {
+  const out = text.split('');
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (out[k] !== '\r' && out[k] !== '\n') out[k] = ' ';
+  };
+  const stack: ConditionalFrame[] = [];
+  const active = () => stack.length === 0 || (stack[stack.length - 1] as ConditionalFrame).active;
+  let inBlock = false;
+  let i = 0;
+  while (i < text.length) {
+    const nl = text.indexOf('\n', i);
+    const end = nl === -1 ? text.length : nl;
+    const directive = inBlock ? null : DIRECTIVE_RE.exec(text.slice(i, end).replace(/\r$/, ''));
+    if (directive) {
+      const kind = (directive[1] as string).toLowerCase();
+      const top = stack[stack.length - 1];
+      if (kind === 'if') {
+        const cond = evaluateCondition(directive[2] as string, symbols);
+        const parentActive = active();
+        stack.push({ parentActive, taken: cond === true, active: parentActive && cond !== false });
+      } else if (kind === 'elif' && top) {
+        const cond = evaluateCondition(directive[2] as string, symbols);
+        top.active = top.parentActive && !top.taken && cond !== false;
+        top.taken ||= cond === true;
+      } else if (kind === 'else' && top) {
+        top.active = top.parentActive && !top.taken;
+        top.taken = true;
+      } else if (kind === 'endif') {
+        stack.pop();
+      }
+      blank(i, end);
+    } else if (!active()) {
+      blank(i, end);
+    } else {
+      let inString = false;
+      let inIdent = false;
+      for (let j = i; j < end; j++) {
+        const c = text[j];
+        if (inBlock) {
+          if (c === '*' && text[j + 1] === '/') {
+            blank(j, j + 2);
+            j++;
+            inBlock = false;
+          } else {
+            blank(j, j + 1);
+          }
+        } else if (inString) {
+          if (c === "'") {
+            if (text[j + 1] === "'") j++;
+            else inString = false;
+          }
+        } else if (inIdent) {
+          if (c === '"') inIdent = false;
+        } else if (c === "'") {
+          inString = true;
+        } else if (c === '"') {
+          inIdent = true;
+        } else if (c === '/' && text[j + 1] === '/') {
+          blank(j, end);
+          break;
+        } else if (c === '/' && text[j + 1] === '*') {
+          blank(j, j + 2);
+          j++;
+          inBlock = true;
+        }
+      }
+    }
+    i = end + 1;
+  }
+  return out.join('');
+}
+
+/**
+ * First object declaration in an .al file's text that the compiler sees, or
+ * null: declarations in comments and in inactive preprocessor blocks (per
+ * `symbols`, the app's `preprocessorSymbols`) do not count.
+ */
 export function parseDeclaration(
   text: string,
+  symbols?: ReadonlySet<string>,
 ): { type: string; id: number; name: string } | null {
-  const m = DECLARATION_RE.exec(text.replace(/^\uFEFF/, ''));
+  const m = DECLARATION_RE.exec(maskAl(text.replace(/^﻿/, ''), symbols));
   if (!m) return null;
   const rawName = m[3] as string;
   return {
