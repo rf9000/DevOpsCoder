@@ -184,12 +184,15 @@ export interface RenumberPlan {
 }
 
 /**
- * One plan per group with exactly one PR-introduced member. Throws
- * IdCollisionError listing every group that does not qualify.
+ * One plan per group with exactly one PR-introduced member. A group with no
+ * PR-introduced member is the target's own state, not this PR's: it is passed
+ * to `onIgnored` and skipped (verification catches a real one). Throws
+ * IdCollisionError listing every group with two or more PR-introduced members.
  */
 export function planRenumbers(
   groups: CollisionGroup[],
   isPrIntroduced: (d: AlDeclaration) => boolean,
+  onIgnored?: (g: CollisionGroup) => void,
 ): RenumberPlan[] {
   const plans: RenumberPlan[] = [];
   const bad: CollisionGroup[] = [];
@@ -198,6 +201,8 @@ export function planRenumbers(
     if (mine.length === 1) {
       const target = mine[0] as AlDeclaration;
       plans.push({ target, keep: g.members.filter((m) => m !== target) });
+    } else if (mine.length === 0) {
+      onIgnored?.(g);
     } else {
       bad.push(g);
     }
@@ -208,7 +213,7 @@ export function planRenumbers(
       .join('; ');
     throw new IdCollisionError(
       bad,
-      `object ID collision not safely renumberable (needs exactly one PR-introduced member): ${desc}`,
+      `object ID collision not safely renumberable (more than one PR-introduced member): ${desc}`,
     );
   }
   return plans;

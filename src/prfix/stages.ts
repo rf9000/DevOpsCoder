@@ -491,10 +491,13 @@ const appKey = (app: string, type: string, id: number) => `${app}\0${type}\0${id
  * ID is qualified by the target's type keyword (`codeunit 5`; `tabledata 5`
  * for a table): in the target file itself and in files the PR added. An ID
  * qualified by another object type is a different object and is left alone.
+ * Comments and inactive `#if` blocks (per the app's `preprocessorSymbols`)
+ * are invisible to the scan, the classification and the rewrite.
  *
- * Refuses with IdCollisionError, before Ninja starts (so a refusal reserves
- * nothing), when a collision group does not have exactly one PR-introduced
- * member; when a file to be rewritten holds the old ID with no type keyword
+ * A collision group with no PR-introduced member is the target's own state:
+ * it is logged and skipped. Refuses with IdCollisionError, before Ninja
+ * starts (so a refusal reserves nothing), when a collision group has more
+ * than one PR-introduced member; when a file to be rewritten holds the old ID with no type keyword
  * (`Codeunit.Run(5)`), which is ambiguous; or when a file of the app that the
  * PR modified but did not add mentions it bare or qualified by the target's
  * type, since that may mean the existing object. The same refusal covers
@@ -588,7 +591,17 @@ export function createRenumberStage(deps: { git: PrFixGit; prfix: PrFixConfig; n
 
       // 5a. Plan, then refuse every ambiguous reference before any ID is reserved.
       //     References are scoped to the target's app and qualified by its type.
-      const plans = planRenumbers(groups, (d) => introduced.has(d));
+      //     A group with no PR-introduced member is the target's own state:
+      //     ignored, not refused (verification catches a real one).
+      const plans = planRenumbers(
+        groups,
+        (d) => introduced.has(d),
+        (g) => ctx.logger.info(`${RENUMBER_STAGE}: ignoring ${g.type} ${g.id} in ${g.app || 'the root app'} — no PR-introduced member`),
+      );
+      if (plans.length === 0) {
+        state.outputs.renumber = output;
+        return state;
+      }
       const modified = changed.filter((c) => c.status === 'M' && !isExcludedPath(c.file)).map((c) => c.file);
       const added = changed.filter((c) => c.status === 'A' && !isExcludedPath(c.file)).map((c) => c.file);
       /** (app, type, id) declared at HEAD. */

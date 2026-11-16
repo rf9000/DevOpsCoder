@@ -558,7 +558,13 @@ describe('createRenumberStage', () => {
         atTarget: { [EXPORT_HASH]: EXPORT_HASH_TEXT, [OTHER]: OTHER_TEXT, [OLD_PATH]: PONTO_TEXT },
       });
       const n = fakeNinja([72918790]);
-      await expect(stage(git, n.factory).execute(makeState(), makeCtx())).rejects.toBeInstanceOf(IdCollisionError);
+      // No PR-introduced member: the group is the target's own state, ignored rather than refused.
+      const ctx = makeCtx();
+      const out = await stage(git, n.factory).execute(makeState(), ctx);
+      expect(out.outputs.renumber).toEqual({ commit: null, renumbered: [], reserved: [] });
+      expect(ctx.logger.info).toHaveBeenCalledWith(
+        'renumber-collisions: ignoring codeunit 72918753 in base-application — no PR-introduced member',
+      );
       expect(n.factory).not.toHaveBeenCalled();
       expect(read(PONTO)).toBe(PONTO_TEXT);
     });
@@ -687,6 +693,48 @@ describe('createRenumberStage: what the compiler does not see', () => {
     put(DUP_A, 'codeunit 72918710 "CTS-CB Dup A"\n{\n}\n');
     put(DUP_B, 'codeunit 72918710 "CTS-CB Dup B"\n{\n}\n');
   }
+
+  it('PR 61400 shape: renumbers the one real collision and logs only the active main-only group', async () => {
+    pr61400Fixture(JSON.stringify({ ...JSON.parse(APP_JSON), preprocessorSymbols: ['RUNTIME17', 'RUNTIME18'] }));
+    const { git, calls } = fakeGit();
+    const n = fakeNinja([72918790]);
+    const ctx = makeCtx();
+    const out = await stage(git, n.factory).execute(makeState(), ctx);
+
+    const r = out.outputs.renumber as RenumberOutput;
+    expect(r.renumbered.map((x) => [x.file, x.oldId, x.newId])).toEqual([[PONTO, 72918753, 72918790]]);
+    expect(n.calls.assign).toHaveBeenCalledTimes(1);
+    expect(calls.commitFiles).toHaveBeenCalledTimes(1);
+    expect(read(LLM)).toBe(LLM_TEXT);
+    expect(read(COPY_UT)).toBe(COPY_UT_TEXT);
+    expect(ignoring(ctx)).toEqual([
+      'renumber-collisions: ignoring codeunit 72918710 in base-application — no PR-introduced member',
+    ]);
+  });
+
+  it("an #if-gated object counts when the app's preprocessorSymbols define the symbol", async () => {
+    pr61400Fixture(JSON.stringify({ ...JSON.parse(APP_JSON), preprocessorSymbols: ['US64044'] }));
+    const ctx = makeCtx();
+    await stage(fakeGit().git, fakeNinja([72918790]).factory).execute(makeState(), ctx);
+    expect(ignoring(ctx).sort()).toEqual([
+      'renumber-collisions: ignoring codeunit 72918700 in base-application — no PR-introduced member',
+      'renumber-collisions: ignoring codeunit 72918710 in base-application — no PR-introduced member',
+    ]);
+  });
+
+  it('only main-only collisions: no refusal, no Ninja, no commit', async () => {
+    put('base-application/app.json', APP_JSON);
+    put(DUP_A, 'codeunit 72918710 "CTS-CB Dup A"\n{\n}\n');
+    put(DUP_B, 'codeunit 72918710 "CTS-CB Dup B"\n{\n}\n');
+    const { git, calls } = fakeGit({ changed: [] });
+    const n = fakeNinja([]);
+    const ctx = makeCtx();
+    const out = await stage(git, n.factory).execute(makeState(), ctx);
+    expect(n.factory).not.toHaveBeenCalled();
+    expect(calls.commitFiles).not.toHaveBeenCalled();
+    expect(out.outputs.renumber).toEqual({ commit: null, renumbered: [], reserved: [] });
+    expect(ignoring(ctx)).toHaveLength(1);
+  });
 
   it('a #if-gated object in the PR is not a collision', async () => {
     baseFixture();

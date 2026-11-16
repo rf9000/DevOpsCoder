@@ -156,8 +156,16 @@ describe('planRenumbers', () => {
   test('two PR members throw', () => {
     expect(() => planRenumbers(groups, () => true)).toThrow(IdCollisionError);
   });
-  test('no PR members throw', () => {
-    expect(() => planRenumbers(groups, () => false)).toThrow(IdCollisionError);
+  test('no PR members: ignored, not refused, and reported', () => {
+    const ignored: unknown[] = [];
+    expect(planRenumbers(groups, () => false, (g) => ignored.push(g))).toEqual([]);
+    expect(ignored).toEqual(groups);
+  });
+  test('an ignored group does not hide a refusable one', () => {
+    const c = d('page', 2, 'p1.al');
+    const e = d('page', 2, 'p2.al');
+    const all = findCollisions([a, b, c, e]);
+    expect(() => planRenumbers(all, (x) => x === c || x === e)).toThrow(IdCollisionError);
   });
   test('uses only the predicate (modified file at target can be the target)', () => {
     const plans = planRenumbers(groups, (x) => x.file === 'main.al');
