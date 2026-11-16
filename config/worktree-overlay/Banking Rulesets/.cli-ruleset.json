@@ -120,11 +120,6 @@
             "justification": "We allow missing autoformattype for now."
         },
         {
-            "id": "AA0210",
-            "action": "Info",
-            "justification": "The table does not contain a key with the specified field."
-        },
-        {
             "id": "AL1025",
             "action": "Warning",
             "justification": "The object contains invalid characters. TODO: Remove pragma"
