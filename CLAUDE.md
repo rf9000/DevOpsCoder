@@ -55,7 +55,7 @@ The overlay refuses to overwrite a tracked file, and it adds every path it write
 The developer's local `Compiler.ruleset.json` overrides (`AS0087`/`AL0275`/`AL0133` to Info) live in the overlay's `.cli-ruleset.json` `rules`, never in the tracked file. Refresh the overlay when the team's local rulesets change. `WORKTREE_OVERLAY_DIR` takes a comma-separated list, applied in order.
 
 Experiment-only relaxations live apart from the team rules:
-- They are in `config/worktree-overlay-experiment/` as `.cli-ruleset.experiment.json`. It includes the team `.cli-ruleset.json` and adds rules only. Today that is `AA0210` → Info, because main's `CurrExchCatalogTests:578` filters on an unkeyed field and is being fixed in production.
+- They are in `config/worktree-overlay-experiment/` as `.cli-ruleset.experiment.json`. It includes the team `.cli-ruleset.json` and adds rules only. It added `AA0210` → Info for main's `CurrExchCatalogTests:578`. That rule is now redundant: the team's local `.cli-ruleset.json` has carried `AA0210` → Info since, and the production overlay mirrors it (added 2026-11-16 after a fix-pr smoke on PR 61400 failed on main's own `AA0210` in `NoSeriesIntegrity`, `TemplateMgt` and `ABSBlobList` that developers never see).
 - The `experiment` command appends that overlay and switches `CONTINIA_RULESET` to it automatically. `EXPERIMENT_WORKTREE_OVERLAY_DIR` / `EXPERIMENT_CONTINIA_RULESET` override this.
 - Production runs never see the experiment ruleset.
 
