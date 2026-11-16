@@ -411,3 +411,68 @@ describe('filesWithMarkers (diff3)', () => {
     expect(await g.filesWithMarkers(wt.path, ['Diff3.al', 'Bare.al'])).toEqual(['Diff3.al', 'Bare.al']);
   });
 });
+
+describe('changedFiles', () => {
+  it('changedFiles lists A and M against the target', async () => {
+    await runGit(['checkout', '-q', 'feat/x'], dev);
+    await commitFile(dev, 'Shared.al', 'a\nb\nc\nd\n', 'edit shared');
+    head = (await runGit(['rev-parse', 'HEAD'], dev)).trim();
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const changed = await g.changedFiles(wt.path, wt.targetSha);
+    expect(changed).toEqual([
+      { status: 'A', file: 'Feature.al' },
+      { status: 'M', file: 'Shared.al' },
+    ]);
+  });
+});
+
+describe('listFiles', () => {
+  it('listFiles returns tracked .al files only', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    writeFileSync(join(wt.path, 'Untracked.al'), 'u\n', 'utf-8');
+    expect((await g.listFiles(wt.path, '*.al')).sort()).toEqual(['Feature.al', 'Shared.al']);
+  });
+});
+
+describe('showFileAtRef', () => {
+  it('showFileAtRef returns the content at the ref and null for a path added after it', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    expect(await g.showFileAtRef(wt.path, wt.targetSha, 'Shared.al')).toBe('a\nb\nc\n');
+    expect(await g.showFileAtRef(wt.path, wt.targetSha, 'Feature.al')).toBeNull();
+  });
+
+  it('showFileAtRef preserves CRLF', async () => {
+    await runGit(['config', 'core.autocrlf', 'false'], dev);
+    await runGit(['checkout', '-q', 'feat/x'], dev);
+    head = await commitFile(dev, 'Crlf.al', 'one\r\ntwo\r\n', 'crlf');
+    await runGit(['push', 'origin', 'feat/x'], dev);
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const text = await g.showFileAtRef(wt.path, 'HEAD', 'Crlf.al');
+    expect(text).toBe('one\r\ntwo\r\n');
+  });
+});
+
+describe('commitFiles', () => {
+  it('commitFiles commits only the listed files with the bot as author and committer', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    writeFileSync(join(wt.path, 'Feature.al'), 'renumbered\n', 'utf-8');
+    writeFileSync(join(wt.path, 'Shared.al'), 'dirty\n', 'utf-8');
+    const sha = await g.commitFiles(wt.path, ['Feature.al'], 'renumber');
+    expect(sha).toBe((await runGit(['rev-parse', 'HEAD'], wt.path)).trim());
+    expect((await runGit(['log', '-1', '--format=%an|%cn', 'HEAD'], wt.path)).trim()).toBe(`${BOT_NAME}|${BOT_NAME}`);
+    expect((await runGit(['show', '--name-only', '--format=', 'HEAD'], wt.path)).trim()).toBe('Feature.al');
+    expect(await g.unstagedChanges(wt.path)).toEqual(['Shared.al']);
+  });
+
+  it('commitFiles throws when nothing changed', async () => {
+    const g = git();
+    const wt = await g.createWorktree(args());
+    await expect(g.commitFiles(wt.path, ['Feature.al'], 'noop')).rejects.toThrow('commitFiles: nothing to commit');
+  });
+});

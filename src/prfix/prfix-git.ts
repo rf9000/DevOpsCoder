@@ -45,6 +45,14 @@ export interface PrFixGit {
   headSha(path: string): Promise<string>;
   /** `git rev-list --count <from>..HEAD`. */
   countCommits(path: string, from: string): Promise<number>;
+  /** `git diff --name-status -z --no-renames <from> HEAD`: repo-relative paths with A|M|D. */
+  changedFiles(path: string, from: string): Promise<{ status: 'A' | 'M' | 'D'; file: string }[]>;
+  /** `git show <ref>:<file>`; null when the path does not exist at ref. Returns raw text (no newline normalisation). */
+  showFileAtRef(path: string, ref: string, file: string): Promise<string | null>;
+  /** `git ls-files -z -- <pathspec>` at HEAD, repo-relative, forward slashes (e.g. pathspec `*.al`). */
+  listFiles(path: string, pathspec: string): Promise<string[]>;
+  /** Stage exactly `files` (`git add -- <files>`) and commit them with the bot identity as author AND committer; returns the new sha. Throws if nothing is staged. */
+  commitFiles(path: string, files: string[], message: string): Promise<string>;
   push(a: { path: string; sourceRefName: string; expectedRemoteSha: string }): Promise<void>;
   removeWorktree(wt: WorktreeContext): Promise<void>;
 }
@@ -264,6 +272,38 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
     async countCommits(path, from) {
       const out = (await runGit(['rev-list', '--count', `${from}..HEAD`], path)).stdout.trim();
       return Number.parseInt(out, 10);
+    },
+
+    async changedFiles(path, from) {
+      const parts = splitNul((await runGit(['diff', '--name-status', '-z', '--no-renames', from, 'HEAD'], path)).stdout);
+      const out: { status: 'A' | 'M' | 'D'; file: string }[] = [];
+      // -z --no-renames: alternating status / path entries.
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        const status = (parts[i] ?? '').charAt(0);
+        out.push({ status: status === 'A' || status === 'D' ? status : 'M', file: parts[i + 1] ?? '' });
+      }
+      return out;
+    },
+
+    async showFileAtRef(path, ref, file) {
+      const r = await runGit(['-c', 'core.autocrlf=false', 'show', `${ref}:${file}`], path, { allowExit: [128] });
+      if (r.exitCode === 0) return r.stdout;
+      if (/does not exist|exists on disk, but not in/i.test(r.stderr)) return null;
+      throw new Error(`git show ${ref}:${file} failed (exit ${r.exitCode}): ${redactPat(r.stderr.trim() || '(no output)', pat)}`);
+    },
+
+    async listFiles(path, pathspec) {
+      return splitNul((await runGit(['ls-files', '-z', '--', pathspec], path)).stdout);
+    },
+
+    async commitFiles(path, files, message) {
+      const identity = botIdentity();
+      await runGit(['add', '--', ...files], path);
+      const { exitCode } = await runGit(['diff', '--cached', '--quiet'], path, { allowExit: [1] });
+      if (exitCode === 0) throw new Error('commitFiles: nothing to commit');
+      const author = `${deps.config.botGitName} <${deps.config.botGitEmail}>`;
+      await runGit([...identity, 'commit', `--author=${author}`, '-m', message], path);
+      return (await runGit(['rev-parse', 'HEAD'], path)).stdout.trim();
     },
 
     async push(a) {
