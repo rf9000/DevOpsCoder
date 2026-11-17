@@ -16,6 +16,12 @@ export interface RunPipelineOptions {
   state: PipelineState;
   context: PipelineContext;
   store: PipelineStateStore;
+  /**
+   * Live progress for a caller that tracks the run itself (the fix-pr
+   * dashboard): `(stage, null)` when a stage starts, after its `canRun` check,
+   * and `(stage, detail)` on every `reportProgress` that changed the detail.
+   */
+  onProgress?: (stage: string, detail: string | null) => void;
 }
 
 export class StageNotFoundError extends Error {
@@ -140,7 +146,9 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       if (!live || entry.stageDetail === detail) return;
       entry.stageDetail = detail;
       store.save(entry);
+      opts.onProgress?.(stage.name, detail);
     };
+    opts.onProgress?.(stage.name, null);
 
     // Per-stage AbortController: external abort + per-stage timeout.
     const ctrl = new AbortController();

@@ -89,7 +89,28 @@ export type PrFixStatus =
   | 'verification-failed'
   | 'cost-cap'
   | 'cancelled'
-  | 'error';
+  | 'error'
+  /** Hold mode: verified and rebased, waiting for Approve before the push. `ok`. */
+  | 'awaiting-approval'
+  /** A held result was rejected: nothing pushed. Not `ok`. */
+  | 'rejected';
+
+/** What a held (`awaiting-approval`) result shows the approver. */
+export interface PrFixReview {
+  preRebaseSha: string;
+  targetSha: string;
+  targetRefName: string;
+  newHead: string;
+  commitsReplayed: number;
+  /** Each conflict with every conflicted file's diff against the PR's version (`preRebaseSha`). */
+  conflicts: (ConflictResolution & { diffs: { path: string; diff: string }[] })[];
+  renumbered: RenumberedObject[];
+  /** Null when the run had no verification (SKIP_BUILD_TEST). */
+  tests: { passed: boolean; codeunits: number } | null;
+  /** `git range-diff <target> <preRebaseSha> <newHead>`, capped. */
+  rangeDiff: string;
+  costUsd: number;
+}
 
 export interface PrFixOutcome {
   ok: boolean;
@@ -102,6 +123,8 @@ export interface PrFixOutcome {
   renumbered: RenumberedObject[];
   costUsd: number;
   error: string | null;
+  /** Set only for `awaiting-approval`. */
+  review?: PrFixReview;
 }
 
 /** The PR branch already contains its target; nothing to rebase. */

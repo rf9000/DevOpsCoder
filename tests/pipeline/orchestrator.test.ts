@@ -649,4 +649,21 @@ describe('runPipeline dashboard progress', () => {
     late?.('too late');
     expect(store.save.mock.calls.length).toBe(saves);
   });
+
+  it('onProgress gets stage start and reportProgress details', async () => {
+    const calls: [string, string | null][] = [];
+    const a = makeStage('a', async (s, c) => {
+      c.reportProgress?.('half');
+      c.reportProgress?.('half');
+      return s;
+    });
+    await runPipeline({
+      stages: [a, makeStage('b')],
+      state: createInitialState(1, 'wi-1', FIXED_NOW),
+      context: makeContext(),
+      store: makeMockStore(),
+      onProgress: (stage, detail) => calls.push([stage, detail]),
+    });
+    expect(calls).toEqual([['a', null], ['a', 'half'], ['b', null]]);
+  });
 });

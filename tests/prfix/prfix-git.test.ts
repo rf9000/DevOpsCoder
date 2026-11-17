@@ -508,3 +508,25 @@ describe('commitFiles', () => {
     await expect(g.commitFiles(wt.path, ['Feature.al'], 'noop')).rejects.toThrow('commitFiles: nothing to commit');
   });
 });
+
+describe('rangeDiff and fileDiff', () => {
+  it('rangeDiff and fileDiff return git\'s text and cap at 20 000 chars', async () => {
+    const big = `${'x'.repeat(99)}\n`.repeat(300); // 30 000 chars
+    await advanceMain('Big.al', big, 'big on main');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const step = await g.startRebase(wt.path, wt.targetSha);
+    if (step.kind !== 'done') throw new Error('expected done');
+
+    const range = await g.rangeDiff(wt.path, wt.targetSha, head, step.head);
+    expect(range).toContain('dev work');
+    expect(range).toContain(head.slice(0, 7));
+
+    const small = await g.fileDiff(wt.path, head, step.head, 'Shared.al');
+    expect(small).toBe('');
+    const capped = await g.fileDiff(wt.path, head, step.head, 'Big.al');
+    expect(capped).toStartWith('diff --git a/Big.al b/Big.al');
+    expect(capped.length).toBe(20_000 + '\n… (truncated)'.length);
+    expect(capped).toEndWith('\n… (truncated)');
+  });
+});

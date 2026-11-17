@@ -427,6 +427,13 @@ export interface PrFixPipelineDeps {
    * connecting client from `prfix.ninjaCommand` / `prfix.ninjaCallTimeoutMs`.
    */
   ninja?: () => NinjaClient;
+  /** Dashboard mode: omit `push-rebased` and `pr-comment`; `approvePrFix` runs them later. */
+  holdBeforePush?: boolean;
+}
+
+/** fix-pr's last two stages, `[push-rebased, pr-comment]`: the tail of the pipeline, and what `approvePrFix` runs. */
+export function buildPrFixFinishStages(deps: Pick<PrFixPipelineDeps, 'ado' | 'git' | 'keepEnv'>): Stage[] {
+  return [createPushRebasedStage({ git: deps.git }), createPrCommentStage({ ado: deps.ado, keepEnv: deps.keepEnv ?? false })];
 }
 
 /**
@@ -473,7 +480,6 @@ export function buildPrFixPipeline(deps: PrFixPipelineDeps): Stage[] {
     }),
     createRenumberStage({ git: deps.git, prfix: deps.prfix, ninja: deps.ninja ?? ninjaFactoryFor(deps.prfix) }),
     ...verifyStages,
-    createPushRebasedStage({ git: deps.git }),
-    createPrCommentStage({ ado: deps.ado, keepEnv: deps.keepEnv ?? false }),
+    ...(deps.holdBeforePush ? [] : buildPrFixFinishStages(deps)),
   ];
 }

@@ -1,4 +1,4 @@
-import { createInitialState, runPipeline } from '../pipeline/orchestrator.ts';
+import { createInitialState, runPipeline, type RunPipelineOptions } from '../pipeline/orchestrator.ts';
 import type { AbortFlag, Stage } from '../pipeline/stage.ts';
 import type { AdoClient } from '../sdk/azure-devops-client.ts';
 import type { ContiniaCli } from '../services/continia-cli.ts';
@@ -9,6 +9,7 @@ import {
   VerificationFailedError,
   type EnvironmentOutput,
   type PipelineCostInfo,
+  type PipelineState,
   type VerificationOutput,
   type WorktreeContext,
 } from '../types/index.ts';
@@ -28,6 +29,7 @@ import {
   UnresolvedConflictError,
   type PrFixInput,
   type PrFixOutcome,
+  type PrFixReview,
   type PrFixStatus,
   type RebaseOutput,
   type RenumberOutput,
@@ -53,6 +55,13 @@ export interface FixPrDeps {
    * must hand out a new one per call. Default: built from `prfix.ninjaCommand`.
    */
   ninja?: () => NinjaClient;
+  /**
+   * Dashboard mode: the pipeline (built without `push-rebased`/`pr-comment`)
+   * ends green as `awaiting-approval` with a review, keeping the worktree, the
+   * reserved Ninja IDs and the saved state for `approvePrFix`/`rejectPrFix`.
+   */
+  holdBeforePush?: boolean;
+  onProgress?: RunPipelineOptions['onProgress'];
 }
 
 /** A fresh, lazily connecting Ninja client per call, from the fix-pr config. */
@@ -159,36 +168,107 @@ function messageOf(err: unknown): string {
  * runs included, since a dry run still created one. The worktree is removed on
  * success and up-to-date, and kept on failure for inspection; the next run's
  * createWorktree replaces it.
+ *
+ * With `holdBeforePush`, a green run ends `awaiting-approval` instead (see
+ * `concludeRun`); every other ending is the same as without it.
  */
 export async function fixPr(deps: FixPrDeps): Promise<PrFixOutcome> {
-  const { prfix, logger, pullRequestId } = deps;
-  const config = prfix.app;
+  const { pullRequestId } = deps;
   const now = deps.now ?? (() => new Date());
   const state = createInitialState(pullRequestId, `pr-${pullRequestId}`, now());
-  state.outputs.prFixInput = { pullRequestId, repository: config.repositoryName };
+  state.outputs.prFixInput = { pullRequestId, repository: deps.prfix.app.repositoryName };
+  return concludeRun(deps, state, deps.stages, deps.holdBeforePush === true);
+}
 
-  const build = (status: PrFixStatus, error: string | null): PrFixOutcome => {
-    const input = state.outputs.prFixInput as Partial<PrFixInput>;
-    const rebase = state.outputs.rebase as RebaseOutput | undefined;
-    const renumber = state.outputs.renumber as RenumberOutput | undefined;
-    return {
-      ok: status === 'rebased' || status === 'up-to-date',
-      status,
-      pullRequestId,
-      oldHead: input.pr?.headCommit ?? null,
-      newHead: finalHeadSha(state.outputs),
-      conflicts: rebase?.conflicts ?? [],
-      renumbered: renumber?.renumbered ?? [],
-      costUsd: (state.outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
-      error,
-    };
+/** Marks a state held by `fixPr` in hold mode; approve and reject accept only such a state. */
+const AWAITING_APPROVAL_KEY = 'awaitingApprovalSince';
+/** Set when the hold deleted the environment, so approve does not delete it again. */
+const ENV_DELETED_KEY = 'environmentDeletedAt';
+
+function loadHeld(deps: FixPrDeps): PipelineState {
+  const state = deps.store.load(deps.pullRequestId);
+  if (!state || typeof state.outputs[AWAITING_APPROVAL_KEY] !== 'string') {
+    throw new Error(`no held fix-pr state for PR ${deps.pullRequestId}`);
+  }
+  return state;
+}
+
+/**
+ * Runs `push-rebased` then `pr-comment` (`finishStages`) from the state a
+ * hold saved. The push leases on the saved `rebase.preRebaseSha` — the head
+ * read before the rebase — so a developer push since then ends `head-moved`.
+ * The ending (comment, ID release, cleanup) follows the same rules as `fixPr`.
+ */
+export async function approvePrFix(deps: FixPrDeps & { finishStages: Stage[] }): Promise<PrFixOutcome> {
+  const state = loadHeld(deps);
+  // A held result is approved once: whatever happens next consumes it.
+  delete state.outputs[AWAITING_APPROVAL_KEY];
+  state.currentStage = 'push-rebased';
+  delete state.terminalError;
+  delete state.cancelled;
+  delete state.completedAt;
+  deps.store.save(state);
+  return concludeRun(deps, state, deps.finishStages, false);
+}
+
+/** Discards a held result: releases its reserved IDs and removes its worktree. Nothing is pushed. */
+export async function rejectPrFix(deps: FixPrDeps): Promise<PrFixOutcome> {
+  const state = loadHeld(deps);
+  delete state.outputs[AWAITING_APPROVAL_KEY];
+  deps.store.save(state);
+  await releaseReservedIds(deps, state.outputs.renumber as RenumberOutput | undefined);
+  const wt = state.outputs.worktree as WorktreeContext | undefined;
+  if (wt) {
+    try {
+      await deps.git.removeWorktree(wt);
+    } catch (err) {
+      deps.logger.warn(`fix-pr: worktree removal failed :: ${messageOf(err)}`);
+    }
+  }
+  return buildOutcome(deps.pullRequestId, state.outputs, 'rejected', null);
+}
+
+function buildOutcome(
+  pullRequestId: number,
+  outputs: Record<string, unknown>,
+  status: PrFixStatus,
+  error: string | null,
+): PrFixOutcome {
+  const input = outputs.prFixInput as Partial<PrFixInput>;
+  const rebase = outputs.rebase as RebaseOutput | undefined;
+  const renumber = outputs.renumber as RenumberOutput | undefined;
+  return {
+    ok: status === 'rebased' || status === 'up-to-date' || status === 'awaiting-approval',
+    status,
+    pullRequestId,
+    oldHead: input.pr?.headCommit ?? null,
+    newHead: finalHeadSha(outputs),
+    conflicts: rebase?.conflicts ?? [],
+    renumbered: renumber?.renumbered ?? [],
+    costUsd: (outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+    error,
   };
+}
+
+/**
+ * Runs `stages` on `state` and turns the end state into the outcome, then
+ * posts the failure comment and cleans up — the one place these rules live
+ * for `fixPr` and `approvePrFix`. With `hold`, a green run that pushed nothing
+ * ends `awaiting-approval` with a review: the environment is deleted (unless
+ * keepEnv), the IDs and worktree stay, and the state is saved for approval.
+ */
+async function concludeRun(deps: FixPrDeps, state: PipelineState, stages: Stage[], hold: boolean): Promise<PrFixOutcome> {
+  const { logger, pullRequestId } = deps;
+  const config = deps.prfix.app;
+  const now = deps.now ?? (() => new Date());
+  const build = (status: PrFixStatus, error: string | null): PrFixOutcome =>
+    buildOutcome(pullRequestId, state.outputs, status, error);
 
   let outcome: PrFixOutcome;
   let collisions: CollisionGroup[] | undefined;
   try {
     await runPipeline({
-      stages: deps.stages,
+      stages,
       state,
       context: {
         config,
@@ -198,12 +278,17 @@ export async function fixPr(deps: FixPrDeps): Promise<PrFixOutcome> {
         now,
       },
       store: deps.store,
+      ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
     });
     if (state.cancelled && state.outputs.pushed === true) {
       logger.warn(`fix-pr: cancelled after the rebased branch was pushed; reporting PR ${pullRequestId} as rebased`);
       outcome = build('rebased', null);
+    } else if (state.cancelled) {
+      outcome = build('cancelled', 'cancelled');
+    } else if (hold && state.outputs.pushed !== true) {
+      outcome = { ...build('awaiting-approval', null), review: await buildReview(deps, state.outputs) };
     } else {
-      outcome = state.cancelled ? build('cancelled', 'cancelled') : build('rebased', null);
+      outcome = build('rebased', null);
     }
   } catch (err) {
     const status = statusOf(err);
@@ -233,9 +318,59 @@ export async function fixPr(deps: FixPrDeps): Promise<PrFixOutcome> {
     }
   }
 
+  if (outcome.status === 'awaiting-approval') {
+    if (await deleteEnvironment(deps, state.outputs)) state.outputs[ENV_DELETED_KEY] = now().toISOString();
+    state.outputs[AWAITING_APPROVAL_KEY] = now().toISOString();
+    deps.store.save(state);
+    logger.info(`fix-pr: PR ${pullRequestId} awaits approval; keeping worktree and reserved IDs`);
+    return outcome;
+  }
   await postFailureComment(deps, state.outputs.prFixInput as Partial<PrFixInput>, outcome, collisions);
   await cleanUp(deps, state.outputs, outcome);
   return outcome;
+}
+
+/**
+ * What the approver sees. Throws when the green run left no rebase or
+ * worktree to review (the caller reports that as an error); a failing diff
+ * call only puts `(diff unavailable: ...)` in that field.
+ */
+async function buildReview(deps: FixPrDeps, outputs: Record<string, unknown>): Promise<PrFixReview> {
+  const input = outputs.prFixInput as Partial<PrFixInput>;
+  const rebase = outputs.rebase as RebaseOutput | undefined;
+  const wt = outputs.worktree as WorktreeContext | undefined;
+  if (!input.pr || !rebase || !wt) throw new Error('hold: the run left no rebase to review');
+  const newHead = finalHeadSha(outputs) ?? rebase.newHeadSha;
+  const diff = async (run: () => Promise<string>): Promise<string> => {
+    try {
+      return await run();
+    } catch (err) {
+      return `(diff unavailable: ${redactPat(messageOf(err), deps.prfix.app.pat)})`;
+    }
+  };
+  const conflicts: PrFixReview['conflicts'] = [];
+  for (const c of rebase.conflicts) {
+    const diffs: { path: string; diff: string }[] = [];
+    for (const file of c.files) {
+      diffs.push({ path: file, diff: await diff(() => deps.git.fileDiff(wt.path, rebase.preRebaseSha, newHead, file)) });
+    }
+    conflicts.push({ ...c, diffs });
+  }
+  const verification = outputs.verification as VerificationOutput | undefined;
+  return {
+    preRebaseSha: rebase.preRebaseSha,
+    targetSha: rebase.targetSha,
+    targetRefName: input.pr.targetRefName,
+    newHead,
+    commitsReplayed: rebase.commitsReplayed,
+    conflicts,
+    renumbered: (outputs.renumber as RenumberOutput | undefined)?.renumbered ?? [],
+    tests: verification
+      ? { passed: verification.passed, codeunits: new Set(verification.testRuns.map((r) => r.codeunitId)).size }
+      : null,
+    rangeDiff: await diff(() => deps.git.rangeDiff(wt.path, rebase.targetSha, rebase.preRebaseSha, newHead)),
+    costUsd: (outputs.cost as PipelineCostInfo | undefined)?.total ?? 0,
+  };
 }
 
 async function postFailureComment(
@@ -303,28 +438,42 @@ async function releaseReservedIds(deps: FixPrDeps, renumber: RenumberOutput | un
   }
 }
 
-async function cleanUp(deps: FixPrDeps, outputs: Record<string, unknown>, outcome: PrFixOutcome): Promise<void> {
+/**
+ * Deletes the run's environment unless keepEnv, a hold already deleted it, or
+ * its name is not a fix-pr one. True when it was deleted here.
+ */
+async function deleteEnvironment(deps: FixPrDeps, outputs: Record<string, unknown>): Promise<boolean> {
   const { logger, pullRequestId } = deps;
   const env = outputs.environment as EnvironmentOutput | undefined;
+  const wt = outputs.worktree as WorktreeContext | undefined;
+  if (!env || typeof outputs[ENV_DELETED_KEY] === 'string') return false;
+  if (deps.keepEnv) {
+    logger.info(`fix-pr: keeping environment ${env.envId} (${env.url ?? 'no url'})`);
+    return false;
+  }
+  if (!env.name.startsWith(`wi-${pullRequestId}-pr-`)) {
+    logger.warn(`fix-pr: not deleting environment ${env.envId} — '${env.name}' is not a fix-pr name`);
+    return false;
+  }
+  if (!deps.continiaCli) return false;
+  try {
+    await deps.continiaCli.deleteEnvironment(env.envId, { worktreePath: wt?.path ?? deps.prfix.app.targetRepoPath });
+    logger.info(`fix-pr: deleted environment ${env.envId}`);
+    return true;
+  } catch (err) {
+    logger.warn(`fix-pr: could not delete environment ${env.envId} :: ${messageOf(err)}`);
+    return false;
+  }
+}
+
+async function cleanUp(deps: FixPrDeps, outputs: Record<string, unknown>, outcome: PrFixOutcome): Promise<void> {
+  const { logger } = deps;
   const wt = outputs.worktree as WorktreeContext | undefined;
 
   // Before the worktree goes: Ninja resolves each ID's app from its file.
   if (outputs.pushed !== true) await releaseReservedIds(deps, outputs.renumber as RenumberOutput | undefined);
 
-  if (env && !deps.keepEnv) {
-    if (!env.name.startsWith(`wi-${pullRequestId}-pr-`)) {
-      logger.warn(`fix-pr: not deleting environment ${env.envId} — '${env.name}' is not a fix-pr name`);
-    } else if (deps.continiaCli) {
-      try {
-        await deps.continiaCli.deleteEnvironment(env.envId, { worktreePath: wt?.path ?? deps.prfix.app.targetRepoPath });
-        logger.info(`fix-pr: deleted environment ${env.envId}`);
-      } catch (err) {
-        logger.warn(`fix-pr: could not delete environment ${env.envId} :: ${messageOf(err)}`);
-      }
-    }
-  } else if (env) {
-    logger.info(`fix-pr: keeping environment ${env.envId} (${env.url ?? 'no url'})`);
-  }
+  await deleteEnvironment(deps, outputs);
 
   if (!wt) return;
   if (outcome.ok) {

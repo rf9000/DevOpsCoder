@@ -2,7 +2,8 @@ import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { alErrorLines, fixPr } from '../../src/prfix/fix-pr.ts';
+import { alErrorLines, approvePrFix, fixPr, rejectPrFix, type FixPrDeps } from '../../src/prfix/fix-pr.ts';
+import { buildPrFixFinishStages } from '../../src/services/pipeline-builder.ts';
 import type { PrFixConfig } from '../../src/prfix/config.ts';
 import type { PrFixGit } from '../../src/prfix/prfix-git.ts';
 import type { NinjaClient } from '../../src/prfix/ninja.ts';
@@ -573,5 +574,183 @@ describe('alErrorLines', () => {
     ]);
     // A path outside the worktree is left alone.
     expect(alErrorLines(v([row]), 10, 'D:\\other')).toEqual([line]);
+  });
+});
+
+describe('fix-pr hold mode, approve and reject', () => {
+  const HOLD_RESERVED = [
+    { type: 'codeunit', id: 72918790, file: '/wt/prfix-42/app/P.al', status: 'used' as const },
+    { type: 'codeunit', id: 72918700, file: '/wt/prfix-42/app/P.al', status: 'rejected-in-use' as const },
+    { type: 'codeunit', id: 72918791, file: '/wt/prfix-42/app/Q.al', status: 'used' as const },
+  ];
+  const USED = HOLD_RESERVED.filter((r) => r.status === 'used').map((r): [string, number, string] => [r.type, r.id, r.file]);
+  const HOLD_RENUMBERED = [{ type: 'codeunit', name: 'P', file: 'app/P.al', app: 'app', oldId: 72918753, newId: 72918790 }];
+  const renumbered = stage('renumber-collisions', (o) => {
+    o.renumber = { commit: 'renum00', renumbered: HOLD_RENUMBERED, reserved: HOLD_RESERVED };
+  });
+  const green = stage('build-and-test', (o) => {
+    o.verification = {
+      attempts: 0,
+      compiled: true,
+      deploy: [],
+      testRuns: [
+        { attempt: 0, codeunitId: 1, passed: true, summary: { total: 1, passed: 1, failed: 0, skipped: 0 }, tests: [] },
+        { attempt: 0, codeunitId: 2, passed: true, summary: { total: 1, passed: 1, failed: 0, skipped: 0 }, tests: [] },
+      ],
+      passed: true,
+    };
+  });
+  const HELD_STAGES = [intake, worktree, rebase, renumbered, env, green];
+
+  function makeDeps(store: PipelineStateStore, opts: { pushThrows?: Error; rangeDiffThrows?: boolean; holdBeforePush?: boolean } = {}) {
+    const app = makeTestConfig({ STATE_DIR: mkdtempSync(join(tmpdir(), 'prfix-')) }, { dryRun: false, pat: PAT });
+    const prfix: PrFixConfig = {
+      app,
+      maxConflictCommits: 3,
+      maxConflictFiles: 10,
+      resolverMaxTurns: 40,
+      renumberCollisions: true,
+      ninjaCommand: { command: 'npx', args: [] },
+      ninjaCallTimeoutMs: 60_000,
+    };
+    const removeWorktree = mock(async (_wt: unknown) => {});
+    const headSha = mock(async (_p: string) => 'renum00');
+    const push = mock(async (_a: { path: string; sourceRefName: string; expectedRemoteSha: string }) => {
+      if (opts.pushThrows) throw opts.pushThrows;
+    });
+    const rangeDiff = mock(async (_p: string, _b: string, _o: string, _n: string) => {
+      if (opts.rangeDiffThrows) throw new Error('range-diff broke');
+      return 'RANGE DIFF TEXT';
+    });
+    const fileDiff = mock(async (_p: string, _f: string, _t: string, file: string) => `diff of ${file}`);
+    const git = { removeWorktree, headSha, push, rangeDiff, fileDiff } as unknown as PrFixGit;
+    const createPullRequestThread = mock(async (_a: { content: string }, _o?: unknown) => {});
+    const ado = { createPullRequestThread } as unknown as AdoClient;
+    const deleteEnvironment = mock(async (_id: string, _o: unknown) => {});
+    const unassign = mock(async (_type: string, _id: number, _file: string) => {});
+    const ninja = mock(() => ({ assign: async () => 0, unassign, close: async () => {} }) as unknown as NinjaClient);
+    const progress: [string, string | null][] = [];
+    const deps: FixPrDeps = {
+      prfix,
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      ado,
+      git,
+      continiaCli: { deleteEnvironment },
+      stages: HELD_STAGES,
+      store,
+      pullRequestId: PR_ID,
+      keepEnv: false,
+      now: () => new Date('2026-11-16T00:00:00.000Z'),
+      ninja,
+      holdBeforePush: opts.holdBeforePush ?? true,
+      onProgress: (s, d) => progress.push([s, d]),
+    };
+    const finishStages = buildPrFixFinishStages({ ado, git, keepEnv: false });
+    return { deps, finishStages, removeWorktree, push, rangeDiff, fileDiff, createPullRequestThread, deleteEnvironment, unassign, progress };
+  }
+
+  const newStore = () => new PipelineStateStore(mkdtempSync(join(tmpdir(), 'prfix-store-')));
+
+  it('hold: green run ends awaiting-approval with a review', async () => {
+    const store = newStore();
+    const r = makeDeps(store);
+    const o = await fixPr(r.deps);
+    expect(o).toMatchObject({ ok: true, status: 'awaiting-approval', newHead: 'renum00', error: null });
+    expect(o.review).toEqual({
+      preRebaseSha: 'head000',
+      targetSha: 'target0',
+      targetRefName: 'refs/heads/main',
+      newHead: 'renum00',
+      commitsReplayed: 2,
+      conflicts: [{ ...CONFLICT, diffs: [{ path: 'a.al', diff: 'diff of a.al' }] }],
+      renumbered: HOLD_RENUMBERED,
+      tests: { passed: true, codeunits: 2 },
+      rangeDiff: 'RANGE DIFF TEXT',
+      costUsd: 0,
+    });
+    expect(r.rangeDiff.mock.calls).toEqual([[WT.path, 'target0', 'head000', 'renum00']]);
+    expect(r.fileDiff.mock.calls).toEqual([[WT.path, 'head000', 'renum00', 'a.al']]);
+    expect(r.deleteEnvironment).toHaveBeenCalledTimes(1);
+    expect(r.removeWorktree).not.toHaveBeenCalled();
+    expect(r.unassign).not.toHaveBeenCalled();
+    expect(r.push).not.toHaveBeenCalled();
+    expect(r.createPullRequestThread).not.toHaveBeenCalled();
+    expect(store.load(PR_ID)?.outputs.rebase).toEqual(REBASE);
+    expect(r.progress[0]).toEqual(['pr-intake', null]);
+    expect(r.progress.map(([s]) => s)).toContain('build-and-test');
+  });
+
+  it('hold: a failing diff call is reported in the review, not as a failed run', async () => {
+    const r = makeDeps(newStore(), { rangeDiffThrows: true });
+    const o = await fixPr(r.deps);
+    expect(o.status).toBe('awaiting-approval');
+    expect(o.review?.rangeDiff).toBe('(diff unavailable: range-diff broke)');
+  });
+
+  it('hold: red gate ends verification-failed, releases IDs, no review', async () => {
+    const r = makeDeps(newStore());
+    r.deps.stages = [intake, worktree, rebase, renumbered, env, throwing('build-and-test', new VerificationFailedError(0, true, 'red'))];
+    const o = await fixPr(r.deps);
+    expect(o).toMatchObject({ ok: false, status: 'verification-failed' });
+    expect(o.review).toBeUndefined();
+    expect(r.unassign.mock.calls).toEqual(USED);
+    expect(r.removeWorktree).not.toHaveBeenCalled();
+    expect(r.createPullRequestThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('hold: up-to-date ends up-to-date, no review', async () => {
+    const r = makeDeps(newStore());
+    r.deps.stages = [intake, throwing('pr-worktree', new PrUpToDateError('already'))];
+    const o = await fixPr(r.deps);
+    expect(o).toMatchObject({ ok: true, status: 'up-to-date' });
+    expect(o.review).toBeUndefined();
+  });
+
+  it('approve pushes from the saved state and removes the worktree', async () => {
+    const store = newStore();
+    await fixPr(makeDeps(store).deps);
+    const r = makeDeps(store, { holdBeforePush: false });
+    const o = await approvePrFix({ ...r.deps, finishStages: r.finishStages });
+    expect(r.push.mock.calls).toEqual([[{ path: WT.path, sourceRefName: PR.sourceRefName, expectedRemoteSha: REBASE.preRebaseSha }]]);
+    expect(o).toMatchObject({ ok: true, status: 'rebased', newHead: 'renum00', error: null });
+    expect(o.review).toBeUndefined();
+    expect(r.removeWorktree.mock.calls).toEqual([[WT]]);
+    expect(r.unassign).not.toHaveBeenCalled();
+    // The environment went at hold time.
+    expect(r.deleteEnvironment).not.toHaveBeenCalled();
+    expect(r.createPullRequestThread).toHaveBeenCalledTimes(1);
+    expect(r.createPullRequestThread.mock.calls[0]?.[0].content).toContain('Rebased onto');
+    expect(r.progress.map(([s]) => s)).toEqual(['push-rebased', 'pr-comment']);
+  });
+
+  it('approve after a developer push ends head-moved', async () => {
+    const store = newStore();
+    await fixPr(makeDeps(store).deps);
+    const r = makeDeps(store, { pushThrows: new HeadMovedError('feature', 'head000', 'dev0000') });
+    const o = await approvePrFix({ ...r.deps, finishStages: r.finishStages });
+    expect(r.push.mock.calls[0]?.[0].expectedRemoteSha).toBe('head000');
+    expect(o).toMatchObject({ ok: false, status: 'head-moved' });
+    expect(r.unassign.mock.calls).toEqual(USED);
+    expect(r.removeWorktree).not.toHaveBeenCalled();
+    expect(r.createPullRequestThread).toHaveBeenCalledTimes(1);
+    expect(r.createPullRequestThread.mock.calls[0]?.[0].content).toContain('head-moved');
+  });
+
+  it('reject releases IDs and removes the worktree', async () => {
+    const store = newStore();
+    await fixPr(makeDeps(store).deps);
+    const r = makeDeps(store);
+    const o = await rejectPrFix(r.deps);
+    expect(o).toMatchObject({ ok: false, status: 'rejected', error: null, newHead: 'renum00' });
+    expect(r.unassign.mock.calls).toEqual(USED);
+    expect(r.removeWorktree.mock.calls).toEqual([[WT]]);
+    expect(r.push).not.toHaveBeenCalled();
+    expect(r.createPullRequestThread).not.toHaveBeenCalled();
+  });
+
+  it('approve and reject without a held state throw', async () => {
+    const r = makeDeps(newStore());
+    await expect(approvePrFix({ ...r.deps, finishStages: r.finishStages })).rejects.toThrow('no held fix-pr state for PR 42');
+    await expect(rejectPrFix(r.deps)).rejects.toThrow('no held fix-pr state for PR 42');
   });
 });
