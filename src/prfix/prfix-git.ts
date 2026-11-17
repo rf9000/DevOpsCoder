@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { HeadMovedError } from '../suggestions/suggestion-git.ts';
 import type { AppConfig, WorktreeContext } from '../types/index.ts';
 import { buildGitAuthArgs, redactPat } from '../utils/git-auth.ts';
+import { NO_GIT_LOCK, type GitLock } from '../utils/git-lock.ts';
 import type { Logger } from '../utils/logger.ts';
 
 export type RebaseStep =
@@ -75,15 +76,22 @@ function splitNul(out: string): string[] {
  * Worktrees are added `--lock`ed, which is why removal and re-adding pass
  * `--force` twice.
  */
-export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): PrFixGit {
+export function createPrFixGit(deps: { config: AppConfig; logger?: Logger; gitLock?: GitLock }): PrFixGit {
   const repo = deps.config.targetRepoPath;
   const pat = deps.config.pat;
+  const gitLock = deps.gitLock ?? NO_GIT_LOCK;
+  const sameDir = (a: string, b: string): boolean => a.replace(/\\/g, '/') === b.replace(/\\/g, '/');
 
-  async function runGit(
-    args: string[],
-    cwd: string,
-    opts: { allowExit?: number[]; rawStdout?: boolean } = {},
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  type GitResult = { stdout: string; stderr: string; exitCode: number };
+  type GitOpts = { allowExit?: number[]; rawStdout?: boolean };
+
+  /** Commands on the shared clone are serialized; worktree-scoped ones are not. */
+  function runGit(args: string[], cwd: string, opts: GitOpts = {}): Promise<GitResult> {
+    if (sameDir(cwd, repo)) return gitLock.run(() => spawnGit(args, cwd, opts));
+    return spawnGit(args, cwd, opts);
+  }
+
+  async function spawnGit(args: string[], cwd: string, opts: GitOpts): Promise<GitResult> {
     const describe = redactPat(`git ${args.join(' ')}`, pat);
     let proc: ReturnType<typeof Bun.spawn>;
     try {
