@@ -122,6 +122,47 @@ describe('createAdoClient', () => {
     });
   });
 
+  describe('listActivePullRequests', () => {
+    it('listActivePullRequests maps rows and skips rows without a head', async () => {
+      const fetchImpl = setupFetch([
+        jsonResponse(200, {
+          value: [
+            {
+              pullRequestId: 61400,
+              title: 'Ponto',
+              createdBy: { displayName: 'René' },
+              creationDate: '2026-11-01T00:00:00Z',
+              sourceRefName: 'refs/heads/f',
+              targetRefName: 'refs/heads/main',
+              lastMergeSourceCommit: { commitId: 'abc' },
+              isDraft: false,
+              status: 'active',
+            },
+            { pullRequestId: 2, lastMergeSourceCommit: {} },
+          ],
+        }),
+      ]);
+      const client = createAdoClient(makeConfig(), fetchImpl);
+      const rows = await client.listActivePullRequests('My Repo');
+      expect(rows).toEqual([
+        {
+          id: 61400,
+          status: 'active',
+          title: 'Ponto',
+          sourceRefName: 'refs/heads/f',
+          targetRefName: 'refs/heads/main',
+          headCommit: 'abc',
+          isDraft: false,
+          url: 'https://dev.azure.com/my-org/my-project/_git/My%20Repo/pullrequest/61400',
+          author: 'René',
+          createdAt: '2026-11-01T00:00:00Z',
+        },
+      ]);
+      expect(calls[0]!.url).toContain('searchCriteria.status=active');
+      expect(calls[0]!.url).toContain('/_apis/git/repositories/My%20Repo/pullrequests?');
+    });
+  });
+
   describe('queryWorkItemsByTag', () => {
     it('POSTs WIQL with the trigger tag and returns work item IDs', async () => {
       const fetchImpl = setupFetch([

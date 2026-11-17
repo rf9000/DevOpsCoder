@@ -712,6 +712,13 @@ export interface PullRequestDetails {
   url: string;
 }
 
+/** One row of `listActivePullRequests`; `url` is the web URL. */
+export interface ActivePullRequest extends PullRequestDetails {
+  author: string;
+  /** ISO timestamp, `''` when ADO omits it. */
+  createdAt: string;
+}
+
 export interface DraftPrOutput {
   id: number;
   url: string;

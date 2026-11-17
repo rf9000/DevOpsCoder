@@ -1,4 +1,5 @@
 import type {
+  ActivePullRequest,
   AppConfig,
   CreatePullRequestArgs,
   CreatePullRequestThreadArgs,
@@ -46,6 +47,11 @@ export interface AdoClient {
     pullRequestId: number,
     opts?: { signal?: AbortSignal },
   ): Promise<PullRequestDetails>;
+  /** Active pull requests of a repository (at most 200); `url` is the web URL. */
+  listActivePullRequests(
+    repositoryName: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ActivePullRequest[]>;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000];
@@ -326,6 +332,46 @@ export function createAdoClient(
         isDraft: r.isDraft ?? false,
         url: r.url ?? '',
       };
+    },
+
+    async listActivePullRequests(
+      repositoryName: string,
+      opts: { signal?: AbortSignal } = {},
+    ): Promise<ActivePullRequest[]> {
+      const response = await adoFetchWithRetry<{
+        value?: {
+          pullRequestId?: number;
+          status?: string;
+          title?: string;
+          createdBy?: { displayName?: string };
+          creationDate?: string;
+          sourceRefName?: string;
+          targetRefName?: string;
+          lastMergeSourceCommit?: { commitId?: string };
+          isDraft?: boolean;
+        }[];
+      }>(
+        `/${encodeURIComponent(config.project)}/_apis/git/repositories/${encodeURIComponent(repositoryName)}/pullrequests?searchCriteria.status=active&$top=200&api-version=7.1`,
+        opts.signal !== undefined ? { signal: opts.signal } : undefined,
+      );
+      const rows: ActivePullRequest[] = [];
+      for (const r of response.value ?? []) {
+        const headCommit = r.lastMergeSourceCommit?.commitId;
+        if (!headCommit || r.pullRequestId === undefined) continue;
+        rows.push({
+          id: r.pullRequestId,
+          status: normalizePrStatus(r.status),
+          title: r.title ?? '',
+          sourceRefName: r.sourceRefName ?? '',
+          targetRefName: r.targetRefName ?? '',
+          headCommit,
+          isDraft: r.isDraft ?? false,
+          url: `${config.orgUrl}/${encodeURIComponent(config.project)}/_git/${encodeURIComponent(repositoryName)}/pullrequest/${r.pullRequestId}`,
+          author: r.createdBy?.displayName ?? '',
+          createdAt: r.creationDate ?? '',
+        });
+      }
+      return rows;
     },
   };
 }
