@@ -15,8 +15,12 @@ flow may change (for example a dry run before the push), so nothing here should 
 
 - The Coder card on the monitor shows a **PR fixer** panel: the active PRs of the Banking
   repo, each with its last fix-pr result, and a **Fix** button.
-- Fix queues the PR. DevOpsCoder runs queued PRs one at a time, as a real run (push), in the
-  long-running watcher container. No new container, no SSH.
+- Fix queues the PR. DevOpsCoder runs queued PRs one at a time in the long-running watcher
+  container. No new container, no SSH.
+- A dashboard run never pushes on its own. It does everything up to the push (rebase,
+  conflict resolution, renumber, build + test), then stops **awaiting approval** and shows
+  what it would push. The admin presses **Approve** (push + PR comment) or **Reject**
+  (discard). This applies to dashboard runs only; the `fix-pr` CLI keeps pushing directly.
 - While a job runs, the panel shows which stage it is in (chips, as for work items).
 - When it ends, the row shows the outcome: status, conflicts resolved, IDs renumbered,
   cost, error. The full `PrFixOutcome` is kept.
@@ -24,13 +28,16 @@ flow may change (for example a dry run before the push), so nothing here should 
 
 ## Non-goals
 
-- No dry-run option on the dashboard. Fix always pushes. (The CLI keeps `--dry-run`.)
+- No "push directly" button on the dashboard and no dry-run option. Every dashboard run
+  waits for approval. (The CLI keeps direct push and `--dry-run`.) A direct-push option
+  may come later.
 - No cancel of a running job. A queued job can be removed (unqueue).
 - No "Mine" filter or author mapping. Only the admin uses it and the list is short.
 - No phase 2/3 (review comments, pipeline failures). The panel shows whatever `fixPr` does.
-- No change to what the `fix-pr` pipeline does (stages, push, comment, Ninja, env cleanup).
-  Two additive hooks are allowed: an optional stage/progress callback on `FixPrDeps`
-  (see Progress) and an optional `gitLock` (see Concurrency).
+- No change to what the `fix-pr` stages do (rebase, renumber, verify, push, comment, Ninja,
+  env cleanup). Additions to `fixPr` are allowed: an optional stage/progress callback (see
+  Progress), an optional `gitLock` (see Concurrency), and a hold-before-push mode with
+  separate approve and reject entry points (see Approval).
 - No cost-ledger line and no `WI<id>.log` for fix-pr jobs. `fixPr` uses the PR id as the
   state id, so PR 61400 would collide with WI 61400 in the ledger, the monitor's Usage
   panel and the log name. `history.jsonl` is the record. (Decided by the designer; revisit
@@ -121,6 +128,32 @@ loaded, and sign-in not needed. It calls `fixPr()` with the same deps the CLI bu
 head at start (`pr-intake`), never at queue time. A cost-ledger line is written as the CLI
 does for a non-dry run, with `triggeredBy`, so the monitor's Usage and history pick it up.
 
+**Approval.** A dashboard job runs `fixPr` in hold mode: the pipeline stops after
+`build-and-test` (before `push-rebased`). What happens next:
+
+- Red gate, `up-to-date`, or any failure: the job ends as today (cleanup, history line).
+  Nothing waits, and there is no Approve.
+- Green and rebased: the environment is deleted as usual (the push does not need it), and
+  the job ends as `awaiting-approval`. The worktree, the `prfix/pr-<id>` branch, the state
+  file and the reserved Ninja IDs stay. The worker is free; the next queued PR may run.
+- The pending item carries what the panel shows: old head, new head, commits replayed,
+  conflicts with the resolver's summary and per-file resolution plus the resolved file's
+  diff against the PR's version, renumbered IDs, test result, cost, and the
+  `git range-diff <target>..<oldHead> <newTarget>..<newHead>` text (capped, e.g. 20 KB).
+- **Approve** (`POST /approve` `{ repo, prId }`) runs the remaining stages, `push-rebased`
+  then `pr-comment`, from the saved state. The lease is still the original pre-rebase head
+  read at intake, so a developer push in the meantime fails as `head-moved` and is not
+  overwritten. Then the normal end: worktree removed, history line with the final outcome
+  and `approvedBy`.
+- **Reject** (`POST /reject`) releases the reserved Ninja IDs, removes the worktree and
+  branch, writes a history line `status: 'rejected'` with `rejectedBy`.
+- A pending approval older than `PRFIX_APPROVAL_TTL_HOURS` (default 24) is rejected
+  automatically (`rejectedBy: 'expired'`), checked on each watcher cycle.
+- Pending approvals are persisted (`.state/prfix/pending.json`) and survive a restart; the
+  restart cleanup for interrupted jobs leaves them alone. Fix on a PR that is pending answers
+  409; the admin approves or rejects first. Approve/reject run under the same one-at-a-time
+  worker as jobs, so a push never overlaps a running job's git work.
+
 **Progress.** `/status.activeJob = { prId, startedAt, phase, phaseDetail, phaseSince,
 phasesDone }`. `phase` is the running stage name (`pr-intake`, `pr-worktree`,
 `rebase-onto-target`, `renumber-collisions`, `env-provision`, `build-and-test`,
@@ -154,6 +187,9 @@ cleanup above catches it.
 - `POST /queue` `{ repo, prId }` → 200 with the queue; 409 if unavailable, already queued,
   running, or the PR is not in the catalog; 400 on a bad body.
 - `DELETE /queue/<repo>/<prId>` → 200, or 404 if not queued.
+- `POST /approve` `{ repo, prId }` → 202 (push queued ahead of jobs), 404 if not pending.
+- `POST /reject` `{ repo, prId }` → 200, 404 if not pending.
+- `/status.prFix.pending`: the pending items above, each with `readyAt` and `expiresAt`.
 - `GET /stats` → `{ jobs: [...] }` from `history.jsonl`, newest first.
 
 `repo` is accepted for shape-compatibility with `PrQueueLink`; it must equal
@@ -184,7 +220,12 @@ cleanup above catches it.
   running: 61377 · build-and-test · 4m                        [chips: intake … comment]
   ```
 
-  PR id links to the PR. Fix is a single click (a real push; only the admin has it).
+  A pending PR shows **awaiting approval** with a Review button that opens an overlay:
+  heads, conflicts with resolution text and file diff, renumbered IDs, tests, cost, the
+  range-diff, expiry time, and **Approve** / **Reject**. Actions `coder-fixpr-approve` and
+  `coder-fixpr-reject` are logged like the others.
+
+  PR id links to the PR. Fix is a single click; it never pushes by itself.
   A failed last run shows the status and the first line of `error`, full text on hover.
   `unavailable` shows the reason instead of the list. Waiting for sign-in shows the same
   note as work items.
