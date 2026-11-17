@@ -666,4 +666,25 @@ describe('runPipeline dashboard progress', () => {
     });
     expect(calls).toEqual([['a', null], ['a', 'half'], ['b', null]]);
   });
+
+  it('a throwing onProgress never fails a stage or the run', async () => {
+    const a = makeStage('a', async (s, c) => {
+      c.reportProgress?.('half');
+      return s;
+    });
+    const context = makeContext();
+    const final = await runPipeline({
+      stages: [a, makeStage('b')],
+      state: createInitialState(1, 'wi-1', FIXED_NOW),
+      context,
+      store: makeMockStore(),
+      onProgress: () => {
+        throw new Error('observer broke');
+      },
+    });
+    expect(final.completedAt).toBeDefined();
+    expect(final.terminalError).toBeUndefined();
+    expect(final.history.map((h) => [h.stage, h.outcome])).toEqual([['a', 'success'], ['b', 'success']]);
+    expect((context.logger.warn as ReturnType<typeof mock>).mock.calls.length).toBe(3);
+  });
 });

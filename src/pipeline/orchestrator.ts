@@ -88,6 +88,15 @@ function recordTerminalAndThrow(
 export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineState> {
   const { stages, context, store } = opts;
   let state = opts.state;
+  // An observer: its failure never fails a stage or escapes the run.
+  const notifyProgress = (stageName: string, detail: string | null): void => {
+    if (!opts.onProgress) return;
+    try {
+      opts.onProgress(stageName, detail);
+    } catch (err) {
+      context.logger.warn(`onProgress for ${stageName} threw :: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   if (state.currentStage == null) {
     state.currentStage = stages[0]?.name ?? null;
@@ -146,9 +155,9 @@ export async function runPipeline(opts: RunPipelineOptions): Promise<PipelineSta
       if (!live || entry.stageDetail === detail) return;
       entry.stageDetail = detail;
       store.save(entry);
-      opts.onProgress?.(stage.name, detail);
+      notifyProgress(stage.name, detail);
     };
-    opts.onProgress?.(stage.name, null);
+    notifyProgress(stage.name, null);
 
     // Per-stage AbortController: external abort + per-stage timeout.
     const ctrl = new AbortController();

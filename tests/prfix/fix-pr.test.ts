@@ -602,7 +602,7 @@ describe('fix-pr hold mode, approve and reject', () => {
   });
   const HELD_STAGES = [intake, worktree, rebase, renumbered, env, green];
 
-  function makeDeps(store: PipelineStateStore, opts: { pushThrows?: Error; rangeDiffThrows?: boolean; holdBeforePush?: boolean } = {}) {
+  function makeDeps(store: PipelineStateStore, opts: { pushThrows?: Error; rangeDiffThrows?: boolean; holdBeforePush?: boolean; deleteFails?: boolean } = {}) {
     const app = makeTestConfig({ STATE_DIR: mkdtempSync(join(tmpdir(), 'prfix-')) }, { dryRun: false, pat: PAT });
     const prfix: PrFixConfig = {
       app,
@@ -626,7 +626,9 @@ describe('fix-pr hold mode, approve and reject', () => {
     const git = { removeWorktree, headSha, push, rangeDiff, fileDiff } as unknown as PrFixGit;
     const createPullRequestThread = mock(async (_a: { content: string }, _o?: unknown) => {});
     const ado = { createPullRequestThread } as unknown as AdoClient;
-    const deleteEnvironment = mock(async (_id: string, _o: unknown) => {});
+    const deleteEnvironment = mock(async (_id: string, _o: unknown) => {
+      if (opts.deleteFails) throw new Error('delete failed');
+    });
     const unassign = mock(async (_type: string, _id: number, _file: string) => {});
     const ninja = mock(() => ({ assign: async () => 0, unassign, close: async () => {} }) as unknown as NinjaClient);
     const progress: [string, string | null][] = [];
@@ -746,6 +748,18 @@ describe('fix-pr hold mode, approve and reject', () => {
     expect(r.removeWorktree.mock.calls).toEqual([[WT]]);
     expect(r.push).not.toHaveBeenCalled();
     expect(r.createPullRequestThread).not.toHaveBeenCalled();
+    // The hold already deleted the environment.
+    expect(r.deleteEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('reject retries an environment delete that failed at hold time', async () => {
+    const store = newStore();
+    const held = makeDeps(store, { deleteFails: true });
+    expect((await fixPr(held.deps)).status).toBe('awaiting-approval');
+    expect(held.deleteEnvironment).toHaveBeenCalledTimes(1);
+    const r = makeDeps(store);
+    await rejectPrFix(r.deps);
+    expect(r.deleteEnvironment.mock.calls[0]?.[0]).toBe(ENV.envId);
   });
 
   it('approve and reject without a held state throw', async () => {

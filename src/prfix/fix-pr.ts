@@ -211,12 +211,16 @@ export async function approvePrFix(deps: FixPrDeps & { finishStages: Stage[] }):
   return concludeRun(deps, state, deps.finishStages, false);
 }
 
-/** Discards a held result: releases its reserved IDs and removes its worktree. Nothing is pushed. */
+/**
+ * Discards a held result: releases its reserved IDs, deletes the environment
+ * if the hold could not (or kept it), and removes its worktree. Nothing is pushed.
+ */
 export async function rejectPrFix(deps: FixPrDeps): Promise<PrFixOutcome> {
   const state = loadHeld(deps);
   delete state.outputs[AWAITING_APPROVAL_KEY];
   deps.store.save(state);
   await releaseReservedIds(deps, state.outputs.renumber as RenumberOutput | undefined);
+  await deleteEnvironment(deps, state.outputs);
   const wt = state.outputs.worktree as WorktreeContext | undefined;
   if (wt) {
     try {
