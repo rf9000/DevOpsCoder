@@ -33,6 +33,10 @@ services:
       context: ./DevOpsCoder
     env_file:
       - .env.devops-coder
+    # SIGTERM cancels a running dashboard fix-pr job; the watcher then waits for
+    # its cleanup (environment delete, Ninja ID release). Docker's default 10s
+    # is too short for that.
+    stop_grace_period: 2m
     environment:
       # env_file wins over the image's ENV — re-pin the image paths so a stray
       # var in .env.devops-coder can't silently repoint the CLI or compiler.

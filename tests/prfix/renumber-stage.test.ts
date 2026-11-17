@@ -118,6 +118,7 @@ function prfixConfig(overrides: Partial<Omit<PrFixConfig, 'app'>> = {}): PrFixCo
     renumberCollisions: true,
     ninjaCommand: { command: 'npx', args: [] },
     ninjaCallTimeoutMs: 60_000,
+    approvalTtlHours: 24,
     ...overrides,
   };
 }

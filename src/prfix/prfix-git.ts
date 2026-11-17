@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { HeadMovedError } from '../suggestions/suggestion-git.ts';
 import type { AppConfig, WorktreeContext } from '../types/index.ts';
 import { buildGitAuthArgs, redactPat } from '../utils/git-auth.ts';
+import { NO_GIT_LOCK, type GitLock } from '../utils/git-lock.ts';
 import type { Logger } from '../utils/logger.ts';
 
 export type RebaseStep =
@@ -54,6 +55,10 @@ export interface PrFixGit {
   /** Stage exactly `files` (`git add -- <files>`) and commit them with the bot identity as author AND committer; returns the new sha. Throws if nothing is staged. */
   commitFiles(path: string, files: string[], message: string): Promise<string>;
   push(a: { path: string; sourceRefName: string; expectedRemoteSha: string }): Promise<void>;
+  /** `git range-diff --no-color <base> <oldHead> <newHead>`, capped at DIFF_CAP_CHARS. */
+  rangeDiff(path: string, base: string, oldHead: string, newHead: string): Promise<string>;
+  /** `git diff --no-color <from> <to> -- <file>`, capped at DIFF_CAP_CHARS. */
+  fileDiff(path: string, from: string, to: string, file: string): Promise<string>;
   removeWorktree(wt: WorktreeContext): Promise<void>;
 }
 
@@ -62,6 +67,13 @@ export interface PrFixGit {
  * because a CRLF checkout keeps the carriage return.
  */
 const MARKER_LINE = /^(<<<<<<< .*|\|{7}(?: .*)?|=======|>>>>>>> .*)\r?$/m;
+
+/** The review's range-diff and each conflict file diff are cut here. */
+export const DIFF_CAP_CHARS = 20_000;
+
+function capDiff(text: string): string {
+  return text.length > DIFF_CAP_CHARS ? `${text.slice(0, DIFF_CAP_CHARS)}\n… (truncated)` : text;
+}
 
 /** Split `-z` output; NUL-separated names are never quoted or escaped. */
 function splitNul(out: string): string[] {
@@ -75,15 +87,22 @@ function splitNul(out: string): string[] {
  * Worktrees are added `--lock`ed, which is why removal and re-adding pass
  * `--force` twice.
  */
-export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): PrFixGit {
+export function createPrFixGit(deps: { config: AppConfig; logger?: Logger; gitLock?: GitLock }): PrFixGit {
   const repo = deps.config.targetRepoPath;
   const pat = deps.config.pat;
+  const gitLock = deps.gitLock ?? NO_GIT_LOCK;
+  const sameDir = (a: string, b: string): boolean => a.replace(/\\/g, '/') === b.replace(/\\/g, '/');
 
-  async function runGit(
-    args: string[],
-    cwd: string,
-    opts: { allowExit?: number[]; rawStdout?: boolean } = {},
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  type GitResult = { stdout: string; stderr: string; exitCode: number };
+  type GitOpts = { allowExit?: number[]; rawStdout?: boolean };
+
+  /** Commands on the shared clone are serialized; worktree-scoped ones are not. */
+  function runGit(args: string[], cwd: string, opts: GitOpts = {}): Promise<GitResult> {
+    if (sameDir(cwd, repo)) return gitLock.run(() => spawnGit(args, cwd, opts));
+    return spawnGit(args, cwd, opts);
+  }
+
+  async function spawnGit(args: string[], cwd: string, opts: GitOpts): Promise<GitResult> {
     const describe = redactPat(`git ${args.join(' ')}`, pat);
     let proc: ReturnType<typeof Bun.spawn>;
     try {
@@ -328,6 +347,14 @@ export function createPrFixGit(deps: { config: AppConfig; logger?: Logger }): Pr
         deps.logger?.warn(`fix-pr: push to ${short} rejected; remote is at ${actual || '(gone)'}, expected ${a.expectedRemoteSha}`);
         throw new HeadMovedError(short, a.expectedRemoteSha, actual);
       }
+    },
+
+    async rangeDiff(path, base, oldHead, newHead) {
+      return capDiff((await runGit(['range-diff', '--no-color', base, oldHead, newHead], path)).stdout);
+    },
+
+    async fileDiff(path, from, to, file) {
+      return capDiff((await runGit(['diff', '--no-color', from, to, '--', file], path)).stdout);
     },
 
     async removeWorktree(wt) {

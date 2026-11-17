@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync } from 'fs';
 import { resolve } from 'path';
 import type { AppConfig, WorktreeContext } from '../types/index.ts';
 import { buildGitAuthArgs, redactPat } from '../utils/git-auth.ts';
+import { NO_GIT_LOCK, type GitLock } from '../utils/git-lock.ts';
 
 /** Normalise to forward-slash form for cross-platform path comparisons. */
 function normPath(p: string): string {
@@ -46,6 +47,8 @@ export interface WorktreeManager {
 
 export interface WorktreeManagerDeps {
   config: AppConfig;
+  /** Serializes git commands run on the shared base clone. Default: no locking. */
+  gitLock?: GitLock;
 }
 
 interface WorktreeListEntry {
@@ -70,7 +73,15 @@ export function createWorktreeManager(deps: WorktreeManagerDeps): WorktreeManage
   const baseRepoPath = deps.config.targetRepoPath;
   const worktreeBase = deps.config.worktreeBase;
 
-  async function runGit(args: string[], cwd: string): Promise<RunGitResult> {
+  const gitLock = deps.gitLock ?? NO_GIT_LOCK;
+
+  /** Commands on the base clone are serialized; worktree-scoped ones are not. */
+  function runGit(args: string[], cwd: string): Promise<RunGitResult> {
+    if (normPath(cwd) === normPath(baseRepoPath)) return gitLock.run(() => spawnGit(args, cwd));
+    return spawnGit(args, cwd);
+  }
+
+  async function spawnGit(args: string[], cwd: string): Promise<RunGitResult> {
     const pat = deps.config.pat;
     const describe = redactPat(`git ${args.join(' ')}`, pat);
     let proc: ReturnType<typeof Bun.spawn>;

@@ -1,7 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { buildPipeline, type PipelineBuilderDeps } from '../../src/services/pipeline-builder.ts';
 import { buildSuggestionPipeline } from '../../src/services/pipeline-builder.ts';
-import { buildPrFixPipeline, type PrFixPipelineDeps } from '../../src/services/pipeline-builder.ts';
+import { buildPrFixFinishStages, buildPrFixPipeline, type PrFixPipelineDeps } from '../../src/services/pipeline-builder.ts';
 import { loadPrFixConfig, type PrFixConfig } from '../../src/prfix/config.ts';
 import { VerificationFailedError } from '../../src/types/index.ts';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
@@ -67,6 +67,7 @@ function makeAdo(): AdoClient {
     createPullRequestThread: async () => {},
     getPullRequestStatus: async () => 'active' as const,
     getPullRequest: async () => ({ id: 0 }) as never,
+    listActivePullRequests: async () => [],
     addTagToWorkItem: async () => {},
     removeTagFromWorkItem: async () => {},
     addWorkItemComment: async () => {},
@@ -612,6 +613,14 @@ describe('buildPrFixPipeline', () => {
       'pr-intake', 'pr-worktree', 'rebase-onto-target', 'renumber-collisions', 'env-provision', 'build-and-test',
       'push-rebased', 'pr-comment',
     ]);
+  });
+
+  it('holdBeforePush omits push-rebased and pr-comment; buildPrFixFinishStages returns them', () => {
+    const d = deps(prfixFor({ SKIP_BUILD_TEST: 'false', CONTINIA_API_TOKEN: 'tok' }), { holdBeforePush: true });
+    expect(buildPrFixPipeline(d).map((s) => s.name)).toEqual([
+      'pr-intake', 'pr-worktree', 'rebase-onto-target', 'renumber-collisions', 'env-provision', 'build-and-test',
+    ]);
+    expect(buildPrFixFinishStages(d).map((s) => s.name)).toEqual(['push-rebased', 'pr-comment']);
   });
 
   it('build-and-test gets maxTestFixAttempts 0', async () => {

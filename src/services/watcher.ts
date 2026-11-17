@@ -8,6 +8,7 @@ import { runPool } from '../utils/pool.ts';
 import { formatToolUsage } from '../utils/tool-usage-tracker.ts';
 import { formatSpendLine } from '../utils/cost-report.ts';
 import type { DemoPortalSession } from './demoportal-auth.ts';
+import type { PrFixWorker } from '../prfix/dashboard/worker.ts';
 
 /** Set to true to cut the watcher's sleep short (a sign-in finished). */
 export interface WakeFlag {
@@ -31,6 +32,11 @@ export interface WatcherDeps {
   demoPortal?: DemoPortalSession;
   /** Wakes the sleeping watcher, e.g. when a sign-in finishes. */
   wake?: WakeFlag;
+  /**
+   * The dashboard's fix-pr worker: each cycle expires stale approvals and
+   * starts the next job; on shutdown the watcher waits for the running job.
+   */
+  prFix?: PrFixWorker;
 }
 
 export function createAbortFlag(): AbortFlag {
@@ -188,6 +194,8 @@ export async function startWatcher(deps: WatcherDeps): Promise<void> {
     `watcher starting (poll every ${config.pollIntervalMinutes} min, concurrency ${config.concurrency})`,
   );
   while (!abortFlag.aborted) {
+    // Before the poll cycle, which can run work items for hours.
+    nudgePrFixer(deps);
     try {
       const stats = await runPollCycle(deps);
       logger.info(
@@ -210,5 +218,29 @@ export async function startWatcher(deps: WatcherDeps): Promise<void> {
     if (abortFlag.aborted) break;
     await sleepInterruptible(config.pollIntervalMinutes * 60_000, abortFlag, deps.wake);
   }
+  if (deps.prFix) {
+    // SIGTERM aborted the running fix-pr job; let it delete its environment and release its IDs.
+    logger.info('waiting for any running fix-pr job to settle');
+    try {
+      await deps.prFix.idle();
+    } catch (err) {
+      logger.error('fix-pr worker did not settle cleanly', err);
+    }
+  }
   logger.info('watcher stopped');
+}
+
+/** Expires stale approvals and starts queued fix-pr work. A worker fault never stops the watcher. */
+export function nudgePrFixer(deps: Pick<WatcherDeps, 'prFix' | 'logger'>): void {
+  if (!deps.prFix) return;
+  try {
+    deps.prFix.expire();
+  } catch (err) {
+    deps.logger.error('fix-pr worker expire threw, continuing', err);
+  }
+  try {
+    deps.prFix.tick();
+  } catch (err) {
+    deps.logger.error('fix-pr worker tick threw, continuing', err);
+  }
 }

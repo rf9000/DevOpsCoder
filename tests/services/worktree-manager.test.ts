@@ -8,6 +8,7 @@ import {
   WorktreeError,
 } from '../../src/services/worktree-manager.ts';
 import type { AppConfig, WorktreeContext } from '../../src/types/index.ts';
+import { spyGitLock } from '../helpers/spy-git-lock.ts';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -277,5 +278,47 @@ describe('createWorktreeManager', () => {
       expect(caught.exitCode).not.toBe(0);
       expect(caught.command[0]).toBe('git');
     }
+  }, 30000);
+});
+
+describe('createWorktreeManager gitLock', () => {
+  let sandbox: Awaited<ReturnType<typeof setupTestRepo>>;
+
+  beforeEach(async () => {
+    sandbox = await setupTestRepo();
+  }, 30000);
+
+  afterEach(() => {
+    sandbox.cleanup();
+  }, 30000);
+
+  it('ensureWorktree and removeWorktree run their base-clone commands through the lock', async () => {
+    const spy = spyGitLock();
+    const mgr = createWorktreeManager({
+      config: makeConfig(sandbox.targetRepoPath, sandbox.worktreeBase),
+      gitLock: spy.lock,
+    });
+    await mgr.ensureWorktree({ workItemId: 301, slug: 'locked' });
+    const afterEnsure = spy.calls();
+    expect(afterEnsure).toBeGreaterThan(0);
+    await mgr.removeWorktree({ workItemId: 301, slug: 'locked' });
+    expect(spy.calls()).toBeGreaterThan(afterEnsure);
+    expect(spy.maxActive()).toBe(1);
+  }, 30000);
+
+  it('two concurrent ensureWorktree calls serialize on the lock', async () => {
+    const spy = spyGitLock();
+    const mgr = createWorktreeManager({
+      config: makeConfig(sandbox.targetRepoPath, sandbox.worktreeBase),
+      gitLock: spy.lock,
+    });
+    const [a, b] = await Promise.all([
+      mgr.ensureWorktree({ workItemId: 302, slug: 'one' }),
+      mgr.ensureWorktree({ workItemId: 303, slug: 'two' }),
+    ]);
+    expect(spy.maxActive()).toBe(1);
+    expect(spy.calls()).toBeGreaterThan(1);
+    expect(existsSync(a.path)).toBe(true);
+    expect(existsSync(b.path)).toBe(true);
   }, 30000);
 });

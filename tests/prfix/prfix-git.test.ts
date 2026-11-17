@@ -8,6 +8,8 @@ import { createPrFixGit } from '../../src/prfix/prfix-git.ts';
 import { applyWorktreeOverlay } from '../../src/services/worktree-overlay.ts';
 import { HeadMovedError } from '../../src/suggestions/suggestion-git.ts';
 import { makeTestConfig } from '../helpers/app-config.ts';
+import { spyGitLock } from '../helpers/spy-git-lock.ts';
+import type { GitLock } from '../../src/utils/git-lock.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -78,7 +80,7 @@ beforeEach(async () => {
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function git() {
+function git(gitLock?: GitLock) {
   return createPrFixGit({
     config: makeTestConfig({
       TARGET_REPO_PATH: targetRepoPath,
@@ -86,6 +88,7 @@ function git() {
       BOT_GIT_NAME: BOT_NAME,
       BOT_GIT_EMAIL: 'bot@example.com',
     }),
+    ...(gitLock ? { gitLock } : {}),
   });
 }
 
@@ -506,5 +509,61 @@ describe('commitFiles', () => {
     const g = git();
     const wt = await g.createWorktree(args());
     await expect(g.commitFiles(wt.path, ['Feature.al'], 'noop')).rejects.toThrow('commitFiles: nothing to commit');
+  });
+});
+
+describe('rangeDiff and fileDiff', () => {
+  it('rangeDiff and fileDiff return git\'s text and cap at 20 000 chars', async () => {
+    const big = `${'x'.repeat(99)}\n`.repeat(300); // 30 000 chars
+    await advanceMain('Big.al', big, 'big on main');
+    const g = git();
+    const wt = await g.createWorktree(args());
+    const step = await g.startRebase(wt.path, wt.targetSha);
+    if (step.kind !== 'done') throw new Error('expected done');
+
+    const range = await g.rangeDiff(wt.path, wt.targetSha, head, step.head);
+    expect(range).toContain('dev work');
+    expect(range).toContain(head.slice(0, 7));
+
+    const small = await g.fileDiff(wt.path, head, step.head, 'Shared.al');
+    expect(small).toBe('');
+    const capped = await g.fileDiff(wt.path, head, step.head, 'Big.al');
+    expect(capped).toStartWith('diff --git a/Big.al b/Big.al');
+    expect(capped.length).toBe(20_000 + '\n… (truncated)'.length);
+    expect(capped).toEndWith('\n… (truncated)');
+  });
+});
+
+describe('gitLock', () => {
+  it('base-clone commands go through the lock; worktree commands do not', async () => {
+    const spy = spyGitLock();
+    const g = git(spy.lock);
+
+    const wt = await g.createWorktree(args());
+    const afterCreate = spy.calls();
+    expect(afterCreate).toBeGreaterThan(0);
+
+    await g.headSha(wt.path);
+    writeFileSync(join(wt.path, 'Feature.al'), 'changed\n', 'utf-8');
+    await g.commitFiles(wt.path, ['Feature.al'], 'renumber');
+    await g.isUpToDate(wt.path, wt.targetSha);
+    expect(spy.calls()).toBe(afterCreate);
+
+    await g.removeWorktree(wt);
+    expect(spy.calls()).toBeGreaterThan(afterCreate);
+    expect(spy.maxActive()).toBe(1);
+  });
+
+  it('two concurrent createWorktree calls serialize on the lock', async () => {
+    const spy = spyGitLock();
+    const g = git(spy.lock);
+    const [a, b] = await Promise.all([
+      g.createWorktree(args()),
+      g.createWorktree({ ...args(), pullRequestId: 10 }),
+    ]);
+    expect(spy.maxActive()).toBe(1);
+    expect(spy.calls()).toBeGreaterThan(1);
+    expect((await runGit(['rev-parse', 'HEAD'], a.path)).trim()).toBe(head);
+    expect((await runGit(['rev-parse', 'HEAD'], b.path)).trim()).toBe(head);
   });
 });
