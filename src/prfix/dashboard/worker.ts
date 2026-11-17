@@ -163,12 +163,16 @@ export function createPrFixWorker(deps: PrFixWorkerDeps): PrFixWorker {
   }
 
   async function runDecision(decision: Decision, item: PendingApproval): Promise<void> {
-    // The pending item is dropped as the action starts: approve consumes the
-    // state's hold marker at once, so the item can never be acted on again
-    // whatever the outcome (or a restart mid-action) turns out to be.
-    store.setPending(store.pending().filter((p) => p.prId !== decision.prId));
+    // active.json first, then the pending item is dropped as the action
+    // starts: approve consumes the state's hold marker at once, so the item
+    // can never be acted on again whatever the outcome (or a restart
+    // mid-action) turns out to be. In that order a crash between the two
+    // writes leaves the item pending and re-approvable — recover() records the
+    // interruption and its cleanup leaves a still-held state alone — rather
+    // than a held state no pending item points at.
     const job: ActiveJob = { prId: decision.prId, startedAt: iso(), triggeredBy: item.triggeredBy, title: item.title };
     store.setActive(job);
+    store.setPending(store.pending().filter((p) => p.prId !== decision.prId));
     logger.info(`fix-pr: PR ${decision.prId} ${decision.kind} by ${decision.user}`);
     let outcome: PrFixOutcome;
     try {
@@ -204,7 +208,14 @@ export function createPrFixWorker(deps: PrFixWorkerDeps): PrFixWorker {
     await catalog.refresh();
     runningPr = null;
     inFlight = null;
-    tick();
+    // Nothing awaits this promise: a throw here (an unreadable or unwritable
+    // queue file) would be an unhandled rejection, which ends the process and
+    // every work item running in it.
+    try {
+      tick();
+    } catch (err) {
+      logger.error('fix-pr: could not start the next job', err);
+    }
   }
 
   function tick(): void {
@@ -242,7 +253,9 @@ export function createPrFixWorker(deps: PrFixWorkerDeps): PrFixWorker {
   return {
     enqueue(prId, user) {
       if (deps.unavailableReason !== null) return { ok: false, code: 409, error: deps.unavailableReason };
-      if (catalog.at === null) return { ok: false, code: 409, error: 'PR list not loaded yet' };
+      if (catalog.at === null) {
+        return { ok: false, code: 409, error: catalog.error ? `PR list not loaded yet: ${catalog.error}` : 'PR list not loaded yet' };
+      }
       if (runningPr === prId) return { ok: false, code: 409, error: 'already running' };
       if (store.pending().some((p) => p.prId === prId)) {
         return { ok: false, code: 409, error: 'awaiting approval; approve or reject first' };

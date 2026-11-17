@@ -131,6 +131,19 @@ describe('createPrFixWorker', () => {
       expect(h.worker.enqueue(1, 'u')).toEqual({ ok: false, code: 409, error: 'PR list not loaded yet' });
     });
 
+    test('PR list not loaded yet, with the failed load named', async () => {
+      const catalog = new PrFixCatalog(async () => {
+        throw new Error('ADO answered 401');
+      }, () => new Date());
+      await catalog.refresh();
+      const h = await harness({ catalog }, false);
+      expect(h.worker.enqueue(1, 'u')).toEqual({
+        ok: false,
+        code: 409,
+        error: 'PR list not loaded yet: ADO answered 401',
+      });
+    });
+
     test('already queued', async () => {
       const h = await harness();
       h.flags.signIn = true; // keep it in the queue
@@ -307,6 +320,77 @@ describe('createPrFixWorker', () => {
     expect(approveLine?.approvedBy).toBe('boss');
     expect(h.store.pending().map((p) => p.prId)).toEqual([2]);
     expect(h.store.active()).toBeNull();
+  });
+
+  test('a decision writes active.json before it drops the pending item', async () => {
+    const writes: string[] = [];
+    const flags = { failDrop: false };
+    class RecordingStore extends PrFixJobStore {
+      override setActive(job: Parameters<PrFixJobStore['setActive']>[0]): void {
+        writes.push(job ? `active ${job.prId}` : 'active null');
+        super.setActive(job);
+      }
+      override setPending(pending: Parameters<PrFixJobStore['setPending']>[0]): void {
+        writes.push(`pending ${pending.map((p) => p.prId).join(',')}`);
+        // A crash between the two writes.
+        if (flags.failDrop && pending.length === 0) throw new Error('crash');
+        super.setPending(pending);
+      }
+    }
+    const store = new RecordingStore(join(root, 'prfix'));
+    const h = await harness({ store });
+    h.worker.enqueue(1, 'u');
+    await finishJob(h, 0, 'awaiting-approval');
+    await settle(h);
+
+    flags.failDrop = true;
+    writes.length = 0;
+    h.worker.requestApprove(1, 'boss');
+    await settle(h);
+    expect(writes.slice(0, 2)).toEqual(['active 1', 'pending ']);
+    // The item survived the "crash" and can be approved again.
+    expect(store.pending().map((p) => p.prId)).toEqual([1]);
+    expect(h.calls).toEqual(['job 1']);
+
+    flags.failDrop = false;
+    writes.length = 0;
+    h.worker.requestApprove(1, 'boss');
+    await settle(h);
+    expect(writes).toEqual(['active 1', 'pending ', 'active null']);
+    expect(h.calls).toEqual(['job 1', 'approve 1']);
+    expect(store.pending()).toEqual([]);
+  });
+
+  test('a store that throws when the next job is picked does not reject the action', async () => {
+    const flags = { broken: false };
+    class BrokenStore extends PrFixJobStore {
+      override queue(): ReturnType<PrFixJobStore['queue']> {
+        if (flags.broken) throw new Error('EACCES: queue.json');
+        return super.queue();
+      }
+    }
+    const errors: string[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const store = new BrokenStore(join(root, 'prfix'));
+      const h = await harness({
+        store,
+        logger: { info: () => {}, warn: () => {}, error: (m: string) => void errors.push(m) },
+      });
+      h.worker.enqueue(1, 'u');
+      flags.broken = true;
+      await finishJob(h, 0, 'rebased');
+      await settle(h);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([]);
+      expect(errors).toContain('fix-pr: could not start the next job');
+      expect(store.history()[0]?.outcome.status).toBe('rebased');
+      expect(store.active()).toBeNull();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   test('unqueue removes a queued PR; 404 when not queued', async () => {
