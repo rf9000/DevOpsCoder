@@ -71,7 +71,14 @@ export function createControlHandler(deps: ControlDeps): (req: Request) => Promi
     const { pathname } = new URL(req.url);
 
     if (req.method === 'GET' && pathname === '/status') {
-      return json({ signIn: deps.demoPortal?.status() ?? null, prFix: deps.prFix?.status() ?? null });
+      const signIn = deps.demoPortal?.status() ?? null;
+      // The PR fixer reads its store files here; a corrupt or unreadable one
+      // must not take the sign-in card down with it.
+      try {
+        return json({ signIn, prFix: deps.prFix?.status() ?? null });
+      } catch (err) {
+        return json({ signIn, prFix: null, prFixError: err instanceof Error ? err.message : String(err) });
+      }
     }
 
     // Starts `continia auth login` (device code); the code to enter comes back here and in /status.

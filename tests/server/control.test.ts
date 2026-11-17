@@ -154,6 +154,16 @@ describe('control handler: PR fixer', () => {
     expect(await res.json()).toEqual({ signIn: null, prFix: PRFIX_STATUS });
   });
 
+  test('status with an unreadable PR-fixer store still reports sign-in', async () => {
+    const { worker } = fakeWorker();
+    worker.status = () => {
+      throw new Error('Unexpected token in queue.json');
+    };
+    const res = await createControlHandler({ prFix: worker, demoPortal: fakeSession().session })(get('/status'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ signIn: SIGNIN, prFix: null, prFixError: 'Unexpected token in queue.json' });
+  });
+
   test('queue passes X-Remote-User to the worker', async () => {
     const { worker, calls } = fakeWorker();
     const res = await createControlHandler({ prFix: worker })(
