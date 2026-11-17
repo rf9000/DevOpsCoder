@@ -208,7 +208,27 @@ export async function approvePrFix(deps: FixPrDeps & { finishStages: Stage[] }):
   delete state.cancelled;
   delete state.completedAt;
   deps.store.save(state);
-  return concludeRun(deps, state, deps.finishStages, false);
+  return concludeRun(deps, state, deps.finishStages, false, () => checkBeforeApprovedPush(deps, state.outputs));
+}
+
+/**
+ * What approve re-checks before pushing a held result: the worktree still
+ * sits on the head that was reviewed (anything else would push commits nobody
+ * saw), and the PR is still active (a completed or abandoned PR must not get a
+ * rewritten branch). A failed check ends the approve as `error` with the usual
+ * failure ending: IDs released, worktree and state kept for inspection.
+ */
+async function checkBeforeApprovedPush(deps: FixPrDeps, outputs: Record<string, unknown>): Promise<void> {
+  const wt = outputs.worktree as WorktreeContext | undefined;
+  const reviewed = finalHeadSha(outputs);
+  if (!wt || !reviewed) throw new Error(`PR ${deps.pullRequestId}: the held state has no reviewed head; not pushed`);
+  const head = await deps.git.headSha(wt.path);
+  if (head !== reviewed) {
+    throw new Error(`PR ${deps.pullRequestId}: worktree head ${head} is not the reviewed head ${reviewed}; not pushed`);
+  }
+  const input = outputs.prFixInput as Partial<PrFixInput> | undefined;
+  const pr = await deps.ado.getPullRequest(input?.repository ?? deps.prfix.app.repositoryName, deps.pullRequestId);
+  if (pr.status !== 'active') throw new Error(`PR ${deps.pullRequestId} is ${pr.status}; not pushed`);
 }
 
 /**
@@ -282,14 +302,24 @@ function buildOutcome(
   };
 }
 
+/** A failed `concludeRun` precheck: its message is the outcome's error, with no stage prefix. */
+class PrecheckError extends Error {}
+
 /**
  * Runs `stages` on `state` and turns the end state into the outcome, then
  * posts the failure comment and cleans up — the one place these rules live
  * for `fixPr` and `approvePrFix`. With `hold`, a green run that pushed nothing
  * ends `awaiting-approval` with a review: the environment is deleted (unless
  * keepEnv), the IDs and worktree stay, and the state is saved for approval.
+ * `precheck` runs before the stages; what it throws is the outcome's error as is.
  */
-async function concludeRun(deps: FixPrDeps, state: PipelineState, stages: Stage[], hold: boolean): Promise<PrFixOutcome> {
+async function concludeRun(
+  deps: FixPrDeps,
+  state: PipelineState,
+  stages: Stage[],
+  hold: boolean,
+  precheck?: () => Promise<void>,
+): Promise<PrFixOutcome> {
   const { logger, pullRequestId } = deps;
   const config = deps.prfix.app;
   const now = deps.now ?? (() => new Date());
@@ -299,6 +329,11 @@ async function concludeRun(deps: FixPrDeps, state: PipelineState, stages: Stage[
   let outcome: PrFixOutcome;
   let collisions: CollisionGroup[] | undefined;
   try {
+    try {
+      await precheck?.();
+    } catch (err) {
+      throw new PrecheckError(messageOf(err));
+    }
     await runPipeline({
       stages,
       state,
@@ -342,6 +377,9 @@ async function concludeRun(deps: FixPrDeps, state: PipelineState, stages: Stage[
       outcome = build('rebased', null);
     } else if (status === 'up-to-date') {
       outcome = build(status, null);
+    } else if (err instanceof PrecheckError) {
+      logger.warn(`fix-pr: ${message}`);
+      outcome = build('error', message);
     } else if (status === 'error') {
       const stage = state.terminalError?.stage ?? 'fix-pr';
       outcome = build(status, `${stage}: ${message}`);

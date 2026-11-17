@@ -604,7 +604,7 @@ describe('fix-pr hold mode, approve and reject', () => {
   });
   const HELD_STAGES = [intake, worktree, rebase, renumbered, env, green];
 
-  function makeDeps(store: PipelineStateStore, opts: { pushThrows?: Error; rangeDiffThrows?: boolean; holdBeforePush?: boolean; deleteFails?: boolean } = {}) {
+  function makeDeps(store: PipelineStateStore, opts: { pushThrows?: Error; rangeDiffThrows?: boolean; holdBeforePush?: boolean; deleteFails?: boolean; worktreeHead?: string; prStatus?: PullRequestDetails['status'] } = {}) {
     const app = makeTestConfig({ STATE_DIR: mkdtempSync(join(tmpdir(), 'prfix-')) }, { dryRun: false, pat: PAT });
     const prfix: PrFixConfig = {
       app,
@@ -617,7 +617,7 @@ describe('fix-pr hold mode, approve and reject', () => {
       approvalTtlHours: 24,
     };
     const removeWorktree = mock(async (_wt: unknown) => {});
-    const headSha = mock(async (_p: string) => 'renum00');
+    const headSha = mock(async (_p: string) => opts.worktreeHead ?? 'renum00');
     const push = mock(async (_a: { path: string; sourceRefName: string; expectedRemoteSha: string }) => {
       if (opts.pushThrows) throw opts.pushThrows;
     });
@@ -628,7 +628,8 @@ describe('fix-pr hold mode, approve and reject', () => {
     const fileDiff = mock(async (_p: string, _f: string, _t: string, file: string) => `diff of ${file}`);
     const git = { removeWorktree, headSha, push, rangeDiff, fileDiff } as unknown as PrFixGit;
     const createPullRequestThread = mock(async (_a: { content: string }, _o?: unknown) => {});
-    const ado = { createPullRequestThread } as unknown as AdoClient;
+    const getPullRequest = mock(async (_r: string, _id: number) => ({ ...PR, status: opts.prStatus ?? PR.status }));
+    const ado = { createPullRequestThread, getPullRequest } as unknown as AdoClient;
     const deleteEnvironment = mock(async (_id: string, _o: unknown) => {
       if (opts.deleteFails) throw new Error('delete failed');
     });
@@ -651,7 +652,7 @@ describe('fix-pr hold mode, approve and reject', () => {
       onProgress: (s, d) => progress.push([s, d]),
     };
     const finishStages = buildPrFixFinishStages({ ado, git, keepEnv: false });
-    return { deps, finishStages, removeWorktree, push, rangeDiff, fileDiff, createPullRequestThread, deleteEnvironment, unassign, progress };
+    return { deps, finishStages, getPullRequest, removeWorktree, push, rangeDiff, fileDiff, createPullRequestThread, deleteEnvironment, unassign, progress };
   }
 
   const newStore = () => new PipelineStateStore(mkdtempSync(join(tmpdir(), 'prfix-store-')));
@@ -739,6 +740,38 @@ describe('fix-pr hold mode, approve and reject', () => {
     expect(r.removeWorktree).not.toHaveBeenCalled();
     expect(r.createPullRequestThread).toHaveBeenCalledTimes(1);
     expect(r.createPullRequestThread.mock.calls[0]?.[0].content).toContain('head-moved');
+  });
+
+  it('approve does not push when the worktree head is not the reviewed head', async () => {
+    const store = newStore();
+    await fixPr(makeDeps(store).deps);
+    const r = makeDeps(store, { worktreeHead: 'other00' });
+    const o = await approvePrFix({ ...r.deps, finishStages: r.finishStages });
+    expect(o).toMatchObject({
+      ok: false,
+      status: 'error',
+      error: 'PR 42: worktree head other00 is not the reviewed head renum00; not pushed',
+    });
+    expect(r.push).not.toHaveBeenCalled();
+    expect(r.getPullRequest).not.toHaveBeenCalled();
+    expect(r.unassign.mock.calls).toEqual(USED);
+    expect(r.removeWorktree).not.toHaveBeenCalled();
+    // Consumed: it cannot be approved a second time, but the state stays for inspection.
+    await expect(approvePrFix({ ...r.deps, finishStages: r.finishStages })).rejects.toThrow('no held fix-pr state');
+    expect(store.load(PR_ID)?.outputs.rebase).toEqual(REBASE);
+  });
+
+  it('approve does not push a PR that is no longer active', async () => {
+    const store = newStore();
+    await fixPr(makeDeps(store).deps);
+    const r = makeDeps(store, { prStatus: 'completed' });
+    const o = await approvePrFix({ ...r.deps, finishStages: r.finishStages });
+    expect(o).toMatchObject({ ok: false, status: 'error', error: 'PR 42 is completed; not pushed' });
+    expect(r.getPullRequest.mock.calls[0]?.[1]).toBe(PR_ID);
+    expect(r.push).not.toHaveBeenCalled();
+    expect(r.progress).toEqual([]);
+    expect(r.unassign.mock.calls).toEqual(USED);
+    expect(r.removeWorktree).not.toHaveBeenCalled();
   });
 
   it('reject releases IDs and removes the worktree', async () => {
