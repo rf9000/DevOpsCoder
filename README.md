@@ -134,7 +134,7 @@ State goes to `STATE_DIR/suggestions/<prId>.json` and every run starts fresh. Th
 bun run src/cli/index.ts fix-pr <prId> [--dry-run] [--keep-env]
 ```
 
-Rebases an active PR's source branch onto its target branch, verifies the result on DemoPortal, and pushes it back. Run it by hand. The watcher never runs it.
+Rebases an active PR's source branch onto its target branch, verifies the result on DemoPortal, and pushes it back. Run it by hand, or start it from the monitor dashboard (see [From the dashboard](#from-the-dashboard)); the watcher never picks a PR on its own.
 
 What it does:
 - `pr-intake` reads the PR. It refuses one that is not active.
@@ -164,6 +164,7 @@ Settings:
 | `NINJA_CALL_TIMEOUT_MS` | 60000 | Timeout of one Ninja tool call |
 | `NINJA_GIT_EMAIL` / `NINJA_GIT_NAME` | unset | Git identity the Ninja server reports to its backend, which authorizes by that email (`HTTP 403 USER_NOT_AUTHORIZED` otherwise). Unset: the server reads the target clone's git config (on the VM, the agents' `claude-agent@continia.local`). The email must be authorized for the app in Object ID Ninja. Only the Ninja child sees it; the clone is untouched |
 | `STAGE_TIMEOUT_MS_RENUMBER_COLLISIONS` | max(300000, 10 × `NINJA_CALL_TIMEOUT_MS`) | Timeout of the whole `renumber-collisions` stage |
+| `PRFIX_APPROVAL_TTL_HOURS` | 24 | Dashboard runs only: hours an approval may wait before it is rejected automatically |
 
 It also needs `BOT_GIT_NAME` / `BOT_GIT_EMAIL` (the committer of the rebased commits) and the variables the main pipeline needs. `MAX_COST_USD_PER_WI` caps the run's spend.
 
@@ -184,6 +185,21 @@ The last stdout line is the JSON outcome. The exit code is 0 when `ok` is true a
 ```
 
 `status` is one of `rebased`, `up-to-date` (both `ok`), `head-moved`, `conflict-cap`, `unresolved-conflict`, `merge-commits`, `id-collision`, `verification-failed`, `cost-cap`, `cancelled` or `error` (`error` then reads `<stage>: <message>`). Once the push has succeeded, the run reports `rebased` whatever happens afterwards (a failed comment, a timeout, a cancel), with a warning in the log, because the remote branch has already changed; no failure comment is posted then. State goes to `STATE_DIR/prfix/<prId>.json`, and every run starts fresh. The worktree is removed on success and kept on failure for inspection; the next run replaces it. SIGINT or SIGTERM stops the run and reports `cancelled`.
+
+### From the dashboard
+
+The monitor's Coder card has a **PR fixer** panel listing the repository's active PRs (re-read every 2 minutes and after each job). It is admin-only: the monitor shows it, and forwards its actions, only to views with the `coder-fixpr` panel. The watcher runs the jobs itself, one at a time, behind its control API (`CONTROL_PORT`):
+
+1. **Fix** queues the PR. The job runs the same stages as the CLI, up to and including `build-and-test`, and stops before `push-rebased`. The PR head is read when the job starts, never at queue time. While it runs, the panel shows the current stage.
+2. A failed, red or `up-to-date` run ends as it would from the CLI (failure comment, cleanup) and nothing waits. A green run ends **awaiting approval**: the environment is deleted, but the worktree, the state file and any reserved Ninja IDs are kept.
+3. **Review** shows what would be pushed: old and new head, the conflicts with their resolutions and file diffs, renumbered IDs, test results, cost and the `git range-diff`.
+4. **Approve** runs `push-rebased` and `pr-comment` from the saved state. The lease is still the head read before the rebase, so a developer push in the meantime ends `head-moved` and is never overwritten. **Reject** releases the reserved IDs and removes the worktree; nothing is pushed.
+
+An approval left open for `PRFIX_APPROVAL_TTL_HOURS` (default 24) is rejected automatically (`rejectedBy: expired`), checked once per watcher cycle. Finished jobs go to `STATE_DIR/prfix/history.jsonl` (the newest 500), the queue and the pending approvals to `queue.json` and `pending.json` beside it; both survive a restart. A job running when the container stops is recorded as `interrupted (container restarted)` on the next start, and its environment and unpushed Ninja IDs are cleaned up then. SIGTERM cancels a running job, and the watcher waits for its cleanup before exiting, which is why the compose service sets `stop_grace_period: 2m`. Jobs wait, like work items, while DemoPortal sign-in is needed.
+
+The panel is unavailable, with the reason shown, when the watcher runs as a dry run (`--dry-run`; a rehearsal must not push), with `SKIP_BUILD_TEST` (it would push an unverified rebase), or when the fix-pr configuration does not load (for example `BOT_GIT_NAME` missing). Work items run as usual in every case.
+
+Running the CLI `fix-pr <prId>` on a PR that is awaiting approval overwrites its held state (`STATE_DIR/prfix/<prId>.json`): the dashboard's Approve then fails, and the held worktree and Ninja IDs are no longer tracked. Reject it on the dashboard first.
 
 ## Layout
 

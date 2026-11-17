@@ -2,7 +2,7 @@ import { describe, it, expect, mock } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { alErrorLines, approvePrFix, fixPr, rejectPrFix, type FixPrDeps } from '../../src/prfix/fix-pr.ts';
+import { alErrorLines, approvePrFix, cleanupInterruptedPrFix, fixPr, rejectPrFix, type FixPrDeps } from '../../src/prfix/fix-pr.ts';
 import { buildPrFixFinishStages } from '../../src/services/pipeline-builder.ts';
 import type { PrFixConfig } from '../../src/prfix/config.ts';
 import type { PrFixGit } from '../../src/prfix/prfix-git.ts';
@@ -19,6 +19,7 @@ import {
 import { HeadMovedError } from '../../src/suggestions/suggestion-git.ts';
 import { CostExceededError, VerificationFailedError, type PullRequestDetails } from '../../src/types/index.ts';
 import type { Stage } from '../../src/pipeline/stage.ts';
+import { createInitialState } from '../../src/pipeline/orchestrator.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../../src/state/state-store.ts';
 import { makeTestConfig } from '../helpers/app-config.ts';
@@ -98,6 +99,7 @@ function setup(
     renumberCollisions: true,
     ninjaCommand: { command: 'npx', args: [] },
     ninjaCallTimeoutMs: 60_000,
+    approvalTtlHours: 24,
   };
   const removeWorktree = mock(async (_wt: unknown) => {});
   const git = { removeWorktree } as unknown as PrFixGit;
@@ -612,6 +614,7 @@ describe('fix-pr hold mode, approve and reject', () => {
       renumberCollisions: true,
       ninjaCommand: { command: 'npx', args: [] },
       ninjaCallTimeoutMs: 60_000,
+      approvalTtlHours: 24,
     };
     const removeWorktree = mock(async (_wt: unknown) => {});
     const headSha = mock(async (_p: string) => 'renum00');
@@ -766,5 +769,93 @@ describe('fix-pr hold mode, approve and reject', () => {
     const r = makeDeps(newStore());
     await expect(approvePrFix({ ...r.deps, finishStages: r.finishStages })).rejects.toThrow('no held fix-pr state for PR 42');
     await expect(rejectPrFix(r.deps)).rejects.toThrow('no held fix-pr state for PR 42');
+  });
+});
+
+describe('cleanupInterruptedPrFix', () => {
+  const RESERVED = [
+    { type: 'codeunit', id: 72918790, file: '/wt/prfix-42/app/P.al', status: 'used' as const },
+    { type: 'codeunit', id: 72918700, file: '/wt/prfix-42/app/P.al', status: 'rejected-in-use' as const },
+  ];
+
+  function interrupted(outputs: Record<string, unknown>, opts: { noState?: boolean; deleteFails?: boolean } = {}) {
+    const app = makeTestConfig({ STATE_DIR: mkdtempSync(join(tmpdir(), 'prfix-')) }, { dryRun: false, pat: PAT });
+    const store = new PipelineStateStore(join(app.stateDir, 'prfix'));
+    if (!opts.noState) {
+      const state = createInitialState(PR_ID, `pr-${PR_ID}`, new Date('2026-11-16T00:00:00.000Z'));
+      state.currentStage = 'build-and-test';
+      Object.assign(state.outputs, outputs);
+      store.save(state);
+    }
+    const deleteEnvironment = mock(async (_id: string, _o: unknown) => {
+      if (opts.deleteFails) throw new Error('delete failed');
+    });
+    const unassign = mock(async (_type: string, _id: number, _file: string) => {});
+    const warn = mock((_m: string) => {});
+    const deps: FixPrDeps = {
+      prfix: {
+        app,
+        maxConflictCommits: 3,
+        maxConflictFiles: 10,
+        resolverMaxTurns: 40,
+        renumberCollisions: true,
+        ninjaCommand: { command: 'npx', args: [] },
+        ninjaCallTimeoutMs: 60_000,
+        approvalTtlHours: 24,
+      },
+      logger: { info: () => {}, warn, error: () => {} },
+      ado: {} as AdoClient,
+      git: {} as PrFixGit,
+      continiaCli: { deleteEnvironment },
+      stages: [],
+      store,
+      pullRequestId: PR_ID,
+      keepEnv: false,
+      ninja: () => ({ assign: async () => 0, unassign, close: async () => {} }) as unknown as NinjaClient,
+    };
+    return { deps, deleteEnvironment, unassign, warn };
+  }
+
+  it('deletes the fix-pr environment and releases the unpushed reserved IDs', async () => {
+    const r = interrupted({ environment: ENV, worktree: WT, renumber: { renumbered: [], reserved: RESERVED } });
+    await cleanupInterruptedPrFix(r.deps);
+    expect(r.deleteEnvironment.mock.calls[0]?.[0]).toBe(ENV.envId);
+    expect(r.unassign.mock.calls).toEqual([['codeunit', 72918790, '/wt/prfix-42/app/P.al']]);
+  });
+
+  it('a pushed run keeps its IDs', async () => {
+    const r = interrupted({ environment: ENV, pushed: true, renumber: { renumbered: [], reserved: RESERVED } });
+    await cleanupInterruptedPrFix(r.deps);
+    expect(r.unassign).not.toHaveBeenCalled();
+    expect(r.deleteEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it('never deletes a foreign-named or already deleted environment', async () => {
+    const foreign = interrupted({ environment: { ...ENV, name: 'wi-42-fix-thing' } });
+    await cleanupInterruptedPrFix(foreign.deps);
+    expect(foreign.deleteEnvironment).not.toHaveBeenCalled();
+    const gone = interrupted({ environment: ENV, environmentDeletedAt: '2026-11-16T00:00:00.000Z' });
+    await cleanupInterruptedPrFix(gone.deps);
+    expect(gone.deleteEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('leaves a state held for approval alone', async () => {
+    const r = interrupted({
+      environment: ENV,
+      awaitingApprovalSince: '2026-11-16T00:00:00.000Z',
+      renumber: { renumbered: [], reserved: RESERVED },
+    });
+    await cleanupInterruptedPrFix(r.deps);
+    expect(r.deleteEnvironment).not.toHaveBeenCalled();
+    expect(r.unassign).not.toHaveBeenCalled();
+  });
+
+  it('never throws: no state, or a failing delete, only warns', async () => {
+    const none = interrupted({}, { noState: true });
+    await cleanupInterruptedPrFix(none.deps);
+    expect(none.warn).toHaveBeenCalled();
+    const failing = interrupted({ environment: ENV }, { deleteFails: true });
+    await cleanupInterruptedPrFix(failing.deps);
+    expect(failing.warn).toHaveBeenCalled();
   });
 });

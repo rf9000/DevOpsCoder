@@ -112,6 +112,16 @@ describe('loadPrFixConfig', () => {
   });
 });
 
+describe('PRFIX_APPROVAL_TTL_HOURS', () => {
+  it('PRFIX_APPROVAL_TTL_HOURS defaults to 24 and rejects 0', () => {
+    expect(loadPrFixConfig(env).approvalTtlHours).toBe(24);
+    expect(loadPrFixConfig({ ...env, PRFIX_APPROVAL_TTL_HOURS: '' }).approvalTtlHours).toBe(24);
+    expect(loadPrFixConfig({ ...env, PRFIX_APPROVAL_TTL_HOURS: '0.5' }).approvalTtlHours).toBe(0.5);
+    expect(() => loadPrFixConfig({ ...env, PRFIX_APPROVAL_TTL_HOURS: '0' })).toThrow(/PRFIX_APPROVAL_TTL_HOURS/);
+    expect(() => loadPrFixConfig({ ...env, PRFIX_APPROVAL_TTL_HOURS: 'abc' })).toThrow(/PRFIX_APPROVAL_TTL_HOURS/);
+  });
+});
+
 describe('splitNinjaCommand', () => {
   it('splits on whitespace off win32', () => {
     expect(splitNinjaCommand('  npx -y	@vjeko.com/al-object-id-ninja-mcp ', 'linux')).toEqual({

@@ -2,10 +2,12 @@ import { loadConfig } from '../config/index.ts';
 import { createLogger } from '../utils/logger.ts';
 import { createAdoClient } from '../sdk/azure-devops-client.ts';
 import { PipelineStateStore } from '../state/state-store.ts';
-import { buildPipeline, buildPrFixPipeline, buildSuggestionPipeline } from '../services/pipeline-builder.ts';
+import { buildPipeline, buildSuggestionPipeline } from '../services/pipeline-builder.ts';
 import { loadPrFixConfig } from '../prfix/config.ts';
-import { createPrFixGit } from '../prfix/prfix-git.ts';
-import { fixPr, ninjaFactoryFor } from '../prfix/fix-pr.ts';
+import { fixPr } from '../prfix/fix-pr.ts';
+import { createPrFixRuntime } from '../prfix/runtime.ts';
+import { createDashboardPrFixer } from '../prfix/dashboard/setup.ts';
+import { createGitLock, type GitLock } from '../utils/git-lock.ts';
 import { applySuggestions, failureOutcome, loadSuggestionConfig } from '../services/apply-suggestions.ts';
 import { parseSuggestionInput } from '../suggestions/input.ts';
 import { createSuggestionGit } from '../suggestions/suggestion-git.ts';
@@ -79,7 +81,11 @@ Flags:
 `);
 }
 
-function buildDeps() {
+/**
+ * `gitLock` (watch only) serializes the work items' git commands on the shared
+ * clone with the dashboard fix-pr worker's; every other command runs alone.
+ */
+function buildDeps(opts: { gitLock?: GitLock } = {}) {
   const config = loadConfig();
   if (process.argv.includes('--dry-run')) config.dryRun = true;
   const logger = createLogger();
@@ -99,7 +105,9 @@ function buildDeps() {
     logger,
     ado,
     store,
-    buildPipeline,
+    buildPipeline: opts.gitLock
+      ? (d) => buildPipeline({ ...d, worktreeManager: createWorktreeManager({ config: d.config, gitLock: opts.gitLock }) })
+      : buildPipeline,
     abortFlag,
     ...(ledger ? { ledger } : {}),
     ...(ledger ? { toolUsageSink: (r) => appendToolUsage(config.costLogPath, r, (m) => logger.warn(m)) } : {}),
@@ -143,16 +151,38 @@ async function main(): Promise<void> {
       return;
 
     case 'watch': {
-      const deps = buildDeps();
+      // Work items and dashboard fix-pr jobs share the target clone's .git.
+      const gitLock = createGitLock();
+      const deps = buildDeps({ gitLock });
       // Fills the dashboard's sign-in card before the first cycle; never blocks startup.
       void deps.demoPortal?.peek().catch((err) => deps.logger.warn(`DemoPortal sign-in check failed :: ${err instanceof Error ? err.message : String(err)}`));
-      // The control server stops once the watcher loop ends, so SIGTERM lets the process exit.
-      await withControlServer(
-        deps.config.controlPort,
-        createControlHandler({ ...(deps.demoPortal ? { demoPortal: deps.demoPortal } : {}) }),
-        () => startWatcher(deps),
-        (port) => deps.logger.info(`control API on port ${port}`),
-      );
+      const prFixer = createDashboardPrFixer({
+        env: process.env,
+        config: deps.config,
+        ado: deps.ado,
+        wiStore: deps.store,
+        abortFlag: deps.abortFlag,
+        gitLock,
+        logger: deps.logger,
+        ...(deps.demoPortal ? { demoPortal: deps.demoPortal } : {}),
+      });
+      try {
+        await prFixer.worker.recover();
+      } catch (err) {
+        deps.logger.error('fix-pr: recovering an interrupted job failed, continuing', err);
+      }
+      const stopCatalogRefresh = prFixer.startCatalogRefresh();
+      try {
+        // The control server stops once the watcher loop ends, so SIGTERM lets the process exit.
+        await withControlServer(
+          deps.config.controlPort,
+          createControlHandler({ ...(deps.demoPortal ? { demoPortal: deps.demoPortal } : {}), prFix: prFixer.worker }),
+          () => startWatcher({ ...deps, prFix: prFixer.worker }),
+          (port) => deps.logger.info(`control API on port ${port}`),
+        );
+      } finally {
+        stopCatalogRefresh();
+      }
       return;
     }
 
@@ -348,13 +378,9 @@ async function runFixPrCommand(): Promise<void> {
   const config = prfix.app;
   if (process.argv.includes('--dry-run')) config.dryRun = true;
   const logger = createLogger('fix-pr');
-  const ado = createAdoClient(config);
-  const git = createPrFixGit({ config, logger });
-  const continiaCli = createContiniaCli({ config, onRetry: (message) => logger.warn(message) });
   const keepEnv = process.argv.includes('--keep-env');
-  // One factory for the stage and for fixPr's release of unpushed IDs; every
-  // call is a fresh client, since the stage closes its own.
-  const ninja = ninjaFactoryFor(prfix);
+  // The same construction the watcher's dashboard worker uses.
+  const runtime = createPrFixRuntime({ prfix, logger });
   // Abort so the runner's finally still deletes the environment.
   const abortFlag = { aborted: false };
   const onSignal = (sig: string) => {
@@ -364,17 +390,11 @@ async function runFixPrCommand(): Promise<void> {
   process.on('SIGTERM', () => onSignal('SIGTERM'));
   process.on('SIGINT', () => onSignal('SIGINT'));
   const outcome = await fixPr({
-    prfix,
-    logger,
-    ado,
-    git,
-    continiaCli,
-    stages: buildPrFixPipeline({ prfix, logger, ado, git, continiaCli, keepEnv, ninja }),
-    store: new PipelineStateStore(join(config.stateDir, 'prfix')),
+    ...runtime.deps,
+    stages: runtime.pipeline({ keepEnv }),
     pullRequestId,
     keepEnv,
     abortFlag,
-    ninja,
   });
   console.log(JSON.stringify(outcome));
   process.exitCode = outcome.ok ? 0 : 1;

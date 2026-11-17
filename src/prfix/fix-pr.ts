@@ -232,6 +232,34 @@ export async function rejectPrFix(deps: FixPrDeps): Promise<PrFixOutcome> {
   return buildOutcome(deps.pullRequestId, state.outputs, 'rejected', null);
 }
 
+/**
+ * After a restart killed a dashboard job mid-run: what `fixPr`'s own cleanup
+ * would have done, from the saved state. Deletes the fix-pr environment
+ * (name-checked, and not when the run already deleted it) and, unless the push
+ * happened, releases the reserved Ninja IDs. A state still held for approval
+ * belongs to its pending item and is left alone. The worktree and the state
+ * stay for inspection, as for any failed run. Best-effort: logs, never throws.
+ */
+export async function cleanupInterruptedPrFix(deps: FixPrDeps): Promise<void> {
+  const { logger, pullRequestId } = deps;
+  try {
+    const state = deps.store.load(pullRequestId);
+    if (!state) {
+      logger.warn(`fix-pr: no saved state for interrupted PR ${pullRequestId}; nothing to clean up`);
+      return;
+    }
+    if (typeof state.outputs[AWAITING_APPROVAL_KEY] === 'string') {
+      logger.warn(`fix-pr: PR ${pullRequestId} is held for approval; leaving its environment and IDs`);
+      return;
+    }
+    // Before anything else, as in cleanUp: Ninja resolves each ID's app from its file.
+    if (state.outputs.pushed !== true) await releaseReservedIds(deps, state.outputs.renumber as RenumberOutput | undefined);
+    await deleteEnvironment({ ...deps, keepEnv: false }, state.outputs);
+  } catch (err) {
+    logger.warn(`fix-pr: cleanup of interrupted PR ${pullRequestId} failed :: ${redactPat(messageOf(err), deps.prfix.app.pat)}`);
+  }
+}
+
 function buildOutcome(
   pullRequestId: number,
   outputs: Record<string, unknown>,

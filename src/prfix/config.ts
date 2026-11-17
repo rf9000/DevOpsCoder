@@ -20,6 +20,8 @@ export interface PrFixConfig {
    * reads the git config it finds, as before.
    */
   ninjaGitIdentity?: NinjaGitIdentity;
+  /** A dashboard run awaiting approval is rejected after this many hours (`PRFIX_APPROVAL_TTL_HOURS`). */
+  approvalTtlHours: number;
 }
 
 const DEFAULT_NINJA_MCP_COMMAND = 'npx -y @vjeko.com/al-object-id-ninja-mcp@1.0.2';
@@ -46,6 +48,11 @@ const knobSchema = z.object({
   NINJA_CALL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   NINJA_GIT_EMAIL: z.string().optional().transform((v) => v?.trim() || undefined),
   NINJA_GIT_NAME: z.string().optional().transform((v) => v?.trim() || undefined),
+  // Blank means the default, as for the other knobs read from compose.
+  PRFIX_APPROVAL_TTL_HOURS: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.coerce.number().positive().default(24),
+  ),
 });
 
 /**
@@ -117,6 +124,7 @@ export function loadPrFixConfig(env: Record<string, string | undefined>): PrFixC
     renumberCollisions: k.PRFIX_RENUMBER_COLLISIONS,
     ninjaCommand: splitNinjaCommand(k.NINJA_MCP_COMMAND, process.platform),
     ninjaCallTimeoutMs: k.NINJA_CALL_TIMEOUT_MS,
+    approvalTtlHours: k.PRFIX_APPROVAL_TTL_HOURS,
     ...(k.NINJA_GIT_EMAIL
       ? { ninjaGitIdentity: { email: k.NINJA_GIT_EMAIL, ...(k.NINJA_GIT_NAME ? { name: k.NINJA_GIT_NAME } : {}) } }
       : {}),

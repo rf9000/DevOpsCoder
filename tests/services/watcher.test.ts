@@ -15,6 +15,7 @@ import type { Logger } from '../../src/utils/logger.ts';
 import type { AppConfig, ProcessOutcome } from '../../src/types/index.ts';
 import type { AdoClient } from '../../src/sdk/azure-devops-client.ts';
 import type { Processor } from '../../src/services/processor.ts';
+import type { PrFixWorker } from '../../src/prfix/dashboard/worker.ts';
 
 interface CapturedLogger extends Logger {
   infoLines: string[];
@@ -713,6 +714,66 @@ describe('startWatcher environment sweep', () => {
       expect(logger.errorLines.some((l) => l.includes('environment sweep threw'))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('startWatcher fix-pr worker', () => {
+  function fakeWorker(opts: { throwOn?: 'expire' | 'tick' } = {}) {
+    const calls: string[] = [];
+    const worker = {
+      expire: () => {
+        calls.push('expire');
+        if (opts.throwOn === 'expire') throw new Error('expire broke');
+      },
+      tick: () => {
+        calls.push('tick');
+        if (opts.throwOn === 'tick') throw new Error('tick broke');
+      },
+      idle: async () => {
+        calls.push('idle');
+      },
+    } as unknown as PrFixWorker;
+    return { worker, calls };
+  }
+
+  async function runOnce(worker: PrFixWorker, logger: CapturedLogger): Promise<void> {
+    const dir = mkdtempSync(join(tmpdir(), 'watcher-prfix-'));
+    try {
+      const abortFlag = createAbortFlag();
+      await startWatcher({
+        config: baseConfig,
+        logger,
+        ado: makeAdo([]),
+        store: new PipelineStateStore(dir),
+        processor: makeProcessor(async (id) => ({ kind: 'skipped', workItemId: id, reason: 'x' })),
+        abortFlag,
+        // Stops the loop after the first cycle.
+        sweepEnvironments: async () => {
+          abortFlag.aborted = true;
+          return 0;
+        },
+        prFix: worker,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('expires and ticks each cycle, then waits for the worker to go idle on stop', async () => {
+    const { worker, calls } = fakeWorker();
+    await runOnce(worker, makeCaptureLogger());
+    expect(calls).toEqual(['expire', 'tick', 'idle']);
+  });
+
+  it('a worker that throws never stops the watcher', async () => {
+    for (const throwOn of ['expire', 'tick'] as const) {
+      const { worker, calls } = fakeWorker({ throwOn });
+      const logger = makeCaptureLogger();
+      await runOnce(worker, logger);
+      expect(calls).toEqual(['expire', 'tick', 'idle']);
+      expect(logger.errorLines.some((l) => l.includes(`fix-pr worker ${throwOn} threw`))).toBe(true);
+      expect(logger.infoLines.some((l) => l.includes('cycle done'))).toBe(true);
     }
   });
 });

@@ -331,6 +331,31 @@ describe('createPrFixWorker', () => {
     expect(h.calls).toEqual(['job 1']);
   });
 
+  test('starts nothing once stopping: the queue survives the shutdown', async () => {
+    const stop = { now: false };
+    const h = await harness({ stopping: () => stop.now });
+    h.flags.signIn = true; // queue both without starting either
+    h.worker.enqueue(1, 'u');
+    h.worker.enqueue(2, 'u');
+    h.flags.signIn = false;
+    h.worker.tick();
+    expect(h.calls).toEqual(['job 1']);
+    stop.now = true;
+    await finishJob(h, 0, 'cancelled');
+    await settle(h);
+    expect(h.calls).toEqual(['job 1']);
+    expect(h.store.queue().map((q) => q.prId)).toEqual([2]);
+  });
+
+  test('history returns the store history', async () => {
+    const h = await harness();
+    h.worker.enqueue(1, 'u');
+    await finishJob(h, 0, 'rebased');
+    await settle(h);
+    expect(h.worker.history()).toEqual(h.store.history());
+    expect(h.worker.history()).toHaveLength(1);
+  });
+
   test('recover records an interrupted job and cleans it up, leaving pending alone', async () => {
     const h = await harness();
     const pending = {

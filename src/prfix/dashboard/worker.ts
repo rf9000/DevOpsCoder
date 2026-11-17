@@ -19,6 +19,12 @@ export interface PrFixWorkerDeps {
   ttlHours: number;
   logger: Logger;
   now: () => Date;
+  /**
+   * True once the watcher is shutting down: nothing new starts (a queued job
+   * or an approve would only run into the abort and be lost), so the queue and
+   * the pending approvals survive the restart. Default: never.
+   */
+  stopping?: () => boolean;
 }
 
 export type WorkerResult = { ok: true } | { ok: false; code: 400 | 404 | 409; error: string };
@@ -46,6 +52,8 @@ export interface PrFixWorker {
   requestApprove(prId: number, user: string): WorkerResult;
   requestReject(prId: number, user: string): WorkerResult;
   status(): PrFixStatusView;
+  /** Every finished job, newest first (`GET /stats`). */
+  history(): HistoryLine[];
   recover(): Promise<void>;
   expire(): void;
   tick(): void;
@@ -200,7 +208,7 @@ export function createPrFixWorker(deps: PrFixWorkerDeps): PrFixWorker {
   }
 
   function tick(): void {
-    if (inFlight || deps.unavailableReason !== null || deps.signInNeeded()) return;
+    if (inFlight || deps.unavailableReason !== null || deps.stopping?.() || deps.signInNeeded()) return;
     const decision = decisions.shift();
     if (decision) {
       const item = store.pending().find((p) => p.prId === decision.prId);
@@ -288,6 +296,8 @@ export function createPrFixWorker(deps: PrFixWorkerDeps): PrFixWorker {
         waiting: !inFlight && waitingWork && deps.signInNeeded() ? 'signin' : null,
       };
     },
+
+    history: () => store.history(),
 
     async recover() {
       const active = store.active();
