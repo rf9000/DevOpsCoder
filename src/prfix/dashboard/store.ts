@@ -45,10 +45,12 @@ const HISTORY_LIMIT = 500;
  * mid-write leaves the previous file whole. The one exception is a history
  * append below the cap, which is a plain one-line append (a rename per job
  * would rewrite the whole file each time); a torn last line from a crash is
- * skipped on read.
+ * skipped on read, and the next append then rewrites the file whole.
  */
 export class PrFixJobStore {
   private historyCache: string[] | null = null;
+  /** The file on disk holds a torn line or lacks a final newline; see `historyLines`. */
+  private historyDirty = false;
 
   constructor(private readonly dir: string) {}
 
@@ -79,7 +81,7 @@ export class PrFixJobStore {
 
   appendHistory(line: HistoryLine): void {
     const lines = [...this.historyLines(), JSON.stringify(line)];
-    if (lines.length <= HISTORY_LIMIT) {
+    if (lines.length <= HISTORY_LIMIT && !this.historyDirty) {
       mkdirSync(this.dir, { recursive: true });
       appendFileSync(join(this.dir, 'history.jsonl'), `${lines[lines.length - 1]}\n`, 'utf8');
       this.historyCache = lines;
@@ -88,6 +90,7 @@ export class PrFixJobStore {
     const kept = lines.slice(-HISTORY_LIMIT);
     this.writeText('history.jsonl', `${kept.join('\n')}\n`);
     this.historyCache = kept;
+    this.historyDirty = false;
   }
 
   /** Newest first. */
@@ -100,21 +103,26 @@ export class PrFixJobStore {
   /**
    * Read from disk once per instance, then kept in step with every append (the
    * worker is the file's only writer). A torn last line left by a crash
-   * mid-append is dropped here.
+   * mid-append is dropped here and marks the file dirty: a plain append would
+   * land on the end of the fragment and be lost with it, so the next append
+   * rewrites the file whole instead.
    */
   private historyLines(): string[] {
     if (this.historyCache) return this.historyCache;
     const path = join(this.dir, 'history.jsonl');
     const raw = existsSync(path) ? readFileSync(path, 'utf8') : '';
+    let dropped = false;
     this.historyCache = raw.split('\n').filter((l) => {
       if (l.trim() === '') return false;
       try {
         JSON.parse(l);
         return true;
       } catch {
+        dropped = true;
         return false;
       }
     });
+    this.historyDirty = dropped || (raw !== '' && !raw.endsWith('\n'));
     return this.historyCache;
   }
 

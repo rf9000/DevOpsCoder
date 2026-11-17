@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PrFixJobStore, type HistoryLine, type PendingApproval } from '../../../src/prfix/dashboard/store.ts';
@@ -47,6 +47,16 @@ describe('PrFixJobStore', () => {
     expect(history).toHaveLength(500);
     expect(history[0]?.prId).toBe(503);
     expect(history[499]?.prId).toBe(4);
+  });
+
+  test('an append after a torn last line keeps the new line and every intact one', () => {
+    mkdirSync(dir, { recursive: true });
+    const intact = [line(1, 'a'), line(2, 'b')].map((l) => JSON.stringify(l)).join('\n');
+    writeFileSync(join(dir, 'history.jsonl'), `${intact}\n{"at":"c","prId":3,"ti`, 'utf8');
+
+    new PrFixJobStore(dir).appendHistory(line(4, 'd'));
+
+    expect(new PrFixJobStore(dir).history().map((h) => h.prId)).toEqual([4, 2, 1]);
   });
 
   test('files round-trip and survive a new instance', () => {
